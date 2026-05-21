@@ -19,6 +19,7 @@ const { handleEventRSVPButton } = require("./event-rsvp");
 const { startReminderScheduler, stopReminderScheduler } = require("./event-reminders");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
+const eventDb = require("./event-db");
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const PLAYER_CHANNEL_ID = "1397942478379810887";
@@ -304,7 +305,7 @@ discord.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isButton()) {
     if (await handleGuideButton(interaction)) return;
     if (await handleEventRSVPButton(interaction, supabase, discord)) return;
-    if (await handleDeleteEventButton(interaction, supabase)) return;
+    if (await handleDeleteEventButton(interaction, supabase, eventDb)) return;
     // Rule update confirm button
     if (interaction.customId === "ruleupdate_confirm") {
       const pending = pendingUpdates[interaction.user.id];
