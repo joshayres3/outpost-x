@@ -236,6 +236,31 @@ discord.on("messageCreate", async (message) => {
     return;
   }
 
+  // ── ASSISTANT MODE — only respond in channels where it is enabled ────────────
+  if (enabledChannels.has(message.channelId)) {
+    const looksLikeRule = /rule|limit|how|can i|dmv|register|pvp|park|vehicle|inactiv|ban|steal|cheat|map|restart|ip|flag|color|colour|trader|bunker|radiation|squad|wipe|ticket/i.test(userMessage);
+    const hasTrigger    = hasSCUMTrigger(userMessage);
+
+    if (looksLikeRule || hasTrigger) {
+      if (looksLikeRule || (hasTrigger && shouldSass())) {
+        try {
+          const model = genAI.getGenerativeModel({
+            model: "gemini-2.5-flash",
+            systemInstruction: buildSystemPrompt(),
+          });
+          const result = await model.generateContent(userMessage);
+          const reply  = result.response.text().trim();
+          if (reply && !reply.toUpperCase().startsWith("NORESPONSE")) {
+            await message.reply(reply);
+            return;
+          }
+        } catch (err) {
+          console.error("Gemini error:", err.message);
+        }
+      }
+    }
+  }
+
   // ── Rule Update Text Handler ──────────────────────────────────────────────────
   if (message.guild && hasSCUMAdminRole(message.member)) {
     if (await handleRuleUpdateText(message, liveRules, genAI, supabase, pendingUpdates, hasSCUMAdminRole)) return;
@@ -245,28 +270,6 @@ discord.on("messageCreate", async (message) => {
   if (message.guild && hasSCUMAdminRole(message.member)) {
     const handled = await handleAnnouncementText(message, genAI, enabledChannels);
     if (handled) return;
-  }
-
-  // ── ASSISTANT MODE — only respond in channels where it is enabled ────────────
-  if (!enabledChannels.has(message.channelId)) return;
-
-  const looksLikeRule = /rule|limit|how|can i|dmv|register|pvp|park|vehicle|inactiv|ban|steal|cheat|map|restart|ip|flag|color|colour|trader|bunker|radiation|squad|wipe|ticket/i.test(userMessage);
-  const hasTrigger    = hasSCUMTrigger(userMessage);
-
-  if (!looksLikeRule && !hasTrigger) return;
-  if (!looksLikeRule && hasTrigger && !shouldSass()) return;
-
-  try {
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
-      systemInstruction: buildSystemPrompt(),
-    });
-    const result = await model.generateContent(userMessage);
-    const reply  = result.response.text().trim();
-    if (!reply || reply.toUpperCase().startsWith("NORESPONSE")) return;
-    await message.reply(reply);
-  } catch (err) {
-    console.error("Gemini error:", err.message);
   }
 });
 
