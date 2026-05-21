@@ -34,7 +34,7 @@ async function handleTicketTriage(message, supabase, genAI, liveRules) {
     if (isFirstPlayerMessage) {
       const reassuranceEmbed = new EmbedBuilder()
         .setTitle("✅ Ticket Received")
-        .setDescription("Thank you for opening a ticket! Mrs. Cobble is analyzing your request.\n\nIf it's a quick rule question, I can answer it right away. Otherwise, a Sr. Admin will be with you shortly.")
+        .setDescription("Thank you for opening a ticket! Mrs. Cobble is analyzing your request.\n\nIf it's a quick rule question, I can answer it right away. Otherwise, an admin will be with you shortly.")
         .setColor(0x4caf50) // Green
         .setFooter({ text: "Mrs. Cobble Support System" })
         .setTimestamp();
@@ -44,10 +44,10 @@ async function handleTicketTriage(message, supabase, genAI, liveRules) {
       });
     }
 
-    // Step B: Check if any Sr. Admin/Admin/Owner has already replied
+    // Step B: Check if any admin (Sr. Admin or SCUM Admin) or Owner has already replied
     const hasAnyAdminResponse = allMessages.some(msg => 
       msg.member && 
-      msg.member.roles.cache.some(role => ["Sr. Admin", "Admin", "Owner"].includes(role.name))
+      msg.member.roles.cache.some(role => ["Sr. Admin", "SCUM Admin", "Owner"].includes(role.name))
     );
 
     // Kill switch: If admin already responded, let them handle it
@@ -128,7 +128,7 @@ async function handleTicketTriage(message, supabase, genAI, liveRules) {
         .setTimestamp();
 
       await message.reply({
-        content: `<@&${SR_ADMIN_ROLE_ID}> This player is frustrated and needs immediate human attention.`,
+        content: `<@&${SR_ADMIN_ROLE_ID}> This player is frustrated and needs immediate attention.`,
         embeds: [urgentEmbed],
         allowedMentions: { roles: [SR_ADMIN_ROLE_ID] }
       });
