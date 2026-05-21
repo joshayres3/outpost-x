@@ -68,21 +68,28 @@ async function handleEventRSVPButton(interaction, supabase, client) {
         
         const updatedEmbed = new EmbedBuilder()
           .setTitle(`📅 ${event.title}`)
-          .setDescription(event.description || "No description provided")
           .addFields(
-            { name: "📍 Location", value: event.location, inline: false },
-            { name: "🕐 Time", value: `${timeStr} PST`, inline: false },
+            { name: "📍 Location & Details", value: event.location ? event.location.substring(0, 1024) : "TBD", inline: false },
+            { name: "🕐 Time", value: eventDate.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }) + " PDT", inline: false },
             { name: "👥 RSVPs", value: `${rsvpCount} players`, inline: false }
           )
-          .setColor(0xd4a574)
-          .setFooter({ text: "Times shown in PST" });
+          .setColor(0xd4a574);
+
+        // Add image if it exists
+        if (event.image_url && event.image_url.trim().length > 0) {
+          try {
+            updatedEmbed.setImage(event.image_url);
+          } catch (imgErr) {
+            console.warn("Invalid image URL:", event.image_url);
+          }
+        }
 
         // Rebuild button row
         const buttonRow = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
             .setCustomId(`event_rsvp_${event.id}`)
             .setLabel(`RSVP (${rsvpCount})`)
-            .setStyle(ButtonStyle.Primary)
+            .setStyle(ButtonStyle.Success)
             .setEmoji("✅"),
           new ButtonBuilder()
             .setCustomId(`event_delete_${event.id}`)
