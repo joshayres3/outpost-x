@@ -26,13 +26,36 @@ async function handleEventModal(interaction, supabase, eventDb, discord) {
     if (ampm.toUpperCase() === "PM" && hour24 !== 12) hour24 += 12;
     if (ampm.toUpperCase() === "AM" && hour24 === 12) hour24 = 0;
 
-    // Create a temporary date to calculate the UTC offset for America/Los_Angeles (handles DST automatically)
-    const tempDate = new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour24.toString().padStart(2, '0')}:${min}:00`);
-    const laTime = new Date(tempDate.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
-    const utcOffset = (tempDate - laTime) / (1000 * 60 * 60); // Calculate offset in hours
-
-    // Convert California time to UTC using the dynamic offset
-    let utcHour24 = hour24 + utcOffset;
+    // Create date string for California timezone
+    const dateStr = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour24.toString().padStart(2, '0')}:${min}:00`;
+    
+    // Create a UTC date assuming the input is in UTC temporarily
+    const utcDate = new Date(dateStr + 'Z');
+    
+    // Convert to LA timezone to see what time it would be
+    const laTimeStr = utcDate.toLocaleString("en-US", { 
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    });
+    
+    // Parse the LA time back to a date object
+    const [laDate, laTime] = laTimeStr.split(', ');
+    const [laMonth, laDay, laYear] = laDate.split('/');
+    const [laHour, laMinute, laSecond] = laTime.split(':');
+    const laAsUtc = new Date(`${laYear}-${laMonth}-${laDay}T${laHour}:${laMinute}:${laSecond}Z`);
+    
+    // The difference tells us the offset
+    const offsetMs = utcDate - laAsUtc;
+    const offsetHours = offsetMs / (1000 * 60 * 60);
+    
+    // Now convert the input time (which is California time) to UTC
+    let utcHour24 = hour24 + offsetHours;
     let adjustedDay = parseInt(day);
     if (utcHour24 >= 24) {
       utcHour24 -= 24;
@@ -42,7 +65,7 @@ async function handleEventModal(interaction, supabase, eventDb, discord) {
       adjustedDay -= 1;
     }
 
-    const eventDate = new Date(`${year}-${month.padStart(2, '0')}-${adjustedDay.toString().padStart(2, '0')}T${utcHour24.toString().padStart(2, '0')}:${min}:00Z`);
+    const eventDate = new Date(`${year}-${month.padStart(2, '0')}-${adjustedDay.toString().padStart(2, '0')}T${Math.floor(utcHour24).toString().padStart(2, '0')}:${min}:00Z`);
     if (isNaN(eventDate.getTime())) {
       return await interaction.reply({
         content: "❌ Invalid date. Please enter a valid date and time.",
