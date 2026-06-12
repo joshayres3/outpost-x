@@ -409,7 +409,7 @@ async function handleAnnouncementText(message, genAI, enabledChannels) {
 
   try {
     // Use Gemini to format the announcement
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
     const prompt = [
       "You are formatting a Discord server announcement for the Cobblestone SCUM server.",
       "An admin typed this raw announcement text:",
@@ -610,7 +610,7 @@ async function handleRuleUpdateText(message, liveRules, genAI, supabase, pending
 
   let polishedText = changeText;
   try {
-    const rwModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const rwModel = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
     const rwLines = [
       "You are editing the official rules for a SCUM game server called Cobblestone.",
       "Here is the CURRENT " + section.toUpperCase() + " section:",
