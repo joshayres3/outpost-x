@@ -26,6 +26,7 @@ const PLAYER_CHANNEL_ID = "1397942478379810887";
 const ADMIN_CHANNEL_ID  = "1218303201464422631";
 const EVENT_CHANNEL_ID  = "1504618527242326170";
 const ALLOWED_ROLES     = ["Sr. Admin", "Owner"];
+const ADMIN_WHITELIST   = ["340316566489137153"]; // Users with direct admin access
 
 const discord  = new Client({
   intents: [
@@ -224,6 +225,9 @@ const SECTION_ALIASES = {
 
 
 function hasAdminRole(member) {
+  // Check whitelist first
+  if (ADMIN_WHITELIST.includes(member.id)) return true;
+  // Then check roles
   return member.roles.cache.some((r) => ALLOWED_ROLES.includes(r.name));
 }
 
