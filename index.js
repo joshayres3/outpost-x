@@ -174,46 +174,23 @@ async function saveRule(section, content) {
 
 // ─── Build system prompt from live rules ──────────────────────────────────────
 function buildSystemPrompt() {
-  return `You are Mrs. Cobble, the assistant for the Cobblestone SCUM server. You have two modes:
+  return `You are Mrs. Cobble, the helpful assistant for the Cobblestone SCUM server.
 
-════════════════════════
-MODE 1 — RULE LOOKUP
-════════════════════════
-Silently monitor chat. Only respond when someone is clearly asking about server rules, limits, or server info — even if the phrasing is short or casual.
+Your ONLY job: Answer questions about server rules clearly and accurately.
 
-RESPOND to things like:
+RESPOND to rule/server questions like:
 "build rules", "car limit", "pvp rules", "how many vehicles", "restart times",
 "map colors", "dmv", "can I build near a road", "what happens if I cheat",
 "trader parking", "bunker rules", "plane limit", "shop rules", "radiation zone",
 "flag rules", "squad vehicle limit", "inactivity", "server ip", "stealing rules"
 
-IGNORE and say NORESPONSE to:
-General conversation, greetings, complaints, looking for squad, anything not asking about a specific rule or server info.
+IGNORE everything else and respond with NORESPONSE only.
 
-════════════════════════
-MODE 2 — SASSY SCUM COMMENTARY
-════════════════════════
-When a message contains SCUM game references drop a short sassy joke.
-Personality: dry wit, deadpan, slightly motherly, veteran player energy. 1-2 sentences MAX.
-
-Bear/mauled: "The bear was there first. Just saying."
-Beepers: "Nothing says good morning like 47 puppets knowing exactly where you are."
-Crashed vehicle: "Pretty sure the road was right there the whole time."
-Puppets: "It was ONE puppet. And then it was seventeen. Classic story."
-Mechs: "The mech was just doing its job. You were in the way. Technically your fault."
-Starving/vitamins: "Vitamins exist. Just a reminder."
-Drunk/moonshine: "Moonshine: technically food. Not recommended as a primary food group."
-Cargo drop: "First on site gets the loot. Second on site gets a lesson."
-Squad wipe: "Oof. A moment of silence. Very brief. Get back out there."
-Fresh spawn: "Fresh spawn. The purest form. Full of hope and nothing else."
-
-════════════════════════
-RESPONSE RULES:
-════════════════════════
-- Rules: factual, bullet points where helpful, no filler.
-- Sass: 1-2 sentences MAX. Punchy. Dry. Never mean.
-- Neither applies: NORESPONSE and nothing else.
-- Do not combine modes. Do not explain yourself.
+Response style:
+- Factual and helpful
+- Reference specific rules
+- Keep it concise (1-2 sentences unless they ask for details)
+- Be friendly and professional
 
 ════════════════════════════════════════
 COBBLESTONE RULES DATABASE
@@ -245,31 +222,6 @@ const SECTION_ALIASES = {
   server: "server", serverinfo: "server", info: "server",
 };
 
-// ─── SCUM trigger words ───────────────────────────────────────────────────────
-const SCUM_TRIGGERS = [
-  "bear", "bears", "beeper", "beepers", "puppet", "puppets", "mech", "mechs",
-  "crashed", "crash", "flipped", "rolled my car", "rolled the car",
-  "starving", "dehydrated", "vitamins", "vitamin",
-  "fame", "fame points", "cargo drop", "cargo",
-  "parachute", "parachuting", "skydiving",
-  "got eaten", "mauled", "ate me", "killed me",
-  "fishing", "caught a fish", "fishing rod",
-  "metabolism", "need to poop", "taking a dump", "bathroom break",
-  "drunk", "intoxicated", "moonshine", "alcohol",
-  "overweight", "too heavy", "encumbered",
-  "bambi", "fresh spawn", "naked",
-  "squad wipe", "wiped", "got wiped",
-  "skill points", "skill level", "leveled up",
-  "drowning", "drowned", "swimming",
-  "b2", "b4", "b6", "bunker b",
-];
-
-function hasSCUMTrigger(text) {
-  const lower = text.toLowerCase();
-  return SCUM_TRIGGERS.some((t) => lower.includes(t));
-}
-
-function shouldSass() { return Math.random() < 0.25; }
 
 function hasAdminRole(member) {
   return member.roles.cache.some((r) => ALLOWED_ROLES.includes(r.name));
@@ -530,14 +482,13 @@ discord.on("messageCreate", async (message) => {
     return;
   }
 
-  // ── ASSISTANT MODE — only respond in channels where it is enabled ────────────
+  // ── ASSISTANT MODE — only respond to RULE QUESTIONS in enabled channels ────────────
   if (!enabledChannels.has(message.channelId)) return;
 
   const looksLikeRule = /rule|limit|how|can i|dmv|register|pvp|park|vehicle|inactiv|ban|steal|cheat|map|restart|ip|flag|color|colour|trader|bunker|radiation|squad|wipe|ticket/i.test(userMessage);
-  const hasTrigger    = hasSCUMTrigger(userMessage);
-
-  if (!looksLikeRule && !hasTrigger) return;
-  if (!looksLikeRule && hasTrigger && !shouldSass()) return;
+  
+  // Only respond if it's a rule question
+  if (!looksLikeRule) return;
 
   try {
     const model = genAI.getGenerativeModel({
