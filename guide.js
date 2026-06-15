@@ -402,9 +402,6 @@ The map is divided into lettered columns (A-H) and numbered rows (1-9). When cal
 **🟢 Traders (Green circles on Cobblestone map)**
 Safe zones where you can buy and sell. No PvP allowed. 4-hour parking limit.
 
-**🔴 PvP Zones (Red on Cobblestone map)**
-Marked POIs where PvP is active. Rotates every 2 weeks on this server. Entering = accepting PvP.
-
 **🟣 Bunkers (Purple on Cobblestone map)**
 • Purple squares = Abandoned Bunkers
 • Purple circles = All other bunkers (except WW2)
@@ -433,8 +430,178 @@ Light blue square in the C0 sector on Cobblestone's map. Avoid without proper pr
 • Learn the river and road network — they're the fastest way to navigate on foot
 
 > 💡 Tip: The island has natural springs (fresh water sources) scattered around. scummap.com marks them. Finding the nearest one to your base early saves a lot of time.`
+  },
+
+  bunkers: {
+    title: "🔐 Running Bunkers — Stealth & Survival",
+    color: 0x8b5cf6,
+    content: `**Bunkers are the most rewarding PvE content in SCUM. Success requires stealth, patience, and the right tactics. Guns are loud and attract hordes — melee is your friend.**
+
+**Before You Go In**
+• **Get a Keycard** — Found in military zones, bunkers require keycards (A-class > B-class for better loot)
+• **Bring a squad** — 2-3 players is ideal. Solo runs are possible but risky when things go wrong.
+• **Pack light, pack smart:**
+  - Melee weapon (sword or spear — your primary tool)
+  - Secondary weapon (bow for ranged silent kills, gun only as last resort)
+  - Minimal armor (mobility > protection in bunkers)
+  - 2-3 bandages & first aid kit (you WILL take hits)
+  - Food & water (bunker runs take time)
+  - Flashlight or headlamp (bunkers are dark)
+• **Leave at base:** Heavy armor, bulky gear, excess supplies — you need speed and stealth
+
+**The Golden Rule: Stealth > Bullets**
+• Guns are loud and attract puppet hordes. One gunshot = multiple puppets converging
+• A silent melee kill on an isolated puppet costs nothing but gives you complete control
+• Headshots with a sword are instant kills and completely silent
+• Your goal: move through bunkers without alerting entire rooms
+
+**Inside the Bunker**
+• **Move slowly and crouch** — slower = quieter. Puppets have limited sound detection when you're moving carefully
+• **Listen for threats** — puppets make noise when they detect you. If you hear growling, you're about to be rushed
+• **Use doorways as choke points** — let puppets come to you one or two at a time through doors, not in open rooms
+• **Pick off stragglers** — find isolated puppets and take them down silently with melee before engaging groups
+• **Break line of sight immediately** — if spotted, get behind cover or a wall. Puppets lose track quickly
+• **Stick together as a squad** — separated players get overwhelmed. Stay within eyesight of your team
+
+**Combat When It Happens (You Tried to Avoid It)**
+• **Use doorways to funnel** — puppets can only come through one at a time, letting you handle them individually
+• **Headshots are most effective** — aim for the head every time, especially with melee
+• **Aim for weak points** — some puppets (Razors) have a growth/baby on their back, critical damage target
+• **Melee for conserving ammo** — if you have a sword and one puppet is nearby, use the sword. Save bullets for groups
+• **Beepers are PRIORITY kills** — if you see a puppet with explosives, kill it at range IMMEDIATELY before it gets close. One detonation ruins everything
+
+**Special Puppet Types & How to Handle Them**
+**Armored Puppets:** Slower, tankier, resistant to bullets. Use melee headshots or high-damage strikes. Stay mobile.
+**Razors:** Spider-like, extremely fast, climb walls. Move quietly to avoid triggering them. Shotgun or high-caliber weapon if you must fight. Target the growth on their back.
+**Beepers/Exploders:** Emit beeping when they spot you and detonate. Kill at range with silent headshots before they close distance. If they're beeping, you have seconds.
+
+**Loot Management**
+• Sort loot by weight-to-value — leave heavy/cheap items behind
+• Medical supplies and ammunition have high weight but are essential
+• Weapons found inside bunkers are typically higher quality than external loot
+• Don't get greedy — take what you can carry and move to the next room
+
+**Exiting the Bunker**
+• Plan your route out before you enter (bunkers can be maze-like)
+• Clear your exit path on the way out — don't assume cleared rooms stay clear
+• If surrounded, melee your way out or find an alternate route. Running in a straight line = getting shot in the back
+• If a squad mate goes down, grab what they had and get out. Don't die trying to revive someone in an ambush
+
+**Squad Bunker Tactics**
+• **Assign roles** — one person watches angles while others loot
+• **One clears, one loots** — while one player engages threats, the other grabs gear
+• **Cover each other's six** — always have someone watching the entrance/rear
+• **Communication is critical** — call out puppet locations and threats
+• **Split loot fairly after** — preset rules before entering (who takes weapons, who takes ammo, who takes medical)
+
+**Key Differences: Standard vs Abandoned Bunkers**
+• **Standard bunkers:** Medium difficulty, good loot, manageable puppet count. Great for mid-game
+• **Abandoned bunkers:** Extreme difficulty, excellent loot, many more puppets + special dangerous types. Late-game only with high-tier gear
+
+**Pro Tips**
+• Bring fuses for abandoned bunkers (needed to power doors)
+• Use lock picks and screwdrivers for chests and containers
+• Deeper levels usually have better loot but more dangers
+• Check under beds, inside lockers, and behind furniture for hidden stashes
+• Remember: A successful bunker run where everyone survives beats a failed run where someone dies
+
+> 💡 Tip: Start with hidden/secret bunkers — they're easier, lower puppet count, and great for learning bunker mechanics. Work your way up to standard bunkers, then abandoned bunkers once you're geared and skilled.`
+  },
+
+  npcs: {
+    title: "🧑‍💼 Surviving NPCs — Tactical Encounters",
+    color: 0xec4899,
+    content: `**Armed NPCs are intelligent, adaptive enemies. They're dangerous but killable — and their loot is worth the risk. Here's how to survive encounters and come out with gear.**
+
+**How NPCs Behave**
+• **They learn from your tactics** — if you keep flanking left, they'll expect it. Change it up constantly
+• **They communicate** — if one spots you, nearby NPCs know and converge on your position
+• **They use cover and teamwork** — they're not mindless. They actually think tactically
+• **They have valuable loot** — weapons, ammunition, armor. That's why they're worth engaging
+• **They patrol in groups** — rarely solo. Usually 2-4 per patrol. Know before you engage
+
+**Detection & Avoiding Unnecessary Combat**
+• **Crouch walking reduces detection range** — NPCs have narrower sight lines when you're moving slowly and quietly
+• **Stay out of direct sight lines** — they spot movement before still targets
+• **Use terrain to your advantage** — buildings, hills, dense vegetation all hide you
+• **Break line of sight immediately** — if spotted, get behind cover fast. Distance or obstacles muffle sounds and break tracking
+• **Scout before engaging** — know how many NPCs, where they are, what weapons they have
+
+**When You Decide to Engage**
+• **Never attack head-on** — flanking is always better than direct assault
+• **Use cover constantly** — never run across open areas. Bound from cover to cover
+• **Pick your engagement range:**
+  - **Long range (200+ meters):** Scoped rifle, take your time with shots, they can't hear precision fire from far away
+  - **Medium range (50-200m):** Rifle with controlled bursts, use cover aggressively, suppress and maneuver
+  - **Close range (under 50m):** High-caliber weapons or shotgun, but NPCs will suppress you
+
+**Suppression & Movement Tactics**
+• **Suppressed weapons are critical** — they don't pinpoint your location easily
+• **Fire 2-3 shots to suppress** then shift position immediately. Static = dead
+• **NPCs suppress each other** — use their confusion to advance or flank
+• **Never reload in the open** — find cover first, always
+• **Use their own suppression against them** — while one is pinned down, flank with your squad
+
+**When You're Outgunned (Know When to Leave)**
+• **Retreat immediately** — no shame in living to fight another day
+• **Have an escape route planned before engaging** — know which direction you're running
+• **Use terrain to slow them** — dense vegetation, hills, water slow pursuit
+• **Head toward your squad** — isolated NPCs fight worse against groups they didn't expect
+• **Regroup and reassess** — maybe you come back with better gear or more people
+
+**Equipment Advantage Matters**
+• **Body armor is critical** — absorbs hits that would one-shot you
+• **Helmets reduce headshot damage significantly** — you'll take more hits to head
+• **Suppressors on your weapon** — quieter shots, harder to locate you
+• **Better weapons = faster kills** — higher caliber = more stopping power
+• **Medical supplies before engaging** — always stock up before an NPC encounter
+
+**Squad NPC Combat**
+• **Assign targets** — focus fire eliminates NPCs faster than divided attention
+• **One person suppresses** while others flank or advance
+• **Stay in communication** — call out threats and positions constantly
+• **Stick together** — separated squad members get isolated and eliminated
+• **Plan extraction before combat starts** — know your exit route, regroup point, backup plan
+• **Cover angles** — while one player loots, another watches for reinforcements
+
+**Looting NPC Corpses**
+• **Clear the entire area first** — multiple NPC patrols in one zone are common
+• **Check ammo before engaging more NPCs** — you may need what they dropped
+• **Leave your teammate covering while you loot** — never loot without security
+• **Swap damaged gear for better drops** — only take upgrades to save inventory space
+• **Watch for reinforcements** — NPC bases send patrols. Don't camp the corpse
+
+**When NOT to Engage NPCs**
+• **You're solo and outnumbered** — 2v1 is rough, 3v1 is suicide
+• **You're low on ammo or health** — retreat, heal up, restock, come back
+• **You don't know their squad size** — scout first, always
+• **Near their base or patrol depot** — reinforcements incoming, not worth the risk
+• **The loot isn't worth your life** — you can't spend gear if you're dead
+
+**NPC Hot Zones (Avoid or Prepare Heavily)**
+• **Military camps** — highest concentration of armed NPCs, best loot
+• **Bunker entrances** — NPCs sometimes guard them, high-value objectives
+• **Trader routes** — patrols moving between locations, usually smaller groups
+• **Research facilities** — heavily defended with multiple NPCs coordinating
+• **Radio towers** — communication hubs with dedicated guards
+
+**Learning from Deaths & Failures**
+• **NPCs adapt if you use the same tactics twice** — change it up every encounter
+• **Watch how they move and coordinate** — steal their strategies for your squad
+• **Learn their patrol routes** — timing helps you avoid or set up ambushes
+• **Note their equipment** — knowing what they have helps you prepare and counter
+• **Share intel with squad** — if you died, tell your team what you learned
+
+**Difference Between Avoiding & Engaging**
+Your choice depends on **gear level, squad size, and situation:**
+• **Early game:** Avoid NPCs entirely. You don't have the gear or experience
+• **Mid-game:** Engage small NPC patrols (1-2) with squad, not solo
+• **Late-game:** Hunt NPC patrols for loot. You have the weapons and experience
+• **Always:** Fight on your terms, not theirs. If it's a bad situation, leave
+
+> 💡 Tip: NPC encounters are learning opportunities. Your first 3-5 encounters, focus on survival and observation. Learn how they think, how they react, where they patrol. Then hunt them with that knowledge. Patience beats impatience against intelligent enemies.`
   }
-};
+}
 
 // ─── Post guide panel ─────────────────────────────────────────────────────────
 async function postGuidePanel(channel) {
@@ -457,6 +624,8 @@ async function postGuidePanel(channel) {
       { name: "🎒 Crafting & Loot", value: "What to make & where to find it", inline: true },
       { name: "🏥 Medical", value: "Injuries & treatment", inline: true },
       { name: "🗺️ Map", value: "Locations & navigation", inline: true },
+      { name: "🔐 Bunkers", value: "Running bunkers & loot tactics", inline: true },
+      { name: "🧑‍💼 NPCs", value: "Combat strategy against armed NPCs", inline: true },
     )
     .setFooter({ text: "Cobblestone SCUM Server • Player Guide" });
 
@@ -476,7 +645,12 @@ async function postGuidePanel(channel) {
     new ButtonBuilder().setCustomId("guide_map").setLabel("Map").setStyle(ButtonStyle.Primary).setEmoji("🗺️"),
   );
 
-  await channel.send({ embeds: [embed], components: [row1, row2] });
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("guide_bunkers").setLabel("Bunkers").setStyle(ButtonStyle.Danger).setEmoji("🔐"),
+    new ButtonBuilder().setCustomId("guide_npcs").setLabel("NPCs").setStyle(ButtonStyle.Danger).setEmoji("🧑‍💼"),
+  );
+
+  await channel.send({ embeds: [embed], components: [row1, row2, row3] });
 }
 
 // ─── Handle guide button clicks ───────────────────────────────────────────────
