@@ -17,10 +17,20 @@ function trimEmbedText(text, max = 4000) {
 
 async function safeReply(interaction, payload) {
   if (interaction.deferred || interaction.replied) {
+    if (interaction.deferred && !interaction.replied) {
+      return interaction.editReply(payload).catch(() => {});
+    }
+
     return interaction.followUp(payload).catch(() => {});
   }
 
   return interaction.reply(payload).catch(() => {});
+}
+
+async function deferIfNeeded(interaction) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ ephemeral: true }).catch(() => {});
+  }
 }
 
 async function cleanupMenuMessage(interaction) {
@@ -140,9 +150,16 @@ async function postAllRules(channel, liveRules) {
 }
 
 async function finishAction(interaction, session, liveRules, discord, supabase, enabledChannels) {
+  await deferIfNeeded(interaction);
+
   const chan = await discord.channels.fetch(session.ch);
 
   if (session.act === "help") {
+    await safeReply(interaction, {
+      content: "Posting Help Center...",
+      ephemeral: true,
+    });
+
     await postGuide(chan);
 
     await safeReply(interaction, {
@@ -157,6 +174,11 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
   if (session.act === "rules") {
     if (session.ruleMode === "all") {
+      await safeReply(interaction, {
+        content: "Posting all rules...",
+        ephemeral: true,
+      });
+
       await postAllRules(chan, liveRules);
 
       await safeReply(interaction, {
@@ -170,6 +192,11 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
     }
 
     if (session.ruleMode === "server") {
+      await safeReply(interaction, {
+        content: "Posting Server Info...",
+        ephemeral: true,
+      });
+
       const cont = liveRules.server;
 
       if (!cont) {
@@ -295,6 +322,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
         content: "That menu expired. Run `!post` again.",
         ephemeral: true,
       });
+      await cleanupMenuMessage(interaction);
       return;
     }
 
@@ -334,10 +362,13 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
     }
   } catch (err) {
     console.error("❌ Post menu error:", err);
+
     await safeReply(interaction, {
       content: `Error: ${err.message}`,
       ephemeral: true,
     });
+
+    await cleanupMenuMessage(interaction);
   }
 }
 
