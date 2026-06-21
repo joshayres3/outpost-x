@@ -34,6 +34,7 @@ for (const key of REQUIRED_ENV) {
 }
 
 const ADMIN_CH = process.env.ADMIN_CHANNEL_ID || "1518059656302301245";
+const TICKET_CHANNEL_ID = process.env.TICKET_CHANNEL_ID || "1516323094548185139";
 
 const bot = new Client({
   intents: [
@@ -130,12 +131,23 @@ bot.on(Events.InteractionCreate, async (interaction) => {
 
 bot.on(Events.MessageCreate, async (msg) => {
   try {
-    if (!msg.guild) return;
-
-    // Must run before ignoring bot messages because Sapphire posts the welcome message.
-    await handleWelcomeMessage(msg, db);
-
     if (msg.author.bot) return;
+
+    if (!msg.guild) {
+      await msg.reply(
+        [
+          "Thanks for the message!",
+          "",
+          "[The Watcher] does not handle private support through DMs yet.",
+          `If you need staff, please open a ticket in <#${TICKET_CHANNEL_ID}>.`,
+        ].join("\n")
+      ).catch(() => {});
+
+      return;
+    }
+
+    // Must run before normal server message handling because Sapphire posts the welcome message.
+    await handleWelcomeMessage(msg, db);
 
     if (await handleWelcomeBackfillCommand(msg, bot, db)) return;
 
