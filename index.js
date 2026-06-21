@@ -68,7 +68,40 @@ discord.on(Events.InteractionCreate, async (interaction) => {
   const session = userSessions[userId] || {};
 
   try {
-    // STEP 1: Channel selection
+    // STEP 1: Category selection
+    if (interaction.customId === "post_category") {
+      session.categoryId = interaction.values[0];
+      userSessions[userId] = session;
+
+      const guild = interaction.guild;
+      const category = guild.channels.cache.get(session.categoryId);
+      
+      if (!category) {
+        await interaction.reply({ content: "❌ Category not found", ephemeral: true });
+        delete userSessions[userId];
+        return;
+      }
+
+      // Get channels in this category
+      const channels = guild.channels.cache
+        .filter(ch => ch.parentId === session.categoryId && ch.isTextBased())
+        .map(ch => ({ name: ch.name, value: ch.id }));
+
+      if (channels.length === 0) {
+        await interaction.reply({ content: "❌ No text channels in this category", ephemeral: true });
+        delete userSessions[userId];
+        return;
+      }
+
+      await interaction.reply({
+        content: "**Which channel?**",
+        components: [buildChannelsMenu(channels)],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // STEP 2: Channel selection
     if (interaction.customId === "post_channel") {
       session.channelId = interaction.values[0];
       userSessions[userId] = session;
@@ -81,7 +114,7 @@ discord.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    // STEP 2: Action selection
+    // STEP 3: Action selection
     if (interaction.customId === "post_action") {
       const action = interaction.values[0];
       session.action = action;
@@ -132,7 +165,7 @@ discord.on(Events.InteractionCreate, async (interaction) => {
       }
     }
 
-    // STEP 3: Rules section
+    // STEP 4: Rules section
     if (interaction.customId === "post_rules") {
       session.section = interaction.values[0];
       userSessions[userId] = session;
@@ -184,9 +217,20 @@ discord.on(Events.MessageCreate, async (message) => {
     if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) return;
 
     try {
+      const guild = message.guild;
+      const categories = guild.channels.cache
+        .filter(ch => ch.isCategory())
+        .map(cat => ({ name: cat.name, value: cat.id }))
+        .slice(0, 25); // Discord max 25 options
+
+      if (categories.length === 0) {
+        await message.reply("❌ No categories found");
+        return;
+      }
+
       await message.reply({
-        content: "**Which channel?**",
-        components: [buildChannelMenu()],
+        content: "**Which category?**",
+        components: [buildCategoriesMenu(categories)],
       });
       try { await message.delete(); } catch(e) {}
     } catch (err) {
@@ -239,6 +283,24 @@ Answer concisely (1-2 sentences max). If not about rules, say "That's not a rule
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
+
+function buildCategoriesMenu(categories) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("post_category")
+      .setPlaceholder("Select category...")
+      .addOptions(categories)
+  );
+}
+
+function buildChannelsMenu(channels) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("post_channel")
+      .setPlaceholder("Select channel...")
+      .addOptions(channels)
+  );
+}
 
 function buildChannelMenu() {
   return new ActionRowBuilder().addComponents(
