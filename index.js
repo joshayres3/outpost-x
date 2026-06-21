@@ -20,6 +20,7 @@ const {
   handleEventText,
   startEventScheduler,
 } = require("./events");
+const { handleWelcomeMessage } = require("./welcome");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -126,7 +127,12 @@ bot.on(Events.InteractionCreate, async (interaction) => {
 
 bot.on(Events.MessageCreate, async (msg) => {
   try {
-    if (msg.author.bot || !msg.guild) return;
+    if (!msg.guild) return;
+
+    // Must run before ignoring bot messages because Sapphire posts the welcome message.
+    await handleWelcomeMessage(msg, db);
+
+    if (msg.author.bot) return;
 
     if (await handleEventCommand(msg)) return;
 
