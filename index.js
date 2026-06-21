@@ -26,6 +26,7 @@ const {
   handleWelcomeBackfillCommand,
 } = require("./welcome");
 const { handleSupportRedirect } = require("./support");
+const { handleWatcherFlavor } = require("./watcherFlavor");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -37,6 +38,7 @@ for (const key of REQUIRED_ENV) {
 
 const ADMIN_CH = process.env.ADMIN_CHANNEL_ID || "1518059656302301245";
 const TICKET_CHANNEL_ID = process.env.TICKET_CHANNEL_ID || "1516323094548185139";
+const MAIN_CHAT_CHANNEL_ID = process.env.MAIN_CHAT_CHANNEL_ID || "1516269437932670977";
 
 const bot = new Client({
   intents: [
@@ -58,6 +60,24 @@ const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY, {
 
 let rules = {};
 const channels = new Set();
+
+function shouldAnswerWithAssistant(content) {
+  if (!content) return false;
+  if (content.startsWith("!")) return false;
+
+  const text = content.toLowerCase();
+
+  const looksLikeQuestion =
+    text.includes("?") ||
+    /\b(can i|am i allowed|is it allowed|are we allowed|do we allow|how do i|how does|where do i|where is|what are|what is|when is|why is|does the server|do the rules)\b/i.test(text);
+
+  if (!looksLikeQuestion) return false;
+
+  const serverRuleTopic =
+    /\b(rule|rules|allowed|allow|limit|limits|base|building|build|vehicle|vehicles|car|truck|pvp|raid|raiding|steal|stealing|cheat|cheating|map|restart|wipe|shop|shops|trader|traders|parking|garage|claim|claims)\b/i.test(text);
+
+  return serverRuleTopic;
+}
 
 bot.once(Events.ClientReady, async () => {
   console.log(`✅ The Watcher is online as ${bot.user.tag}`);
@@ -194,29 +214,23 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     if (await handleAnnText(msg)) return;
 
+    // Public automatic responses below this point are locked to the main chat only.
+    if (msg.channelId !== MAIN_CHAT_CHANNEL_ID) return;
+
     if (await handleSupportRedirect(msg)) return;
 
-    if (!channels.has(msg.channelId)) return;
+    if (channels.has(msg.channelId) && shouldAnswerWithAssistant(msg.content)) {
+      const txt = Object.values(rules).join("\n\n");
 
-    if (
-      !/rule|limit|how|can i|building|vehicle|steal|cheat|map|restart|shop|bot|server|allow/i.test(
-        msg.content
-      )
-    ) {
-      return;
-    }
+      if (!txt.trim()) {
+        await msg.reply("I do not have the server rules loaded right now.");
+        return;
+      }
 
-    const txt = Object.values(rules).join("\n\n");
+      const model = genai.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    if (!txt.trim()) {
-      await msg.reply("I do not have the server rules loaded right now.");
-      return;
-    }
-
-    const model = genai.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-    const res = await model.generateContent(
-      `You are The Watcher, the Outpost X SCUM server assistant.
+      const res = await model.generateContent(
+        `You are The Watcher, the Outpost X SCUM server assistant.
 
 Answer this question about our SCUM server rules.
 
@@ -227,9 +241,13 @@ QUESTION:
 ${msg.content}
 
 Answer in 1-2 sentences. Be clear, helpful, and do not invent rules.`
-    );
+      );
 
-    await msg.reply(res.response.text());
+      await msg.reply(res.response.text());
+      return;
+    }
+
+    if (await handleWatcherFlavor(msg, genai)) return;
   } catch (err) {
     console.error("❌ Message error:", err);
     msg.reply("Something went wrong while processing that.").catch(() => {});
