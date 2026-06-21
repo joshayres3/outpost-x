@@ -182,6 +182,11 @@ bot.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
+      if (interaction.customId.startsWith("ann_")) {
+        await handlePostMenu(interaction, rules, bot, db, channels);
+        return;
+      }
+
       return;
     }
 
