@@ -144,6 +144,72 @@ discord.once(Events.ClientReady, async (client) => {
 // ─── Interaction Handler ──────────────────────────────────────────────────────
 discord.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isStringSelectMenu()) {
+    // Handle rule section selection for posting
+    if (interaction.customId === "post_which_rules") {
+      const whichRules = interaction.values[0];
+      const pending = pendingPosts[interaction.user.id];
+      
+      if (!pending) {
+        await interaction.reply({ content: "❌ Session expired.", ephemeral: true });
+        return;
+      }
+
+      try {
+        const targetChannel = interaction.guild.channels.cache.get(pending.targetChannelId);
+        if (!targetChannel) {
+          await interaction.update({ content: "❌ Channel not found.", components: [] });
+          return;
+        }
+
+        console.log(`   → Posting ${whichRules} rules to ${targetChannel.name}`);
+
+        // If all_rules, post all except server
+        if (whichRules === "all_rules") {
+          const rulesToPost = { ...liveRules };
+          delete rulesToPost.server; // Remove server info
+          await postRules(targetChannel, rulesToPost, supabase);
+          await interaction.update({ content: `✅ Posted all rules (except Server Info) to <#${targetChannel.id}>!`, components: [] });
+        } else {
+          // Single rule section
+          const sectionContent = liveRules[whichRules];
+          if (!sectionContent) {
+            await interaction.update({ content: "❌ Rule section not found.", components: [] });
+            return;
+          }
+          
+          // Create embed for single rule
+          const { EmbedBuilder } = require("discord.js");
+          const sectionEmojis = {
+            server: "📡", general: "📋", pvp: "⚔️", base: "🏗️",
+            vehicles: "🚗", shops: "🏪", map: "🗺️"
+          };
+          const sectionColors = {
+            server: 0x60a5fa, general: 0xc8a04a, pvp: 0xef4444, base: 0xf59e0b,
+            vehicles: 0x8b5cf6, shops: 0x22c55e, map: 0x3b82f6
+          };
+          
+          const lines = sectionContent.split("\n");
+          const title = lines[0];
+          const body = lines.slice(1).join("\n").trim();
+          
+          const embed = new EmbedBuilder()
+            .setTitle(`${sectionEmojis[whichRules] || "📋"} ${title}`)
+            .setDescription(body || sectionContent)
+            .setColor(sectionColors[whichRules] || 0x3b82f6)
+            .setFooter({ text: "Outpost X Server Rules" });
+          
+          await targetChannel.send({ embeds: [embed] });
+          await interaction.update({ content: `✅ Posted ${title} to <#${targetChannel.id}>!`, components: [] });
+        }
+
+        delete pendingPosts[interaction.user.id];
+      } catch (err) {
+        console.error("❌ Rule posting error:", err.message);
+        await interaction.update({ content: `❌ Error: ${err.message}`, components: [] });
+      }
+      return;
+    }
+
     if (await handlePostWhatSelect(interaction)) return;
     if (await handlePostCategorySelect(interaction)) return;
     if (await handlePostChannelSelect(interaction, liveRules)) return;

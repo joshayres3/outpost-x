@@ -159,7 +159,7 @@ async function handlePostWhereSelect(interaction, liveRules) {
       .setCustomId("post_which_rules")
       .setPlaceholder("Which rules to post?")
       .addOptions([
-        { label: "📋 All Rules", value: "all" },
+        { label: "📋 All Rules (No Server Info)", value: "all_rules" },
         { label: "📡 Server Info", value: "server" },
         { label: "📋 General Rules", value: "general" },
         { label: "⚔️ PvP Rules", value: "pvp" },
@@ -282,7 +282,7 @@ async function handlePostChannelSelect(interaction, liveRules) {
       .setCustomId("post_which_rules")
       .setPlaceholder("Which rules to post?")
       .addOptions([
-        { label: "📋 All Rules", value: "all" },
+        { label: "📋 All Rules (No Server Info)", value: "all_rules" },
         { label: "📡 Server Info", value: "server" },
         { label: "📋 General Rules", value: "general" },
         { label: "⚔️ PvP Rules", value: "pvp" },
