@@ -14,6 +14,12 @@ const WebSocket = require("ws");
 
 const { handlePostMenu, handleAnnText } = require("./poster");
 const { handleHelpButton } = require("./guide");
+const {
+  handleEventCommand,
+  handleEventInteraction,
+  handleEventText,
+  startEventScheduler,
+} = require("./events");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -70,6 +76,8 @@ bot.once(Events.ClientReady, async () => {
     }
 
     console.log(`✅ Assistant in ${channels.size} channel(s)`);
+
+    startEventScheduler(bot, db);
   } catch (err) {
     console.error("❌ Startup database load failed:", err);
   }
@@ -80,11 +88,23 @@ bot.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isButton()) {
       if (interaction.customId.startsWith("help_")) {
         await handleHelpButton(interaction);
+        return;
       }
+
+      if (interaction.customId.startsWith("event_")) {
+        await handleEventInteraction(interaction, bot, db);
+        return;
+      }
+
       return;
     }
 
     if (interaction.isStringSelectMenu()) {
+      if (interaction.customId.startsWith("event_")) {
+        await handleEventInteraction(interaction, bot, db);
+        return;
+      }
+
       await handlePostMenu(interaction, rules, bot, db, channels);
       return;
     }
@@ -107,6 +127,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
 bot.on(Events.MessageCreate, async (msg) => {
   try {
     if (msg.author.bot || !msg.guild) return;
+
+    if (await handleEventCommand(msg)) return;
 
     if (msg.content.toLowerCase() === "!post") {
       const own = msg.member.roles.cache.some((r) => r.name === "Owners");
@@ -136,6 +158,8 @@ bot.on(Events.MessageCreate, async (msg) => {
       msg.delete().catch(() => {});
       return;
     }
+
+    if (await handleEventText(msg)) return;
 
     if (await handleAnnText(msg)) return;
 

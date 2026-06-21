@@ -3,17 +3,18 @@
   "version": "1.0.0",
   "description": "The Watcher - Outpost X SCUM Server Discord Bot",
   "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
   "engines": {
     "node": "22.x"
+  },
+  "scripts": {
+    "start": "node index.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.15.0",
     "@supabase/supabase-js": "^2.43.0",
     "discord.js": "^14.15.0",
     "dotenv": "^16.4.5",
+    "luxon": "^3.5.0",
     "ws": "^8.18.0"
   }
 }
