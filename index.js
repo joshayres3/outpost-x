@@ -4,6 +4,7 @@ const {
   Client,
   Events,
   GatewayIntentBits,
+  Partials,
   ActionRowBuilder,
   StringSelectMenuBuilder,
 } = require("discord.js");
@@ -41,7 +42,9 @@ const bot = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
   ],
+  partials: [Partials.Channel],
 });
 
 const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -141,7 +144,9 @@ bot.on(Events.MessageCreate, async (msg) => {
           "[The Watcher] does not handle private support through DMs yet.",
           `If you need staff, please open a ticket in <#${TICKET_CHANNEL_ID}>.`,
         ].join("\n")
-      ).catch(() => {});
+      ).catch((err) => {
+        console.error("❌ Failed to send DM auto-reply:", err.message);
+      });
 
       return;
     }
