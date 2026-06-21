@@ -72,3 +72,10 @@ bot.on(Events.MessageCreate, async (msg) => {
 });
 
 bot.login(process.env.DISCORD_TOKEN);
+
+// Keep-alive HTTP server for Railway
+const http = require("http");
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end("OK");
+}).listen(3000, () => console.log("   → HTTP server on :3000"));
