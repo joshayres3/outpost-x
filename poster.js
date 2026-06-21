@@ -23,6 +23,12 @@ async function safeReply(interaction, payload) {
   return interaction.reply(payload).catch(() => {});
 }
 
+async function cleanupMenuMessage(interaction) {
+  if (interaction.message && interaction.message.deletable) {
+    await interaction.message.delete().catch(() => {});
+  }
+}
+
 function buildCategoryOptions(guild) {
   return guild.channels.cache
     .filter((c) => c.type === ChannelType.GuildCategory)
@@ -138,10 +144,13 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
   if (session.act === "help") {
     await postGuide(chan);
+
     await safeReply(interaction, {
       content: "✅ Help Center posted.",
       ephemeral: true,
     });
+
+    await cleanupMenuMessage(interaction);
     delete userSession[interaction.user.id];
     return;
   }
@@ -155,6 +164,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
         ephemeral: true,
       });
 
+      await cleanupMenuMessage(interaction);
       delete userSession[interaction.user.id];
       return;
     }
@@ -167,6 +177,8 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
           content: "Server Info section not found.",
           ephemeral: true,
         });
+
+        await cleanupMenuMessage(interaction);
         delete userSession[interaction.user.id];
         return;
       }
@@ -179,6 +191,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
         ephemeral: true,
       });
 
+      await cleanupMenuMessage(interaction);
       delete userSession[interaction.user.id];
       return;
     }
@@ -198,6 +211,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
       ephemeral: true,
     });
 
+    await cleanupMenuMessage(interaction);
     delete userSession[interaction.user.id];
     return;
   }
@@ -217,6 +231,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
       ephemeral: true,
     });
 
+    await cleanupMenuMessage(interaction);
     delete userSession[interaction.user.id];
     return;
   }
@@ -290,6 +305,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
         content: "That menu expired. Run `!post` again.",
         ephemeral: true,
       });
+      await cleanupMenuMessage(interaction);
       return;
     }
 
@@ -307,6 +323,12 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
 
     if (interaction.customId === "post_ch") {
       session.ch = interaction.values[0];
+
+      if (interaction.message) {
+        session.menuMessageId = interaction.message.id;
+        session.menuChannelId = interaction.channelId;
+      }
+
       await finishAction(interaction, session, liveRules, discord, supabase, enabledChannels);
       return;
     }
@@ -328,6 +350,15 @@ async function handleAnnText(msg) {
     const chan = await msg.client.channels.fetch(sess.ch);
     await chan.send(msg.content);
     await msg.reply("✅ Announcement posted.");
+
+    if (sess.menuChannelId && sess.menuMessageId) {
+      const menuChannel = await msg.client.channels.fetch(sess.menuChannelId).catch(() => null);
+      if (menuChannel) {
+        const menuMessage = await menuChannel.messages.fetch(sess.menuMessageId).catch(() => null);
+        if (menuMessage) await menuMessage.delete().catch(() => {});
+      }
+    }
+
     delete userSession[msg.author.id];
     return true;
   } catch (err) {
