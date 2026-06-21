@@ -145,9 +145,20 @@ discord.once(Events.ClientReady, async (client) => {
 // ─── Interaction Handler ──────────────────────────────────────────────────────
 discord.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isStringSelectMenu()) {
-    if (await handlePostWhatSelect(interaction)) return;
-    if (await handleRuleSectionSelect(interaction, liveRules)) return;
-    if (await handleChannelSelect(interaction, liveRules, discord, supabase)) return;
+    if (await handlePostChannelSelect(interaction)) return;
+    if (await handlePostActionSelect(interaction)) return;
+    if (await handlePostRuleSectionSelect(interaction)) return;
+    
+    // Execute the actual post action
+    try {
+      await executePostAction(interaction, liveRules, discord, supabase);
+      const data = require("./poster").tempData[interaction.user.id];
+      if (data && !data.section && data.action !== "announce") {
+        await interaction.reply({ content: `✅ Posted!`, ephemeral: true });
+      }
+    } catch (err) {
+      // Error already logged in executePostAction
+    }
     return;
   }
   if (interaction.isButton()) {
@@ -265,19 +276,8 @@ discord.on("messageCreate", async (message) => {
         return;
       }
       
-      const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
-      const selectWhat = new StringSelectMenuBuilder()
-        .setCustomId("post_what")
-        .setPlaceholder("What do you want to do?")
-        .addOptions([
-          { label: "📚 Player Help Center", description: "Comprehensive survival guides & mechanics", value: "help" },
-          { label: "📋 Server Rules", description: "Post the full server rules", value: "rules" },
-          { label: "🤖 Enable Assistant Mode", description: "Turn on rule answers in a channel", value: "assistant_on" },
-          { label: "🔇 Disable Assistant Mode", description: "Turn off assistant in a channel", value: "assistant_off" },
-          { label: "📣 Announcement", description: "Format and post an announcement", value: "announce" },
-        ]);
-      const row = new ActionRowBuilder().addComponents(selectWhat);
-      await message.reply({ content: "**What do you want to do?**", components: [row] });
+      const row = new ActionRowBuilder().addComponents(buildPostChannelMenu());
+      await message.reply({ content: "**Which channel?**", components: [row] });
       try { await message.delete(); } catch(e) {}
       console.log("   ✅ !post menu sent");
     } catch (err) {
@@ -404,8 +404,10 @@ discord.login(process.env.DISCORD_TOKEN);
 
 // ─── Import handlers ──────────────────────────────────────────────────────────
 const { 
-  handlePostWhatSelect,
-  handleRuleSectionSelect,
-  handleChannelSelect,
+  buildPostChannelMenu,
+  handlePostChannelSelect,
+  handlePostActionSelect,
+  handlePostRuleSectionSelect,
+  executePostAction,
   handleAnnouncementText,
 } = require("./poster");

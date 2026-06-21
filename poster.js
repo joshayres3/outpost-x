@@ -10,122 +10,141 @@ const { postHelpPanel } = require("./guide");
 // Store temporary data per user (cleared after use)
 const tempData = {};
 
-// ─── STEP 1: What do you want to do? ───────────────────────────────────────
-async function handlePostWhatSelect(interaction) {
-  if (interaction.customId !== "post_what") return false;
+// ═══════════════════════════════════════════════════════════════════════════
+// !POST FLOW: Channel First → Action Second
+// ═══════════════════════════════════════════════════════════════════════════
 
-  const what = interaction.values[0];
+// ─── STEP 1: Pick channel ──────────────────────────────────────────────────
+async function handlePostChannelSelect(interaction) {
+  if (interaction.customId !== "post_channel") return false;
 
-  if (what === "rules") {
-    // Go directly to section selection
-    await interaction.reply({
-      content: "**Which rule section to post?**",
-      components: [buildRuleSectionMenu()],
-      ephemeral: true,
-    });
-    return true;
-  }
-
-  if (what === "help") {
-    // Go directly to channel selection
-    tempData[interaction.user.id] = { action: "help" };
-    await interaction.reply({
-      content: "**Where to post Help Center?**",
-      components: [buildChannelMenu("help_channel")],
-      ephemeral: true,
-    });
-    return true;
-  }
-
-  if (what === "assistant_on" || what === "assistant_off") {
-    tempData[interaction.user.id] = { action: what };
-    await interaction.reply({
-      content: `**Which channel to ${what === "assistant_on" ? "enable" : "disable"} assistant?**`,
-      components: [buildChannelMenu("assistant_channel")],
-      ephemeral: true,
-    });
-    return true;
-  }
-
-  if (what === "announce") {
-    tempData[interaction.user.id] = { action: "announce" };
-    await interaction.reply({
-      content: "**Which channel for announcement?**",
-      components: [buildChannelMenu("announce_channel")],
-      ephemeral: true,
-    });
-    return true;
-  }
-
-  return true;
-}
-
-// ─── STEP 2: Rule section selected ─────────────────────────────────────────
-async function handleRuleSectionSelect(interaction, liveRules) {
-  if (interaction.customId !== "rule_section") return false;
-
-  const section = interaction.values[0];
-  tempData[interaction.user.id] = { action: "rules", section };
+  const channelId = interaction.values[0];
+  tempData[interaction.user.id] = { channelId };
 
   await interaction.reply({
-    content: `**Post **${section}** to which channel?**`,
-    components: [buildChannelMenu("rules_channel")],
+    content: "**What do you want to post to this channel?**",
+    components: [buildPostActionMenu()],
     ephemeral: true,
   });
   return true;
 }
 
-// ─── STEP 3: Channel selected (for any action) ─────────────────────────────
-async function handleChannelSelect(interaction, liveRules, discord, supabase) {
-  const customId = interaction.customId;
-  if (!customId.endsWith("_channel")) return false;
+// ─── STEP 2: Pick what to post ─────────────────────────────────────────────
+async function handlePostActionSelect(interaction) {
+  if (interaction.customId !== "post_action") return false;
 
-  const channelId = interaction.values[0];
-  const userId = interaction.user.id;
-  const data = tempData[userId];
+  const action = interaction.values[0];
+  const data = tempData[interaction.user.id];
 
   if (!data) {
     await interaction.reply({ content: "❌ Session expired.", ephemeral: true });
     return true;
   }
 
+  // HELP CENTER - post directly
+  if (action === "help") {
+    data.action = "help";
+    await interaction.reply({
+      content: "**Posting Help Center...**",
+      ephemeral: true,
+    });
+    return true;
+  }
+
+  // RULES - pick section
+  if (action === "rules") {
+    data.action = "rules";
+    await interaction.reply({
+      content: "**Which rule section?**",
+      components: [buildRuleSectionMenu()],
+      ephemeral: true,
+    });
+    return true;
+  }
+
+  // ASSISTANT ON/OFF - do it now
+  if (action === "assistant_on" || action === "assistant_off") {
+    data.action = action;
+    await interaction.reply({
+      content: `**${action === "assistant_on" ? "Enabling" : "Disabling"} assistant...**`,
+      ephemeral: true,
+    });
+    return true;
+  }
+
+  // ANNOUNCEMENT - wait for text
+  if (action === "announce") {
+    data.action = "announce";
+    await interaction.reply({
+      content: `**Type your announcement** (will post to <#${data.channelId}>):`,
+      ephemeral: true,
+    });
+    return true;
+  }
+
+  return true;
+}
+
+// ─── STEP 3: Rule section selected ─────────────────────────────────────────
+async function handlePostRuleSectionSelect(interaction) {
+  if (interaction.customId !== "post_rule_section") return false;
+
+  const section = interaction.values[0];
+  const data = tempData[interaction.user.id];
+
+  if (!data || data.action !== "rules") {
+    await interaction.reply({ content: "❌ Session expired.", ephemeral: true });
+    return true;
+  }
+
+  data.section = section;
+  await interaction.reply({
+    content: `**Posting ${section}...**`,
+    ephemeral: true,
+  });
+  return true;
+}
+
+// ─── STEP 4: Execute the action ────────────────────────────────────────────
+async function executePostAction(interaction, liveRules, discord, supabase) {
+  const data = tempData[interaction.user.id];
+  
+  if (!data || !data.channelId) {
+    await interaction.reply({ content: "❌ Session expired.", ephemeral: true });
+    return;
+  }
+
   try {
-    const channel = await discord.channels.fetch(channelId);
+    const channel = await discord.channels.fetch(data.channelId);
     if (!channel) throw new Error("Channel not found");
 
     // HELP CENTER
     if (data.action === "help") {
+      console.log(`   → Posting Help Center to ${channel.name}`);
       await postHelpPanel(channel);
-      await interaction.reply({
-        content: `✅ Help Center posted to <#${channelId}>!`,
-        ephemeral: true,
-      });
-      delete tempData[userId];
-      return true;
+      console.log(`   ✅ Help Center posted`);
+      delete tempData[interaction.user.id];
+      return;
     }
 
     // RULES
     if (data.action === "rules" && data.section) {
+      console.log(`   → Posting rules section: ${data.section} to ${channel.name}`);
+      
       const content = liveRules[data.section];
-      if (!content) throw new Error("Rule section not found");
+      if (!content) {
+        console.error(`   ❌ Rule section "${data.section}" not found`);
+        console.log(`   Available: ${Object.keys(liveRules).join(", ")}`);
+        throw new Error(`Rule section "${data.section}" not found`);
+      }
 
       const sectionEmojis = {
-        server: "📡",
-        general: "📋",
-        pvp: "⚔️",
-        base: "🏗️",
-        vehicles: "🚗",
-        shops: "🏪",
-        map: "🗺️",
+        server: "📡", general: "📋", pvp: "⚔️", base: "🏗️",
+        vehicles: "🚗", shops: "🏪", map: "🗺️",
       };
       const sectionColors = {
-        server: 0x60a5fa,
-        general: 0xc8a04a,
-        pvp: 0xef4444,
-        base: 0xf59e0b,
-        vehicles: 0x8b5cf6,
-        shops: 0x22c55e,
-        map: 0x3b82f6,
+        server: 0x60a5fa, general: 0xc8a04a, pvp: 0xef4444, base: 0xf59e0b,
+        vehicles: 0x8b5cf6, shops: 0x22c55e, map: 0x3b82f6,
       };
 
       const lines = content.split("\n");
@@ -139,59 +158,34 @@ async function handleChannelSelect(interaction, liveRules, discord, supabase) {
         .setFooter({ text: "Outpost X Server Rules" });
 
       await channel.send({ embeds: [embed] });
-      await interaction.reply({
-        content: `✅ Posted to <#${channelId}>!`,
-        ephemeral: true,
-      });
-      delete tempData[userId];
-      return true;
+      console.log(`   ✅ Rules posted`);
+      delete tempData[interaction.user.id];
+      return;
     }
 
-    // ASSISTANT ON/OFF
+    // ASSISTANT ON
     if (data.action === "assistant_on") {
-      await supabase
-        .from("assistant_channels")
-        .insert({ channel_id: channelId });
-      await interaction.reply({
-        content: `✅ Assistant enabled in <#${channelId}>!`,
-        ephemeral: true,
-      });
-      delete tempData[userId];
-      return true;
+      console.log(`   → Enabling assistant in ${channel.name}`);
+      await supabase.from("assistant_channels").insert({ channel_id: data.channelId });
+      console.log(`   ✅ Assistant enabled`);
+      delete tempData[interaction.user.id];
+      return;
     }
 
+    // ASSISTANT OFF
     if (data.action === "assistant_off") {
-      await supabase
-        .from("assistant_channels")
-        .delete()
-        .eq("channel_id", channelId);
-      await interaction.reply({
-        content: `✅ Assistant disabled in <#${channelId}>!`,
-        ephemeral: true,
-      });
-      delete tempData[userId];
-      return true;
+      console.log(`   → Disabling assistant in ${channel.name}`);
+      await supabase.from("assistant_channels").delete().eq("channel_id", data.channelId);
+      console.log(`   ✅ Assistant disabled`);
+      delete tempData[interaction.user.id];
+      return;
     }
 
-    // ANNOUNCEMENT
-    if (data.action === "announce") {
-      tempData[userId].channelId = channelId;
-      await interaction.reply({
-        content: `Type your announcement (will post to <#${channelId}>):`,
-        ephemeral: true,
-      });
-      return true;
-    }
   } catch (err) {
-    console.error(`Error: ${err.message}`);
-    await interaction.reply({
-      content: `❌ Error: ${err.message}`,
-      ephemeral: true,
-    });
-    delete tempData[userId];
+    console.error(`   ❌ Error: ${err.message}`);
+    delete tempData[interaction.user.id];
+    throw err;
   }
-
-  return true;
 }
 
 // ─── Handle announcement text ──────────────────────────────────────────────
@@ -203,25 +197,54 @@ async function handleAnnouncementText(message, discord) {
     const channel = await discord.channels.fetch(data.channelId);
     if (!channel) throw new Error("Channel not found");
 
+    console.log(`   → Posting announcement to ${channel.name}`);
     await channel.send(message.content);
-    await message.reply({
-      content: `✅ Announcement posted to <#${data.channelId}>!`,
-    });
+    console.log(`   ✅ Announcement posted`);
+    await message.reply({ content: `✅ Posted to <#${data.channelId}>!` });
     delete tempData[message.author.id];
   } catch (err) {
-    console.error(`Announcement error: ${err.message}`);
-    await message.reply({
-      content: `❌ Error: ${err.message}`,
-    });
+    console.error(`   ❌ Announcement error: ${err.message}`);
+    await message.reply({ content: `❌ Error: ${err.message}` });
+    delete tempData[message.author.id];
   }
   return true;
 }
 
-// ─── UI Builders ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// UI BUILDERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function buildPostChannelMenu() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("post_channel")
+      .setPlaceholder("Select channel...")
+      .addOptions([
+        { label: "Admin Channel", value: "1518059656302301245" },
+        { label: "Main Chat", value: "1516269437932670977" },
+      ])
+  );
+}
+
+function buildPostActionMenu() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("post_action")
+      .setPlaceholder("What to post?")
+      .addOptions([
+        { label: "📚 Help Center", value: "help" },
+        { label: "📋 Rules", value: "rules" },
+        { label: "🤖 Enable Assistant", value: "assistant_on" },
+        { label: "🔇 Disable Assistant", value: "assistant_off" },
+        { label: "📣 Announcement", value: "announce" },
+      ])
+  );
+}
+
 function buildRuleSectionMenu() {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId("rule_section")
+      .setCustomId("post_rule_section")
       .setPlaceholder("Select section...")
       .addOptions([
         { label: "📡 Server Info", value: "server" },
@@ -235,22 +258,12 @@ function buildRuleSectionMenu() {
   );
 }
 
-function buildChannelMenu(customId) {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(customId)
-      .setPlaceholder("Select channel...")
-      .addOptions([
-        { label: "Admin Channel", value: "1518059656302301245" },
-        { label: "Main Chat", value: "1516269437932670977" },
-      ])
-  );
-}
-
 module.exports = {
-  handlePostWhatSelect,
-  handleRuleSectionSelect,
-  handleChannelSelect,
+  buildPostChannelMenu,
+  handlePostChannelSelect,
+  handlePostActionSelect,
+  handlePostRuleSectionSelect,
+  executePostAction,
   handleAnnouncementText,
-  tempData, // For debugging
+  tempData,
 };
