@@ -65,18 +65,34 @@ function shouldAnswerWithAssistant(content) {
   if (!content) return false;
   if (content.startsWith("!")) return false;
 
-  const text = content.toLowerCase();
+  const text = content.toLowerCase().trim().replace(/\s+/g, " ");
 
-  const looksLikeQuestion =
-    text.includes("?") ||
-    /\b(can i|am i allowed|is it allowed|are we allowed|do we allow|how do i|how does|where do i|where is|what are|what is|when is|why is|does the server|do the rules)\b/i.test(text);
+  const ruleQuestionPatterns = [
+    // Direct rule wording.
+    /\b(rule|rules|server rule|server rules)\b/i,
+    /\bwhat (are|is).*\b(rule|rules|limit|limits)\b/i,
+    /\bdo we have .*\brules\b/i,
+    /\bare there .*\brules\b/i,
+    /\brules for\b/i,
 
-  if (!looksLikeQuestion) return false;
+    // Common allowed/not allowed wording.
+    /\b(can i|can we|am i allowed to|are we allowed to|is it allowed to|are players allowed to)\b.*\b(build|park|claim|own|have|use|kill|raid|steal|lockpick|camp)\b/i,
 
-  const serverRuleTopic =
-    /\b(rule|rules|allowed|allow|limit|limits|base|building|build|vehicle|vehicles|car|truck|pvp|raid|raiding|steal|stealing|cheat|cheating|map|restart|wipe|shop|shops|trader|traders|parking|garage|claim|claims)\b/i.test(text);
+    // Specific server limit questions.
+    /\bhow many\b.*\b(flags|flag|vehicles|vehicle|cars|car|trucks|truck|bases|base|claims|claim)\b.*\b(can i|can we|am i allowed|are we allowed|own|have|place|build)\b/i,
+    /\bwhat('?s| is| are)?\b.*\b(limit|limits)\b.*\b(flags|flag|vehicles|vehicle|cars|car|trucks|truck|bases|base|claims|claim)\b/i,
 
-  return serverRuleTopic;
+    // PvP / player combat questions.
+    /\b(can i|can we|am i allowed to|are we allowed to|is it allowed to)\b.*\b(kill|shoot|raid|rob|steal from|lockpick)\b.*\b(player|players|someone|people|base|vehicle|car|truck)\b/i,
+
+    // Trader / safezone / parking rule questions.
+    /\b(can i|can we|am i allowed to|are we allowed to|is it allowed to)\b.*\b(park|leave|store|claim)\b.*\b(trader|safezone|safe zone|outpost|vehicle|car|truck)\b/i,
+
+    // Timers that usually mean server mechanics.
+    /\b(raid timer|raid timers|restart timer|restart timers|purge timer|purge timers|cooldown|cooldowns)\b/i,
+  ];
+
+  return ruleQuestionPatterns.some((pattern) => pattern.test(text));
 }
 
 bot.once(Events.ClientReady, async () => {
