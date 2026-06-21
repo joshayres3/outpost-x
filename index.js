@@ -6,7 +6,7 @@ const { createClient } = require("@supabase/supabase-js");
 // ─── Config ───────────────────────────────────────────────────────────────────
 const ADMIN_CHANNEL_ID  = "1518059656302301245";
 const ASSISTANT_CHANNEL_ID = "1516269437932670977";
-const ALLOWED_ROLES     = ["Owner", "Admin"];
+const ALLOWED_ROLES     = ["Owners", "Admin"];
 const ADMIN_WHITELIST   = [];
 
 // ─── Initialize clients ───────────────────────────────────────────────────────
@@ -211,7 +211,7 @@ discord.on("messageCreate", async (message) => {
   if (userMessage.toLowerCase() === "!ruleupdate" && message.guild) {
     try {
       console.log("   → Processing !ruleupdate");
-      const isOwner = message.member.roles.cache.some((r) => r.name === "Owner");
+      const isOwner = message.member.roles.cache.some((r) => r.name === "Owners");
       const isAdmin = message.member.roles.cache.some((r) => r.name === "Admin");
       
       if (!isOwner && !isAdmin) {
@@ -250,7 +250,7 @@ discord.on("messageCreate", async (message) => {
   if (userMessage.toLowerCase() === "!post" && message.guild) {
     try {
       console.log("   → Processing !post");
-      const isOwner = message.member.roles.cache.some((r) => r.name === "Owner");
+      const isOwner = message.member.roles.cache.some((r) => r.name === "Owners");
       const isAdmin = message.member.roles.cache.some((r) => r.name === "Admin");
       
       if (!isOwner && !isAdmin) {
