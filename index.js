@@ -1,9 +1,21 @@
 require("dotenv").config();
+const http = require("http");
 const { Client, Events, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder, ChannelType } = require("discord.js");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
 
 const { handlePostInteraction, handleAnnouncementText, userSessions } = require("./poster");
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HEALTH CHECK SERVER (for Railway)
+// ═══════════════════════════════════════════════════════════════════════════
+
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end("OK");
+}).listen(3000);
+
+console.log("   → Health check server running on :3000");
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONFIG
