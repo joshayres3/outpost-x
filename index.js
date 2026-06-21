@@ -209,53 +209,77 @@ discord.on("messageCreate", async (message) => {
 
   // ── !ruleupdate command works from ANY channel for OWNERS, admin channel only for ADMINS ───────────────────
   if (userMessage.toLowerCase() === "!ruleupdate" && message.guild) {
-    const isOwner = message.member.roles.cache.some((r) => r.name === "Owner");
-    const isAdmin = message.member.roles.cache.some((r) => r.name === "Admin");
-    
-    if (!isOwner && !isAdmin) return; // No permission
-    if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) return; // Admin must be in admin channel
-    
-    const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
-    const selectSection = new StringSelectMenuBuilder()
-      .setCustomId("ruleupdate_select_section")
-      .setPlaceholder("Which section do you want to update?")
-      .addOptions([
-        { label: "📋 General Rules", description: "Core server rules", value: "general" },
-        { label: "⚔️ PvP Rules", description: "PvP guidelines", value: "pvp" },
-        { label: "🏗️ Base Building Rules", description: "Building restrictions", value: "base" },
-        { label: "🚗 Vehicle Rules", description: "Vehicle guidelines", value: "vehicles" },
-        { label: "🏪 Business & Shop Rules", description: "Shop and economy rules", value: "shops" },
-        { label: "🗺️ Map Info", description: "Map and location info", value: "map" },
-        { label: "📡 Server Info", description: "Server details", value: "server" },
-      ]);
-    const row = new ActionRowBuilder().addComponents(selectSection);
-    await message.reply({ content: "**Which rule section do you want to update?**", components: [row] });
-    try { await message.delete(); } catch(e) {}
+    try {
+      console.log("   → Processing !ruleupdate");
+      const isOwner = message.member.roles.cache.some((r) => r.name === "Owner");
+      const isAdmin = message.member.roles.cache.some((r) => r.name === "Admin");
+      
+      if (!isOwner && !isAdmin) {
+        console.log("   → User has no permission");
+        return;
+      }
+      if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) {
+        console.log("   → Admin can only use in admin channel");
+        return;
+      }
+      
+      const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
+      const selectSection = new StringSelectMenuBuilder()
+        .setCustomId("ruleupdate_select_section")
+        .setPlaceholder("Which section do you want to update?")
+        .addOptions([
+          { label: "📋 General Rules", description: "Core server rules", value: "general" },
+          { label: "⚔️ PvP Rules", description: "PvP guidelines", value: "pvp" },
+          { label: "🏗️ Base Building Rules", description: "Building restrictions", value: "base" },
+          { label: "🚗 Vehicle Rules", description: "Vehicle guidelines", value: "vehicles" },
+          { label: "🏪 Business & Shop Rules", description: "Shop and economy rules", value: "shops" },
+          { label: "🗺️ Map Info", description: "Map and location info", value: "map" },
+          { label: "📡 Server Info", description: "Server details", value: "server" },
+        ]);
+      const row = new ActionRowBuilder().addComponents(selectSection);
+      await message.reply({ content: "**Which rule section do you want to update?**", components: [row] });
+      try { await message.delete(); } catch(e) {}
+      console.log("   ✅ !ruleupdate menu sent");
+    } catch (err) {
+      console.error("   ❌ !ruleupdate error:", err.message);
+    }
     return;
   }
 
   // ── !post command works from ANY channel for OWNERS, admin channel only for ADMINS ─────────────────────────
   if (userMessage.toLowerCase() === "!post" && message.guild) {
-    const isOwner = message.member.roles.cache.some((r) => r.name === "Owner");
-    const isAdmin = message.member.roles.cache.some((r) => r.name === "Admin");
-    
-    if (!isOwner && !isAdmin) return; // No permission
-    if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) return; // Admin must be in admin channel
-    
-    const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
-    const selectWhat = new StringSelectMenuBuilder()
-      .setCustomId("post_select_what")
-      .setPlaceholder("What do you want to do?")
-      .addOptions([
-        { label: "📖 Player Survival Guide", description: "Interactive guide with 6 gameplay topics", value: "guide" },
-        { label: "📋 Server Rules", description: "Post the full server rules", value: "rules" },
-        { label: "🤖 Enable Assistant Mode", description: "Turn on rule answers in a channel", value: "assistant_on" },
-        { label: "🔇 Disable Assistant Mode", description: "Turn off assistant in a channel", value: "assistant_off" },
-        { label: "📣 Announcement", description: "Format and post an announcement", value: "announce" },
-      ]);
-    const row = new ActionRowBuilder().addComponents(selectWhat);
-    await message.reply({ content: "**What do you want to do?**", components: [row] });
-    try { await message.delete(); } catch(e) {}
+    try {
+      console.log("   → Processing !post");
+      const isOwner = message.member.roles.cache.some((r) => r.name === "Owner");
+      const isAdmin = message.member.roles.cache.some((r) => r.name === "Admin");
+      
+      if (!isOwner && !isAdmin) {
+        console.log("   → User has no permission");
+        return;
+      }
+      if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) {
+        console.log("   → Admin can only use in admin channel");
+        return;
+      }
+      
+      const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
+      const selectWhat = new StringSelectMenuBuilder()
+        .setCustomId("post_select_what")
+        .setPlaceholder("What do you want to do?")
+        .addOptions([
+          { label: "📖 Player Survival Guide", description: "Interactive guide with 6 gameplay topics", value: "guide" },
+          { label: "📋 Server Rules", description: "Post the full server rules", value: "rules" },
+          { label: "🤖 Enable Assistant Mode", description: "Turn on rule answers in a channel", value: "assistant_on" },
+          { label: "🔇 Disable Assistant Mode", description: "Turn off assistant in a channel", value: "assistant_off" },
+          { label: "📣 Announcement", description: "Format and post an announcement", value: "announce" },
+        ]);
+      const row = new ActionRowBuilder().addComponents(selectWhat);
+      await message.reply({ content: "**What do you want to do?**", components: [row] });
+      try { await message.delete(); } catch(e) {}
+      console.log("   ✅ !post menu sent");
+    } catch (err) {
+      console.error("   ❌ !post error:", err.message);
+    }
     return;
   }
 
