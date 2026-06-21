@@ -195,9 +195,17 @@ discord.on(Events.InteractionCreate, async (interaction) => {
 // ─── Message Handler ──────────────────────────────────────────────────────────
 discord.on("messageCreate", async (message) => {
   try {
-    if (message.author.bot) return;
+    console.log(`📨 Message received: "${message.content}" from ${message.author.tag}`);
+    
+    if (message.author.bot) {
+      console.log("   → Ignoring bot message");
+      return;
+    }
     const userMessage = message.content.trim();
-    if (!userMessage) return;
+    if (!userMessage) {
+      console.log("   → Empty message");
+      return;
+    }
 
   // ── !ruleupdate command works from ANY channel for OWNERS, admin channel only for ADMINS ───────────────────
   if (userMessage.toLowerCase() === "!ruleupdate" && message.guild) {
