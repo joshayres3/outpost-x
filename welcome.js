@@ -9,6 +9,19 @@ const RULES_CHANNEL_ID =
 const GAME_HELP_CHANNEL_ID =
   process.env.GAME_HELP_CHANNEL_ID || "1518081954119942227";
 
+const ADMIN_CH = process.env.ADMIN_CHANNEL_ID || "1518059656302301245";
+
+function isStaff(member) {
+  if (!member) return false;
+  const own = member.roles.cache.some((r) => r.name === "Owners");
+  const adm = member.roles.cache.some((r) => r.name === "Admin");
+  return own || adm;
+}
+
+function isAdminChannel(channelId) {
+  return channelId === ADMIN_CH;
+}
+
 function buildWelcomeEmbed() {
   return new EmbedBuilder()
     .setTitle("Welcome to Outpost X")
@@ -77,6 +90,24 @@ async function sendWelcomeDm(user) {
   }
 }
 
+async function welcomeUserOnce(db, user, sourceMessageId) {
+  if (!user || user.bot) {
+    return { skippedBot: true };
+  }
+
+  const alreadyWelcomed = await hasAlreadyWelcomed(db, user.id);
+  if (alreadyWelcomed) {
+    return { already: true };
+  }
+
+  const dmSent = await sendWelcomeDm(user);
+
+  // Mark either way so every player is attempted only once ever.
+  await markWelcomed(db, user, sourceMessageId, dmSent);
+
+  return dmSent ? { sent: true } : { failed: true };
+}
+
 async function handleWelcomeMessage(msg, db) {
   if (!msg.guild) return false;
   if (msg.channelId !== WELCOME_SOURCE_CHANNEL_ID) return false;
@@ -86,18 +117,139 @@ async function handleWelcomeMessage(msg, db) {
   if (!mentionedUsers.length) return false;
 
   for (const user of mentionedUsers) {
-    const alreadyWelcomed = await hasAlreadyWelcomed(db, user.id);
-    if (alreadyWelcomed) continue;
-
-    const dmSent = await sendWelcomeDm(user);
-
-    // Mark either way so every player is attempted only once ever.
-    await markWelcomed(db, user, msg.id, dmSent);
+    await welcomeUserOnce(db, user, msg.id);
   }
 
   return false;
 }
 
+async function fetchWelcomeMessages(channel, limit) {
+  const collected = [];
+  let before;
+
+  while (collected.length < limit) {
+    const remaining = limit - collected.length;
+    const batchSize = Math.min(100, remaining);
+
+    const options = { limit: batchSize };
+    if (before) options.before = before;
+
+    const messages = await channel.messages.fetch(options);
+    if (!messages.size) break;
+
+    const batch = [...messages.values()];
+    collected.push(...batch);
+
+    before = batch[batch.length - 1].id;
+
+    if (messages.size < batchSize) break;
+  }
+
+  return collected;
+}
+
+async function handleWelcomeBackfillCommand(msg, bot, db) {
+  const lower = msg.content.toLowerCase();
+
+  if (!lower.startsWith("!welcomebackfill")) return false;
+
+  if (!msg.guild) return true;
+
+  if (!isAdminChannel(msg.channelId)) {
+    await msg.reply(`Use \`!welcomebackfill\` in the admin channel only: <#${ADMIN_CH}>.`).catch(() => {});
+    return true;
+  }
+
+  if (!isStaff(msg.member)) return true;
+
+  const parts = msg.content.trim().split(/\s+/);
+  const requestedLimit = Number.parseInt(parts[1], 10);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(requestedLimit, 500))
+    : 200;
+
+  const progressMsg = await msg.reply(
+    `⏳ Running welcome DM backfill. Checking the last ${limit} welcome messages...`
+  ).catch(() => null);
+
+  try {
+    const welcomeChannel = await bot.channels.fetch(WELCOME_SOURCE_CHANNEL_ID);
+
+    if (!welcomeChannel || !welcomeChannel.messages) {
+      if (progressMsg) {
+        await progressMsg.edit("Could not read the welcome channel. Check bot permissions.").catch(() => {});
+      }
+      return true;
+    }
+
+    const messages = await fetchWelcomeMessages(welcomeChannel, limit);
+
+    let checkedMessages = 0;
+    let mentionedUsers = 0;
+    let sent = 0;
+    let already = 0;
+    let failed = 0;
+    let skippedBot = 0;
+
+    const seenThisRun = new Set();
+
+    for (const welcomeMsg of messages.reverse()) {
+      checkedMessages++;
+
+      const users = [...welcomeMsg.mentions.users.values()].filter((user) => !user.bot);
+
+      for (const user of users) {
+        if (seenThisRun.has(user.id)) continue;
+        seenThisRun.add(user.id);
+
+        mentionedUsers++;
+
+        const result = await welcomeUserOnce(db, user, welcomeMsg.id);
+
+        if (result.sent) sent++;
+        if (result.already) already++;
+        if (result.failed) failed++;
+        if (result.skippedBot) skippedBot++;
+
+        // Light throttle so we do not hammer Discord DMs.
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+    }
+
+    const summary = [
+      "✅ Welcome DM backfill complete.",
+      "",
+      `Checked welcome messages: ${checkedMessages}`,
+      `Unique mentioned players: ${mentionedUsers}`,
+      `DMs sent: ${sent}`,
+      `Already welcomed/skipped: ${already}`,
+      `DMs blocked/failed, silently marked: ${failed}`,
+      skippedBot ? `Bot mentions skipped: ${skippedBot}` : null,
+      "",
+      "Players are marked after the attempt, so this command will not spam the same people again.",
+    ].filter(Boolean).join("\n");
+
+    if (progressMsg) {
+      await progressMsg.edit(summary).catch(() => {});
+    } else {
+      await msg.reply(summary).catch(() => {});
+    }
+
+    return true;
+  } catch (err) {
+    console.error("❌ Welcome backfill failed:", err);
+
+    if (progressMsg) {
+      await progressMsg.edit(`❌ Welcome backfill failed: ${err.message}`).catch(() => {});
+    } else {
+      await msg.reply(`❌ Welcome backfill failed: ${err.message}`).catch(() => {});
+    }
+
+    return true;
+  }
+}
+
 module.exports = {
   handleWelcomeMessage,
+  handleWelcomeBackfillCommand,
 };

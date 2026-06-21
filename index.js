@@ -20,7 +20,10 @@ const {
   handleEventText,
   startEventScheduler,
 } = require("./events");
-const { handleWelcomeMessage } = require("./welcome");
+const {
+  handleWelcomeMessage,
+  handleWelcomeBackfillCommand,
+} = require("./welcome");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -133,6 +136,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
+
+    if (await handleWelcomeBackfillCommand(msg, bot, db)) return;
 
     if (await handleEventCommand(msg)) return;
 
