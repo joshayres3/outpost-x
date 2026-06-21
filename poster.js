@@ -4,7 +4,6 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
-  ChannelType,
 } = require("discord.js");
 const { postGuidePanel } = require("./guide");
 
