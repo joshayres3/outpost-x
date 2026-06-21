@@ -111,7 +111,7 @@ async function executePostAction(interaction, liveRules, discord, supabase) {
   
   if (!data || !data.channelId) {
     await interaction.reply({ content: "❌ Session expired.", ephemeral: true });
-    return;
+    return false;
   }
 
   try {
@@ -123,8 +123,9 @@ async function executePostAction(interaction, liveRules, discord, supabase) {
       console.log(`   → Posting Help Center to ${channel.name}`);
       await postHelpPanel(channel);
       console.log(`   ✅ Help Center posted`);
+      await interaction.reply({ content: `✅ Help Center posted to <#${data.channelId}>!`, ephemeral: true });
       delete tempData[interaction.user.id];
-      return;
+      return true;
     }
 
     // RULES
@@ -159,8 +160,9 @@ async function executePostAction(interaction, liveRules, discord, supabase) {
 
       await channel.send({ embeds: [embed] });
       console.log(`   ✅ Rules posted`);
+      await interaction.reply({ content: `✅ Posted to <#${data.channelId}>!`, ephemeral: true });
       delete tempData[interaction.user.id];
-      return;
+      return true;
     }
 
     // ASSISTANT ON
@@ -168,8 +170,9 @@ async function executePostAction(interaction, liveRules, discord, supabase) {
       console.log(`   → Enabling assistant in ${channel.name}`);
       await supabase.from("assistant_channels").insert({ channel_id: data.channelId });
       console.log(`   ✅ Assistant enabled`);
+      await interaction.reply({ content: `✅ Assistant enabled in <#${data.channelId}>!`, ephemeral: true });
       delete tempData[interaction.user.id];
-      return;
+      return true;
     }
 
     // ASSISTANT OFF
@@ -177,15 +180,19 @@ async function executePostAction(interaction, liveRules, discord, supabase) {
       console.log(`   → Disabling assistant in ${channel.name}`);
       await supabase.from("assistant_channels").delete().eq("channel_id", data.channelId);
       console.log(`   ✅ Assistant disabled`);
+      await interaction.reply({ content: `✅ Assistant disabled in <#${data.channelId}>!`, ephemeral: true });
       delete tempData[interaction.user.id];
-      return;
+      return true;
     }
 
   } catch (err) {
     console.error(`   ❌ Error: ${err.message}`);
+    await interaction.reply({ content: `❌ Error: ${err.message}`, ephemeral: true });
     delete tempData[interaction.user.id];
     throw err;
   }
+  
+  return false;
 }
 
 // ─── Handle announcement text ──────────────────────────────────────────────

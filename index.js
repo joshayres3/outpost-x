@@ -1,5 +1,5 @@
 require("dotenv").config();
-const { Client, Events, GatewayIntentBits } = require("discord.js");
+const { Client, Events, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder } = require("discord.js");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -149,15 +149,19 @@ discord.on(Events.InteractionCreate, async (interaction) => {
     if (await handlePostActionSelect(interaction)) return;
     if (await handlePostRuleSectionSelect(interaction)) return;
     
-    // Execute the actual post action
-    try {
-      await executePostAction(interaction, liveRules, discord, supabase);
-      const data = require("./poster").tempData[interaction.user.id];
-      if (data && !data.section && data.action !== "announce") {
-        await interaction.reply({ content: `✅ Posted!`, ephemeral: true });
+    // After all selections, execute the post action
+    const { tempData } = require("./poster");
+    const data = tempData[interaction.user.id];
+    if (data && data.channelId && data.action) {
+      try {
+        await executePostAction(interaction, liveRules, discord, supabase);
+        // Success - user already got response from executePostAction
+      } catch (err) {
+        console.error(`❌ Post error: ${err.message}`);
+        try {
+          await interaction.reply({ content: `❌ Error: ${err.message}`, ephemeral: true });
+        } catch(e) {}
       }
-    } catch (err) {
-      // Error already logged in executePostAction
     }
     return;
   }
