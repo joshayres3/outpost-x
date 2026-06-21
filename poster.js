@@ -3,6 +3,8 @@ const {
   StringSelectMenuBuilder,
   EmbedBuilder,
   ChannelType,
+  ButtonBuilder,
+  ButtonStyle,
 } = require("discord.js");
 
 const { postGuide } = require("./guide");
@@ -138,8 +140,6 @@ function buildRuleEmbed(sectionKey, content) {
 }
 
 async function postAllRules(channel, liveRules) {
-  // Server Info is intentionally NOT included here.
-  // Use "Post Server Info Only" when you want the server info post.
   const order = ["general", "pvp", "base", "vehicles", "shops", "map"];
 
   for (const sectionKey of order) {
@@ -149,6 +149,60 @@ async function postAllRules(channel, liveRules) {
     const embed = buildRuleEmbed(sectionKey, content);
     await channel.send({ embeds: [embed] });
   }
+}
+
+function buildAnnouncementEmbed(content) {
+  return new EmbedBuilder()
+    .setTitle("📢 Outpost X Announcement")
+    .setDescription(trimEmbedText(content, 3900))
+    .setColor(0x3b82f6)
+    .setFooter({ text: "Built To Last. Born To Survive." })
+    .setTimestamp();
+}
+
+function buildAnnouncementButtons() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("ann_confirm")
+      .setLabel("Post Announcement")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId("ann_revise")
+      .setLabel("Revise")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("ann_cancel")
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+async function polishAnnouncement(genai, roughText) {
+  if (!genai) return roughText.trim();
+
+  const model = genai.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+  const res = await model.generateContent(
+    `You are polishing a Discord announcement for Outpost X, a SCUM server.
+
+Raw announcement text:
+${roughText}
+
+Rewrite it into a clean, ready-to-post Discord announcement.
+
+Rules:
+- Keep the meaning exactly the same.
+- Correct spelling, punctuation, grammar, and formatting.
+- Make it clear and professional, but still natural for a game server.
+- Do not invent details, dates, rewards, rules, wipes, events, or promises.
+- Do not add @everyone, @here, role pings, or channel links unless they were already included.
+- Keep it concise.
+- Use Discord-friendly formatting.
+- Return only the announcement body text.`
+  );
+
+  const text = (res.response.text() || "").trim();
+  return text || roughText.trim();
 }
 
 async function finishAction(interaction, session, liveRules, discord, supabase, enabledChannels) {
@@ -287,9 +341,14 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
   if (session.act === "ann") {
     session.processing = false;
+    session.stage = "ann_waiting_text";
 
     await safeReply(interaction, {
-      content: `Type the announcement message now. I will post it in <#${session.ch}>.`,
+      content: [
+        `Type the rough announcement message now.`,
+        "",
+        `I will clean it up, format it, and show you a preview before posting in <#${session.ch}>.`,
+      ].join("\n"),
       ephemeral: true,
     });
     return;
@@ -302,6 +361,76 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
   const uid = interaction.user.id;
 
   try {
+    if (["ann_confirm", "ann_revise", "ann_cancel"].includes(interaction.customId)) {
+      const session = userSession[uid];
+
+      if (!session || session.act !== "ann") {
+        await safeReply(interaction, {
+          content: "That announcement session expired. Run `!post` again.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.customId === "ann_cancel") {
+        delete userSession[uid];
+        await interaction.update({
+          content: "Announcement cancelled.",
+          embeds: [],
+          components: [],
+        }).catch(() => {});
+        return;
+      }
+
+      if (interaction.customId === "ann_revise") {
+        session.stage = "ann_waiting_text";
+        session.processing = false;
+
+        await interaction.update({
+          content: [
+            "Type the revised announcement instructions or full replacement text.",
+            "",
+            "I will polish it again and show another preview.",
+          ].join("\n"),
+          embeds: [],
+          components: [],
+        }).catch(() => {});
+        return;
+      }
+
+      if (interaction.customId === "ann_confirm") {
+        if (!session.polishedAnnouncement || !session.ch) {
+          await safeReply(interaction, {
+            content: "Missing announcement draft. Run `!post` again.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        await interaction.deferUpdate().catch(() => {});
+
+        const chan = await interaction.client.channels.fetch(session.ch);
+        await chan.send({ embeds: [buildAnnouncementEmbed(session.polishedAnnouncement)] });
+
+        await interaction.editReply({
+          content: `✅ Announcement posted in <#${session.ch}>.`,
+          embeds: [],
+          components: [],
+        }).catch(() => {});
+
+        if (session.menuChannelId && session.menuMessageId) {
+          const menuChannel = await interaction.client.channels.fetch(session.menuChannelId).catch(() => null);
+          if (menuChannel) {
+            const menuMessage = await menuChannel.messages.fetch(session.menuMessageId).catch(() => null);
+            if (menuMessage) await menuMessage.delete().catch(() => {});
+          }
+        }
+
+        delete userSession[uid];
+        return;
+      }
+    }
+
     if (interaction.customId === "post_act") {
       const act = interaction.values[0];
 
@@ -355,7 +484,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
     }
 
     const age = Date.now() - session.startedAt;
-    if (age > 5 * 60 * 1000) {
+    if (age > 10 * 60 * 1000) {
       delete userSession[uid];
       await safeReply(interaction, {
         content: "That menu expired. Run `!post` again.",
@@ -403,37 +532,52 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
   }
 }
 
-async function handleAnnText(msg) {
+async function handleAnnText(msg, genai = null) {
   const sess = userSession[msg.author.id];
 
   if (!sess || sess.act !== "ann" || !sess.ch) return false;
+  if (sess.stage !== "ann_waiting_text" && sess.stage !== "ann_preview") return false;
 
   if (sess.processing) {
-    await msg.reply("That announcement is already being posted.").catch(() => {});
+    await msg.reply("That announcement is already being processed.").catch(() => {});
     return true;
   }
 
   sess.processing = true;
 
   try {
-    const chan = await msg.client.channels.fetch(sess.ch);
-    await chan.send(msg.content);
-    await msg.reply("✅ Announcement posted.");
+    const roughText = msg.content.trim();
 
-    if (sess.menuChannelId && sess.menuMessageId) {
-      const menuChannel = await msg.client.channels.fetch(sess.menuChannelId).catch(() => null);
-      if (menuChannel) {
-        const menuMessage = await menuChannel.messages.fetch(sess.menuMessageId).catch(() => null);
-        if (menuMessage) await menuMessage.delete().catch(() => {});
-      }
+    if (!roughText) {
+      sess.processing = false;
+      await msg.reply("Announcement text cannot be empty.").catch(() => {});
+      return true;
     }
 
-    delete userSession[msg.author.id];
+    await msg.reply("Polishing announcement and preparing preview...").catch(() => {});
+
+    const polished = await polishAnnouncement(genai, roughText);
+
+    sess.rawAnnouncement = roughText;
+    sess.polishedAnnouncement = polished;
+    sess.stage = "ann_preview";
+    sess.processing = false;
+
+    await msg.reply({
+      content: [
+        `Preview for <#${sess.ch}>`,
+        "",
+        "Confirm to post, revise to change it, or cancel.",
+      ].join("\n"),
+      embeds: [buildAnnouncementEmbed(polished)],
+      components: [buildAnnouncementButtons()],
+    }).catch(() => {});
+
     return true;
   } catch (err) {
-    console.error("❌ Announcement error:", err);
+    console.error("❌ Announcement polish error:", err);
     sess.processing = false;
-    msg.reply("I could not post that announcement.").catch(() => {});
+    msg.reply("I could not prepare that announcement preview.").catch(() => {});
     return true;
   }
 }

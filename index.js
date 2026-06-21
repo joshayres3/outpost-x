@@ -275,7 +275,7 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     if (await handleEventText(msg)) return;
 
-    if (await handleAnnText(msg)) return;
+    if (await handleAnnText(msg, genai)) return;
 
     // Public automatic responses below this point are locked to the main chat only.
     if (msg.channelId !== MAIN_CHAT_CHANNEL_ID) return;
