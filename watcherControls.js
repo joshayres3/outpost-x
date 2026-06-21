@@ -54,7 +54,7 @@ async function safeCount(label, queryBuilder) {
     if (error) throw error;
     return String(count ?? 0);
   } catch (err) {
-    return `Unavailable`;
+    return "Unavailable";
   }
 }
 
@@ -177,19 +177,8 @@ async function handleWatcherCommand(msg, ctx) {
     return true;
   }
 
-  const mainAllowedCommands = new Set([
-    "!watcherquiet",
-    "!watcherlive",
-    "!watchermode",
-  ]);
-
-  if (mainAllowedCommands.has(command)) {
-    if (!isAdminOrMainChat(msg)) {
-      await msg.reply("That Watcher control can only be used in admin or main chat.").catch(() => {});
-      return true;
-    }
-  } else if (!isAdminChannel(msg)) {
-    await msg.reply("That Watcher command must be used in the admin channel.").catch(() => {});
+  if (!isAdminOrMainChat(msg)) {
+    await msg.reply("Watcher control commands can only be used in admin or main chat.").catch(() => {});
     return true;
   }
 

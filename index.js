@@ -31,6 +31,11 @@ const {
   handleWatcherCommand,
   isPublicRepliesEnabled,
 } = require("./watcherControls");
+const {
+  handleRuleUpdateCommand,
+  handleRuleUpdateInteraction,
+  handleRuleUpdateText,
+} = require("./rulesEditor");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -95,6 +100,7 @@ function getWatcherContext() {
   return {
     bot,
     db,
+    genai,
     rules,
     channels,
     reloadData: loadWatcherData,
@@ -163,6 +169,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleRuleUpdateInteraction(interaction, getWatcherContext())) return;
+
     if (interaction.isButton()) {
       if (interaction.customId.startsWith("help_")) {
         await handleHelpButton(interaction);
@@ -227,6 +235,10 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot) return;
 
     if (await handleWatcherCommand(msg, getWatcherContext())) return;
+
+    if (await handleRuleUpdateCommand(msg, getWatcherContext())) return;
+
+    if (await handleRuleUpdateText(msg, getWatcherContext())) return;
 
     if (await handleWelcomeBackfillCommand(msg, bot, db)) return;
 
