@@ -13,7 +13,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
       const cat = interaction.guild.channels.cache.get(userSession[uid].cat);
       const chans = interaction.guild.channels.cache
         .filter(c => c.parentId === userSession[uid].cat && c.type === ChannelType.GuildText)
-        .map(c => ({ name: c.name, value: c.id }));
+        .map(c => ({ label: c.name, value: c.id }));
       
       if (!chans.length) {
         await interaction.reply({ content: "No channels", ephemeral: true });

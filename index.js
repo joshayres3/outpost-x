@@ -42,7 +42,7 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     const cats = msg.guild.channels.cache
       .filter(c => c.type === ChannelType.GuildCategory)
-      .map(c => ({ name: c.name, value: c.id }))
+      .map(c => ({ label: c.name, value: c.id }))
       .slice(0, 25);
 
     if (!cats.length) {
