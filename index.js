@@ -149,7 +149,7 @@ Answer concisely (1-2 sentences). Be helpful and friendly.
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ERROR HANDLING
+// ERROR HANDLING & KEEP-ALIVE
 // ═══════════════════════════════════════════════════════════════════════════
 
 discord.on("error", err => {
@@ -166,6 +166,16 @@ process.on("unhandledRejection", (reason, promise) => {
 
 process.on("uncaughtException", err => {
   console.error("❌ Uncaught exception:", err);
+  process.exit(1);
+});
+
+// Keep process alive
+process.on("SIGTERM", () => {
+  console.log("⚠️ SIGTERM received, but keeping bot alive...");
+});
+
+process.on("SIGINT", () => {
+  console.log("⚠️ SIGINT received, but keeping bot alive...");
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
