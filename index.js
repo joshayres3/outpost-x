@@ -145,68 +145,22 @@ discord.once(Events.ClientReady, async (client) => {
 // ─── Interaction Handler ──────────────────────────────────────────────────────
 discord.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isStringSelectMenu()) {
-    // Handle which rules to post
-    if (interaction.customId === "post_which_rules") {
-      const whichRules = interaction.values[0];
-      const pending = pendingPosts[interaction.user.id];
-      
-      if (!pending) {
-        await interaction.reply({ content: "❌ Session expired.", ephemeral: true });
-        return;
-      }
-
-      try {
-        const targetChannel = await interaction.guild.channels.fetch(pending.targetChannelId);
-        if (!targetChannel) {
-          await interaction.update({ content: "❌ Channel not found.", components: [] });
-          return;
-        }
-
-        const { EmbedBuilder } = require("discord.js");
-        const sectionEmojis = {
-          server: "📡", general: "📋", pvp: "⚔️", base: "🏗️",
-          vehicles: "🚗", shops: "🏪", map: "🗺️"
-        };
-        const sectionColors = {
-          server: 0x60a5fa, general: 0xc8a04a, pvp: 0xef4444, base: 0xf59e0b,
-          vehicles: 0x8b5cf6, shops: 0x22c55e, map: 0x3b82f6
-        };
-
-        // Post the selected rules
-        const lines = liveRules[whichRules].split("\n");
-        const title = lines[0];
-        const body = lines.slice(1).join("\n").trim();
-
-        const embed = new EmbedBuilder()
-          .setTitle(`${sectionEmojis[whichRules] || "📋"} ${title}`)
-          .setDescription(body || liveRules[whichRules])
-          .setColor(sectionColors[whichRules] || 0x3b82f6)
-          .setFooter({ text: "Outpost X Server Rules" });
-
-        await targetChannel.send({ embeds: [embed] });
-        await interaction.update({ content: `✅ Posted to <#${pending.targetChannelId}>!`, components: [] });
-        delete pendingPosts[interaction.user.id];
-      } catch (err) {
-        console.error("Rule posting error:", err.message);
-        await interaction.update({ content: `❌ Error: ${err.message}`, components: [] });
-      }
-      return;
-    }
-
     if (await handlePostWhatSelect(interaction)) return;
-    if (await handlePostCategorySelect(interaction)) return;
-    if (await handlePostChannelSelect(interaction, liveRules)) return;
-    if (await handlePostWhereSelect(interaction, liveRules)) return;
-    if (await handleRuleUpdateSectionSelect(interaction, liveRules, pendingUpdates)) return;
+    if (await handlePostHelpChannel(interaction, discord)) return;
+    if (await handlePostRulesSection(interaction, liveRules, discord)) return;
+    if (await handlePostRulesChannel(interaction, liveRules, null, discord)) return;
+    if (await handlePostAssistantChannel(interaction, discord, supabase)) return;
+    if (await handlePostAnnounceChannel(interaction)) return;
     return;
   }
   if (interaction.isButton()) {
     const { handleHelpButton } = require("./guide");
     if (await handleHelpButton(interaction)) return;
-    if (await handlePostPickChannel(interaction)) return;
-    if (await handlePostConfirm(interaction, liveRules, genAI, enabledChannels, supabase)) return;
-    if (await handlePostCancel(interaction)) return;
-    if (await handleRuleUpdateCancel(interaction)) return;
+    // Posting handlers - currently disabled while rebuilding
+    // if (await handlePostPickChannel(interaction)) return;
+    // if (await handlePostConfirm(interaction, liveRules, genAI, enabledChannels, supabase)) return;
+    // if (await handlePostCancel(interaction)) return;
+    // if (await handleRuleUpdateCancel(interaction)) return;
     // Rule update confirm button
     if (interaction.customId === "ruleupdate_confirm") {
       const pending = pendingUpdates[interaction.user.id];
@@ -414,7 +368,8 @@ discord.on("messageCreate", async (message) => {
 
   // Handle rule update text (admin typed their change after selecting section)
   if (message.guild && hasAdminRole(message.member)) {
-    if (await handleRuleUpdateText(message, liveRules, genAI, supabase, pendingUpdates, hasAdminRole)) return;
+    // Rule update handlers - currently disabled while rebuilding
+    // if (await handleRuleUpdateText(message, liveRules, genAI, supabase, pendingUpdates, hasAdminRole)) return;
   }
 
   // Handle announcement text
@@ -453,16 +408,10 @@ discord.login(process.env.DISCORD_TOKEN);
 // ─── Import handlers ──────────────────────────────────────────────────────────
 const { 
   handlePostWhatSelect,
-  handlePostCategorySelect,
-  handlePostChannelSelect,
-  handlePostWhereSelect,
-  handlePostPickChannel,
-  handlePostConfirm,
-  handlePostCancel,
+  handlePostHelpChannel,
+  handlePostRulesSection,
+  handlePostRulesChannel,
+  handlePostAssistantChannel,
+  handlePostAnnounceChannel,
   handleAnnouncementText,
-  handleRuleUpdateSectionSelect,
-  handleRuleUpdateText,
-  handleRuleUpdateCancel,
-  postRules,
-  updatePostedRules,
 } = require("./poster");
