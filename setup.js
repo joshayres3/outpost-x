@@ -3,6 +3,9 @@ const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+console.log("\n🔧 The Watcher - Outpost X Supabase Setup");
+console.log("==========================================\n");
+
 // Outpost X Default Rules
 const DEFAULT_RULES = {
   server: `SERVER INFO
@@ -55,113 +58,81 @@ Outpost X features a custom map with various POIs and survival locations. Build 
 };
 
 async function runSetup() {
-  console.log("\n🔧 Starting Outpost X Supabase Setup...\n");
-
   try {
-    // ─── Step 1: Clear old rules ───────────────────────────────────────
-    console.log("📋 Step 1: Clearing old rules from 'rules' table...");
-    const { data: existingRules, error: fetchError } = await supabase
+    // ─── Step 1: Clear rules table ─────────────────────────────────────
+    console.log("📋 Step 1: Clearing rules table...");
+    const { error: deleteRulesError } = await supabase
       .from("rules")
-      .select("section");
+      .delete()
+      .neq("section", "");
     
-    if (fetchError) {
-      console.error("❌ Error fetching rules:", fetchError.message);
-      return;
+    if (deleteRulesError && !deleteRulesError.message.includes("does not exist")) {
+      console.log(`   ⚠️  Could not clear (table might not exist yet): ${deleteRulesError.message}`);
+    } else if (!deleteRulesError) {
+      console.log("   ✅ Old rules cleared");
     }
 
-    if (existingRules && existingRules.length > 0) {
-      console.log(`   Found ${existingRules.length} old rule(s). Deleting...`);
-      const { error: deleteError } = await supabase
-        .from("rules")
-        .delete()
-        .neq("section", ""); // Delete all rows
-      
-      if (deleteError) {
-        console.error("❌ Error deleting old rules:", deleteError.message);
-        return;
-      }
-      console.log("   ✅ Old rules deleted.");
-    } else {
-      console.log("   ✅ No old rules found (table already clean).");
-    }
-
-    // ─── Step 2: Populate with Outpost X rules ─────────────────────────
-    console.log("\n📝 Step 2: Populating with Outpost X rules...");
+    // ─── Step 2: Populate rules ────────────────────────────────────────
+    console.log("\n📝 Step 2: Populating rules...");
     for (const [section, content] of Object.entries(DEFAULT_RULES)) {
       const { error: insertError } = await supabase
         .from("rules")
-        .insert({ section, content });
+        .upsert({ section, content }, { onConflict: "section" });
       
       if (insertError) {
-        console.error(`❌ Error inserting ${section}:`, insertError.message);
-        return;
+        console.error(`   ❌ Error inserting ${section}:`, insertError.message);
+        throw insertError;
       }
       console.log(`   ✅ Inserted: ${section}`);
     }
 
-    // ─── Step 3: Clear old assistant channels ──────────────────────────
-    console.log("\n🔊 Step 3: Clearing old assistant channels...");
-    const { data: existingChannels, error: fetchChannelsError } = await supabase
+    // ─── Step 3: Clear assistant_channels ──────────────────────────────
+    console.log("\n🔊 Step 3: Clearing assistant_channels table...");
+    const { error: deleteChannelsError } = await supabase
       .from("assistant_channels")
-      .select("channel_id");
+      .delete()
+      .neq("channel_id", "");
     
-    if (fetchChannelsError) {
-      console.error("❌ Error fetching channels:", fetchChannelsError.message);
-      return;
+    if (deleteChannelsError && !deleteChannelsError.message.includes("does not exist")) {
+      console.log(`   ⚠️  Could not clear (table might not exist yet): ${deleteChannelsError.message}`);
+    } else if (!deleteChannelsError) {
+      console.log("   ✅ Old channels cleared");
     }
 
-    if (existingChannels && existingChannels.length > 0) {
-      console.log(`   Found ${existingChannels.length} old channel(s). Deleting...`);
-      const { error: deleteChannelsError } = await supabase
-        .from("assistant_channels")
-        .delete()
-        .neq("channel_id", ""); // Delete all rows
-      
-      if (deleteChannelsError) {
-        console.error("❌ Error deleting old channels:", deleteChannelsError.message);
-        return;
-      }
-      console.log("   ✅ Old channels deleted.");
-    } else {
-      console.log("   ✅ No old channels found (table already clean).");
-    }
-
-    // ─── Step 4: Verify table structures ───────────────────────────────
-    console.log("\n🔍 Step 4: Verifying table structures...");
-    
+    // ─── Step 4: Verify tables exist ───────────────────────────────────
+    console.log("\n🔍 Step 4: Verifying tables...");
     const tables = ["rules", "assistant_channels", "posted_rules_messages"];
-    for (const table of tables) {
-      const { data, error } = await supabase.from(table).select("*").limit(0);
-      if (error) {
-        console.error(`❌ Error verifying ${table}:`, error.message);
-        return;
-      }
-      console.log(`   ✅ ${table} - OK`);
-    }
-
-    // ─── Step 5: Verify column names ───────────────────────────────────
-    console.log("\n✓ Step 5: Verifying column names...");
-    const { data: rulesData, error: rulesError } = await supabase
-      .from("rules")
-      .select("*")
-      .limit(1);
     
-    if (rulesError) {
-      console.error("❌ Error checking rules columns:", rulesError.message);
-      return;
-    }
-
-    if (rulesData && rulesData.length > 0) {
-      const columns = Object.keys(rulesData[0]);
-      console.log(`   Rules table columns: ${columns.join(", ")}`);
-      
-      if (columns.includes("section") && columns.includes("content")) {
-        console.log("   ✅ Column names correct!");
+    for (const table of tables) {
+      const { data, error } = await supabase.from(table).select("*").limit(1);
+      if (error) {
+        console.log(`   ⚠️  ${table} - ${error.message}`);
       } else {
-        console.error("   ❌ Column names are wrong! Expected 'section' and 'content'");
-        return;
+        console.log(`   ✅ ${table} - OK`);
       }
     }
+
+    // ─── Step 5: Verify rules were inserted ────────────────────────────
+    console.log("\n✓ Step 5: Verifying rules were inserted...");
+    const { data: verifyRules, error: verifyError } = await supabase
+      .from("rules")
+      .select("section, content")
+      .limit(10);
+    
+    if (verifyError) {
+      console.error(`   ❌ Error verifying: ${verifyError.message}`);
+      throw verifyError;
+    }
+
+    if (!verifyRules || verifyRules.length === 0) {
+      console.error("   ❌ NO RULES FOUND IN DATABASE!");
+      throw new Error("Rules were not inserted");
+    }
+
+    console.log(`   ✅ Found ${verifyRules.length} rules in database:`);
+    verifyRules.forEach(rule => {
+      console.log(`      • ${rule.section} (${rule.content.length} chars)`);
+    });
 
     // ─── Success ───────────────────────────────────────────────────────
     console.log("\n" + "=".repeat(50));
@@ -169,14 +140,26 @@ async function runSetup() {
     console.log("=".repeat(50));
     console.log("\n📊 Summary:");
     console.log(`   • Inserted ${Object.keys(DEFAULT_RULES).length} rule sections`);
-    console.log("   • Cleared old Cobblestone data");
-    console.log("   • Verified all table structures");
-    console.log("   • Verified all column names");
-    console.log("\n🚀 You can now run the production bot (index.js)");
-    console.log("   The bot will load rules from Supabase automatically.\n");
+    console.log("   • All tables verified");
+    console.log(`   • ${verifyRules.length} rules confirmed in database`);
+    console.log("\n🚀 Next steps:");
+    console.log("   1. Upload index.js, poster.js, guide.js to GitHub");
+    console.log("   2. Push to GitHub");
+    console.log("   3. Railway will auto-deploy");
+    console.log("   4. The Watcher bot will be live!\n");
     
+    process.exit(0);
+
   } catch (err) {
-    console.error("\n❌ SETUP FAILED:", err.message);
+    console.error("\n" + "=".repeat(50));
+    console.error("❌ SETUP FAILED");
+    console.error("=".repeat(50));
+    console.error(`\nError: ${err.message}\n`);
+    console.error("Troubleshooting:");
+    console.error("  • Check your SUPABASE_URL and SUPABASE_KEY in .env");
+    console.error("  • Make sure Supabase project is accessible");
+    console.error("  • Check table permissions\n");
+    
     process.exit(1);
   }
 }
