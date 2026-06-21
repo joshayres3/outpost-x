@@ -246,9 +246,10 @@ discord.on(Events.InteractionCreate, async (interaction) => {
 
 // ─── Message Handler ──────────────────────────────────────────────────────────
 discord.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-  const userMessage = message.content.trim();
-  if (!userMessage) return;
+  try {
+    if (message.author.bot) return;
+    const userMessage = message.content.trim();
+    if (!userMessage) return;
 
   // ── !ruleupdate command works from ANY channel for OWNERS, admin channel only for ADMINS ───────────────────
   if (userMessage.toLowerCase() === "!ruleupdate" && message.guild) {
@@ -332,6 +333,9 @@ discord.on("messageCreate", async (message) => {
     await message.reply(reply);
   } catch (err) {
     console.error("Gemini error:", err.message);
+  }
+  } catch (err) {
+    console.error("Message handler error:", err.message);
   }
 });
 
