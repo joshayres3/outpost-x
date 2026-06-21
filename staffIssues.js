@@ -27,6 +27,8 @@ const MAIN_CHAT_CHANNEL_ID =
 const SERVER_TIMEZONE =
   process.env.SERVER_TIMEZONE || "America/New_York";
 
+const ISSUE_LAUNCHERS = new Map();
+
 function isOwner(member) {
   return member?.roles?.cache?.has(OWNERS_ROLE_ID) ||
     member?.roles?.cache?.some((r) => ["Owner", "Owners"].includes(r.name));
@@ -63,6 +65,32 @@ function trimField(text, max = 1000) {
 function getEmbedField(embed, name) {
   const field = embed.fields?.find((f) => f.name === name);
   return field?.value || "";
+}
+
+async function autoDeleteMessage(message, delayMs = 15000) {
+  if (!message) return;
+  setTimeout(() => {
+    message.delete().catch(() => {});
+  }, delayMs);
+}
+
+async function cleanupLauncher(client, userId) {
+  const launcher = ISSUE_LAUNCHERS.get(userId);
+  if (!launcher) return;
+
+  for (const item of [launcher.command, launcher.prompt]) {
+    if (!item?.channelId || !item?.messageId) continue;
+
+    const channel = await client.channels.fetch(item.channelId).catch(() => null);
+    if (!channel) continue;
+
+    const message = await channel.messages.fetch(item.messageId).catch(() => null);
+    if (!message) continue;
+
+    await message.delete().catch(() => {});
+  }
+
+  ISSUE_LAUNCHERS.delete(userId);
 }
 
 function parseIssueEmbed(message) {
@@ -339,16 +367,31 @@ async function handleIssueCommand(msg) {
     return true;
   }
 
-  await msg.reply({
+  const prompt = await msg.reply({
     content: [
       "Create a new Watcher Issue Log entry.",
       "",
       `It will be posted in <#${STAFF_ISSUES_CHANNEL_ID}>.`,
     ].join("\n"),
     components: [buildCreateButton()],
-  }).catch(() => {});
+  }).catch(() => null);
+
+  ISSUE_LAUNCHERS.set(msg.author.id, {
+    command: { channelId: msg.channelId, messageId: msg.id },
+    prompt: prompt ? { channelId: prompt.channelId, messageId: prompt.id } : null,
+    createdAt: Date.now(),
+  });
+
+  // Delete the raw !issue command after the button appears.
+  await msg.delete().catch(() => {});
 
   return true;
+}
+
+async function sendTemporaryPing(interaction, payload) {
+  await interaction.reply(payload).catch(() => {});
+  const reply = await interaction.fetchReply().catch(() => null);
+  await autoDeleteMessage(reply, 20000);
 }
 
 async function handleIssueInteraction(interaction) {
@@ -370,6 +413,12 @@ async function handleIssueInteraction(interaction) {
 
   if (interaction.isButton()) {
     if (interaction.customId === "issue_create") {
+      ISSUE_LAUNCHERS.set(interaction.user.id, {
+        command: ISSUE_LAUNCHERS.get(interaction.user.id)?.command || null,
+        prompt: { channelId: interaction.channelId, messageId: interaction.message.id },
+        createdAt: Date.now(),
+      });
+
       await interaction.showModal(buildIssueCreateModal());
       return true;
     }
@@ -392,10 +441,10 @@ async function handleIssueInteraction(interaction) {
         : `${data.notifications}\n${entry}`;
 
       await updateIssueMessage(message, data);
-      await interaction.reply({
+      await sendTemporaryPing(interaction, {
         content: `<@&${ADMIN_ROLE_ID}> Staff issue needs review: ${message.url}`,
         allowedMentions: { roles: [ADMIN_ROLE_ID] },
-      }).catch(() => {});
+      });
       return true;
     }
 
@@ -406,10 +455,10 @@ async function handleIssueInteraction(interaction) {
         : `${data.notifications}\n${entry}`;
 
       await updateIssueMessage(message, data);
-      await interaction.reply({
+      await sendTemporaryPing(interaction, {
         content: `<@&${OWNERS_ROLE_ID}> Owner review requested: ${message.url}`,
         allowedMentions: { roles: [OWNERS_ROLE_ID] },
-      }).catch(() => {});
+      });
       return true;
     }
 
@@ -484,6 +533,8 @@ async function handleIssueInteraction(interaction) {
         embeds: [buildIssueEmbed(data)],
         components: buildIssueButtons("Open"),
       });
+
+      await cleanupLauncher(interaction.client, interaction.user.id);
 
       await interaction.reply({
         content: `Issue logged in <#${STAFF_ISSUES_CHANNEL_ID}>: ${issueMessage.url}`,
