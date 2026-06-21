@@ -207,7 +207,7 @@ discord.on("messageCreate", async (message) => {
       return;
     }
 
-  // ── !ruleupdate command works from ANY channel for OWNERS, admin channel only for ADMINS ───────────────────
+  // ── !ruleupdate FIRST ───────────────────────────────────────────────────────────────
   if (userMessage.toLowerCase() === "!ruleupdate" && message.guild) {
     try {
       console.log("   → Processing !ruleupdate");
@@ -246,7 +246,7 @@ discord.on("messageCreate", async (message) => {
     return;
   }
 
-  // ── !post command works from ANY channel for OWNERS, admin channel only for ADMINS ─────────────────────────
+  // ── !post SECOND ─────────────────────────────────────────────────────────────────────
   if (userMessage.toLowerCase() === "!post" && message.guild) {
     try {
       console.log("   → Processing !post");
