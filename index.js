@@ -13,6 +13,7 @@ const { createClient } = require("@supabase/supabase-js");
 const WebSocket = require("ws");
 
 const { handlePostMenu, handleAnnText } = require("./poster");
+const { handleHelpButton } = require("./guide");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -76,8 +77,17 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
-    if (!interaction.isStringSelectMenu()) return;
-    await handlePostMenu(interaction, rules, bot, db, channels);
+    if (interaction.isButton()) {
+      if (interaction.customId.startsWith("help_")) {
+        await handleHelpButton(interaction);
+      }
+      return;
+    }
+
+    if (interaction.isStringSelectMenu()) {
+      await handlePostMenu(interaction, rules, bot, db, channels);
+      return;
+    }
   } catch (err) {
     console.error("❌ Interaction error:", err);
 
