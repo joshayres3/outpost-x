@@ -31,6 +31,7 @@ async function handlePostWhatSelect(interaction) {
   pendingPosts[interaction.user.id] = { what, sourceChannelId: interaction.channelId };
 
   const labels = {
+    guide:         "📖 Player Survival Guide",
     rules:         "📋 Server Rules",
     assistant_on:  "🤖 Enable Assistant Mode",
     assistant_off: "🔇 Disable Assistant Mode",
@@ -39,6 +40,27 @@ async function handlePostWhatSelect(interaction) {
 
   if (!labels[what]) {
     await interaction.reply({ content: "❌ Invalid selection.", ephemeral: true });
+    return true;
+  }
+
+  // For guide, post it directly to the channel they specify
+  if (what === "guide") {
+    await interaction.reply({
+      content: `**${labels[what]}**\n\nWhich channel do you want to post the guide in?`,
+      components: [
+        new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId("post_where_select")
+            .setPlaceholder("Choose a channel...")
+            .addOptions(
+              { label: "Admin Channel", value: "1518059656302301245" },
+              { label: "Main Chat", value: "1516269437932670977" },
+              { label: "Other Channel", value: "other" }
+            )
+        )
+      ],
+      ephemeral: true
+    });
     return true;
   }
 
@@ -104,6 +126,24 @@ async function handlePostWhereSelect(interaction, liveRules) {
   }
 
   pending.targetChannelId = channelId;
+
+  // If posting guide, post it directly
+  if (pending.what === "guide") {
+    try {
+      const channel = await interaction.guild.channels.fetch(pending.targetChannelId);
+      if (!channel) throw new Error("Channel not found");
+      
+      await postGuidePanel(channel);
+      await interaction.update({
+        content: `✅ Guide posted to <#${pending.targetChannelId}>!`,
+        components: []
+      });
+      delete pendingPosts[interaction.user.id];
+    } catch (err) {
+      await interaction.update({ content: `❌ Error: ${err.message}`, components: [] });
+    }
+    return true;
+  }
 
   // If posting rules, show rule section selector
   if (pending.what === "rules") {
