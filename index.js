@@ -97,15 +97,27 @@ discord.on(Events.MessageCreate, async (message) => {
     const isOwner = message.member.roles.cache.some(r => r.name === "Owners");
     const isAdmin = message.member.roles.cache.some(r => r.name === "Admin");
 
-    if (!isOwner && !isAdmin) return;
-    if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) return;
+    console.log(`   → !post called by ${message.author.tag}`);
+    console.log(`   → isOwner: ${isOwner}, isAdmin: ${isAdmin}`);
+
+    if (!isOwner && !isAdmin) {
+      console.log("   → User lacks permission");
+      return;
+    }
+    if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) {
+      console.log("   → Admin can only use in admin channel");
+      return;
+    }
 
     try {
+      console.log("   → Processing !post");
       const guild = message.guild;
       const categories = guild.channels.cache
         .filter(ch => ch.type === ChannelType.GuildCategory)
         .map(cat => ({ name: cat.name, value: cat.id }))
         .slice(0, 25);
+
+      console.log(`   → Found ${categories.length} categories`);
 
       if (categories.length === 0) {
         await message.reply("❌ No categories found");
@@ -126,7 +138,8 @@ discord.on(Events.MessageCreate, async (message) => {
       try { await message.delete(); } catch(e) {}
       console.log("   ✅ !post menu sent");
     } catch (err) {
-      console.error("❌ !post error:", err.message);
+      console.error("   ❌ !post error:", err.message);
+      console.error(err);
     }
     return;
   }
