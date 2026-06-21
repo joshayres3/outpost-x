@@ -3,4 +3,6 @@ builder = "nixpacks"
 
 [deploy]
 startCommand = "npm start"
-restartPolicyMaxRetries = 5
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+healthcheckPath = null
