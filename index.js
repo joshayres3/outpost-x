@@ -145,6 +145,8 @@ discord.once(Events.ClientReady, async (client) => {
 discord.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isStringSelectMenu()) {
     if (await handlePostWhatSelect(interaction)) return;
+    if (await handlePostCategorySelect(interaction)) return;
+    if (await handlePostChannelSelect(interaction, liveRules)) return;
     if (await handlePostWhereSelect(interaction, liveRules)) return;
     if (await handleRuleUpdateSectionSelect(interaction, liveRules, pendingUpdates)) return;
     return;
@@ -283,6 +285,83 @@ discord.on("messageCreate", async (message) => {
     return;
   }
 
+  // Handle channel selection for !post
+  if (message.guild && hasAdminRole(message.member)) {
+    const pending = pendingPosts[message.author.id];
+    if (pending && pending.awaitingChannel) {
+      try {
+        console.log("   → Processing channel selection");
+        const channelInput = userMessage.trim();
+        let targetChannel = null;
+        
+        // Try to find channel by ID or name
+        targetChannel = await message.guild.channels.fetch(channelInput).catch(() => null);
+        
+        if (!targetChannel) {
+          // Try by name
+          targetChannel = message.guild.channels.cache.find(ch => 
+            ch.name.toLowerCase() === channelInput.toLowerCase()
+          );
+        }
+        
+        if (!targetChannel) {
+          await message.reply(`❌ Channel not found: "${channelInput}". Try using the channel name or ID.`);
+          return;
+        }
+        
+        pending.targetChannelId = targetChannel.id;
+        pending.awaitingChannel = false;
+        
+        // If posting rules, show rule section selector
+        if (pending.what === "rules") {
+          const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
+          const selectRules = new StringSelectMenuBuilder()
+            .setCustomId("post_which_rules")
+            .setPlaceholder("Which rules to post?")
+            .addOptions([
+              { label: "📋 All Rules", value: "all" },
+              { label: "📡 Server Info", value: "server" },
+              { label: "📋 General Rules", value: "general" },
+              { label: "⚔️ PvP Rules", value: "pvp" },
+              { label: "🏗️ Base Building", value: "base" },
+              { label: "🚗 Vehicles", value: "vehicles" },
+              { label: "🏪 Shops", value: "shops" },
+              { label: "🗺️ Map Info", value: "map" },
+            ]);
+          await message.reply({
+            content: "**Which rule sections do you want to post?**",
+            components: [new ActionRowBuilder().addComponents(selectRules)]
+          });
+          console.log(`   ✅ Selected channel: ${targetChannel.name}`);
+          try { await message.delete(); } catch(e) {}
+          return;
+        }
+        
+        // If guide, post it directly
+        if (pending.what === "guide") {
+          const { postGuidePanel } = require("./poster");
+          await postGuidePanel(targetChannel);
+          await message.reply(`✅ Guide posted to <#${targetChannel.id}>!`);
+          delete pendingPosts[message.author.id];
+          try { await message.delete(); } catch(e) {}
+          return;
+        }
+        
+        // If announcing, ask for announcement text
+        if (pending.what === "announce") {
+          await message.reply("Now type your announcement message:");
+          console.log(`   ✅ Selected channel: ${targetChannel.name}`);
+          try { await message.delete(); } catch(e) {}
+          return;
+        }
+      } catch (err) {
+        console.error("   ❌ Channel selection error:", err.message);
+        await message.reply(`❌ Error: ${err.message}`);
+      }
+      return;
+    }
+  }
+
   // Handle rule update text (admin typed their change after selecting section)
   if (message.guild && hasAdminRole(message.member)) {
     if (await handleRuleUpdateText(message, liveRules, genAI, supabase, pendingUpdates, hasAdminRole)) return;
@@ -324,6 +403,8 @@ discord.login(process.env.DISCORD_TOKEN);
 // ─── Import handlers ──────────────────────────────────────────────────────────
 const { 
   handlePostWhatSelect,
+  handlePostCategorySelect,
+  handlePostChannelSelect,
   handlePostThisChannel,
   handlePostPickChannel,
   handlePostConfirm,

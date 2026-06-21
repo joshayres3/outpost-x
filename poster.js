@@ -83,18 +83,22 @@ async function handlePostWhatSelect(interaction) {
     return true;
   }
 
-  // For rules and announcements, ask which channel to post in
+  // For rules and announcements, ask which channel CATEGORY to post in
   await interaction.reply({
-    content: `**${labels[what]}**\n\nWhere do you want to post this?`,
+    content: `**${labels[what]}**\n\nWhich category?`,
     components: [
       new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId("post_where_select")
-          .setPlaceholder("Choose a channel...")
+          .setCustomId("post_category_select")
+          .setPlaceholder("Choose a category...")
           .addOptions(
-            { label: "Admin Channel", value: "1518059656302301245" },
-            { label: "Main Chat", value: "1516269437932670977" },
-            { label: "Other Channel", value: "other" }
+            interaction.guild.channels.cache
+              .filter(ch => ch.type === 4) // Type 4 = Category
+              .map(cat => ({
+                label: cat.name,
+                value: cat.id
+              }))
+              .slice(0, 25) // Discord limit is 25 options
           )
       )
     ],
@@ -200,6 +204,117 @@ async function handlePostWhereSelect(interaction, liveRules) {
   if (pending.what === "announce") {
     await interaction.update({
       content: "Type your announcement message in chat (next message you send).",
+      components: []
+    });
+    return true;
+  }
+
+  return true;
+}
+
+// ─── Step 2b: Admin picked which CATEGORY ─────────────────────────────────────
+async function handlePostCategorySelect(interaction) {
+  if (interaction.customId !== "post_category_select") return false;
+
+  const categoryId = interaction.values[0];
+  const pending = pendingPosts[interaction.user.id];
+
+  if (!pending) {
+    await interaction.reply({ content: "❌ Session expired.", ephemeral: true });
+    return true;
+  }
+
+  pending.categoryId = categoryId;
+
+  // Get all channels in this category
+  const category = interaction.guild.channels.cache.get(categoryId);
+  const channelsInCategory = interaction.guild.channels.cache.filter(ch => ch.parentId === categoryId);
+
+  if (channelsInCategory.size === 0) {
+    await interaction.update({ content: "❌ No channels in this category.", components: [] });
+    return true;
+  }
+
+  const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
+  const selectChannel = new StringSelectMenuBuilder()
+    .setCustomId("post_channel_select")
+    .setPlaceholder("Choose a channel...")
+    .addOptions(
+      channelsInCategory
+        .map(ch => ({
+          label: ch.name,
+          value: ch.id
+        }))
+        .slice(0, 25) // Discord limit
+    );
+
+  await interaction.update({
+    content: `**Which channel in ${category.name}?**`,
+    components: [new ActionRowBuilder().addComponents(selectChannel)]
+  });
+
+  return true;
+}
+
+// ─── Step 2c: Admin picked which CHANNEL ───────────────────────────────────────
+async function handlePostChannelSelect(interaction, liveRules) {
+  if (interaction.customId !== "post_channel_select") return false;
+
+  const channelId = interaction.values[0];
+  const pending = pendingPosts[interaction.user.id];
+
+  if (!pending) {
+    await interaction.reply({ content: "❌ Session expired.", ephemeral: true });
+    return true;
+  }
+
+  pending.targetChannelId = channelId;
+  const channel = interaction.guild.channels.cache.get(channelId);
+
+  // If posting rules, show rule section selector
+  if (pending.what === "rules") {
+    const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
+    const selectRules = new StringSelectMenuBuilder()
+      .setCustomId("post_which_rules")
+      .setPlaceholder("Which rules to post?")
+      .addOptions([
+        { label: "📋 All Rules", value: "all" },
+        { label: "📡 Server Info", value: "server" },
+        { label: "📋 General Rules", value: "general" },
+        { label: "⚔️ PvP Rules", value: "pvp" },
+        { label: "🏗️ Base Building", value: "base" },
+        { label: "🚗 Vehicles", value: "vehicles" },
+        { label: "🏪 Shops", value: "shops" },
+        { label: "🗺️ Map Info", value: "map" },
+      ]);
+
+    await interaction.update({
+      content: "**Which rule sections do you want to post?**",
+      components: [new ActionRowBuilder().addComponents(selectRules)]
+    });
+    return true;
+  }
+
+  // If guide, post it directly
+  if (pending.what === "guide") {
+    try {
+      const { postGuidePanel } = require("./guide");
+      await postGuidePanel(channel);
+      await interaction.update({
+        content: `✅ Guide posted to <#${channelId}>!`,
+        components: []
+      });
+      delete pendingPosts[interaction.user.id];
+    } catch (err) {
+      await interaction.update({ content: `❌ Error: ${err.message}`, components: [] });
+    }
+    return true;
+  }
+
+  // If announcing, ask for announcement text
+  if (pending.what === "announce") {
+    await interaction.update({
+      content: "Type your announcement message in chat (next message you send):",
       components: []
     });
     return true;
@@ -493,6 +608,8 @@ async function handleAnnouncementText(message, genAI, enabledChannels) {
 
 module.exports = {
   handlePostWhatSelect,
+  handlePostCategorySelect,
+  handlePostChannelSelect,
   handlePostWhereSelect,
   handlePostPickChannel,
   handlePostConfirm,
