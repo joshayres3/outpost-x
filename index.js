@@ -36,6 +36,7 @@ const {
   handleRuleUpdateInteraction,
   handleRuleUpdateText,
 } = require("./rulesEditor");
+const { handleIssueCommand, handleIssueInteraction } = require("./staffIssues");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -171,6 +172,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await handleRuleUpdateInteraction(interaction, getWatcherContext())) return;
 
+    if (await handleIssueInteraction(interaction)) return;
+
     if (interaction.isButton()) {
       if (interaction.customId.startsWith("help_")) {
         await handleHelpButton(interaction);
@@ -179,11 +182,6 @@ bot.on(Events.InteractionCreate, async (interaction) => {
 
       if (interaction.customId.startsWith("event_")) {
         await handleEventInteraction(interaction, bot, db);
-        return;
-      }
-
-      if (interaction.customId.startsWith("ann_")) {
-        await handlePostMenu(interaction, rules, bot, db, channels);
         return;
       }
 
@@ -245,6 +243,8 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     if (await handleRuleUpdateText(msg, getWatcherContext())) return;
 
+    if (await handleIssueCommand(msg)) return;
+
     if (await handleWelcomeBackfillCommand(msg, bot, db)) return;
 
     if (await handleEventCommand(msg)) return;
@@ -280,7 +280,7 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     if (await handleEventText(msg)) return;
 
-    if (await handleAnnText(msg, genai)) return;
+    if (await handleAnnText(msg)) return;
 
     // Public automatic responses below this point are locked to the main chat only.
     if (msg.channelId !== MAIN_CHAT_CHANNEL_ID) return;
