@@ -89,6 +89,50 @@ async function askForChannel(interaction, session) {
   });
 }
 
+function buildRuleEmbed(sectionKey, content) {
+  const lines = content.split("\n");
+  const title = lines[0];
+  const body = lines.slice(1).join("\n").trim();
+
+  const emojis = {
+    server: "📡",
+    general: "📋",
+    pvp: "⚔️",
+    base: "🏗️",
+    vehicles: "🚗",
+    shops: "🏪",
+    map: "🗺️",
+  };
+
+  const colors = {
+    server: 0x60a5fa,
+    general: 0xc8a04a,
+    pvp: 0xef4444,
+    base: 0xf59e0b,
+    vehicles: 0x8b5cf6,
+    shops: 0x22c55e,
+    map: 0x3b82f6,
+  };
+
+  return new EmbedBuilder()
+    .setTitle(`${emojis[sectionKey] || "📋"} ${title}`)
+    .setDescription(trimEmbedText(body || content))
+    .setColor(colors[sectionKey] || 0x3b82f6)
+    .setFooter({ text: "Outpost X Rules" });
+}
+
+async function postAllRules(channel, liveRules) {
+  const order = ["server", "general", "pvp", "base", "vehicles", "shops", "map"];
+
+  for (const sectionKey of order) {
+    const content = liveRules[sectionKey];
+    if (!content) continue;
+
+    const embed = buildRuleEmbed(sectionKey, content);
+    await channel.send({ embeds: [embed] });
+  }
+}
+
 async function finishAction(interaction, session, liveRules, discord, supabase, enabledChannels) {
   const chan = await discord.channels.fetch(session.ch);
 
@@ -103,56 +147,41 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
   }
 
   if (session.act === "rules") {
-    const cont = liveRules[session.sec];
+    if (session.ruleMode === "all") {
+      await postAllRules(chan, liveRules);
 
-    if (!cont) {
       await safeReply(interaction, {
-        content: "Rule section not found.",
+        content: "✅ All rules posted.",
         ephemeral: true,
       });
+
       delete userSession[interaction.user.id];
       return;
     }
 
-    const lines = cont.split("\n");
-    const title = lines[0];
-    const body = lines.slice(1).join("\n").trim();
+    if (session.ruleMode === "server") {
+      const cont = liveRules.server;
 
-    const emojis = {
-      server: "📡",
-      general: "📋",
-      pvp: "⚔️",
-      base: "🏗️",
-      vehicles: "🚗",
-      shops: "🏪",
-      map: "🗺️",
-    };
+      if (!cont) {
+        await safeReply(interaction, {
+          content: "Server Info section not found.",
+          ephemeral: true,
+        });
+        delete userSession[interaction.user.id];
+        return;
+      }
 
-    const colors = {
-      server: 0x60a5fa,
-      general: 0xc8a04a,
-      pvp: 0xef4444,
-      base: 0xf59e0b,
-      vehicles: 0x8b5cf6,
-      shops: 0x22c55e,
-      map: 0x3b82f6,
-    };
+      const embed = buildRuleEmbed("server", cont);
+      await chan.send({ embeds: [embed] });
 
-    const embed = new EmbedBuilder()
-      .setTitle(`${emojis[session.sec] || "📋"} ${title}`)
-      .setDescription(trimEmbedText(body || cont))
-      .setColor(colors[session.sec] || 0x3b82f6)
-      .setFooter({ text: "Outpost X Rules" });
+      await safeReply(interaction, {
+        content: "✅ Server Info posted.",
+        ephemeral: true,
+      });
 
-    await chan.send({ embeds: [embed] });
-
-    await safeReply(interaction, {
-      content: "✅ Rules posted.",
-      ephemeral: true,
-    });
-
-    delete userSession[interaction.user.id];
-    return;
+      delete userSession[interaction.user.id];
+      return;
+    }
   }
 
   if (session.act === "ast_on") {
@@ -215,20 +244,23 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
 
       if (act === "rules") {
         await safeReply(interaction, {
-          content: "Which rule section do you want to post?",
+          content: "What rules do you want to post?",
           components: [
             new ActionRowBuilder().addComponents(
               new StringSelectMenuBuilder()
-                .setCustomId("post_sec")
-                .setPlaceholder("Choose a rule section")
+                .setCustomId("post_rule_mode")
+                .setPlaceholder("Choose rule post type")
                 .addOptions([
-                  { label: "Server Info", value: "server", emoji: "📡" },
-                  { label: "General", value: "general", emoji: "📋" },
-                  { label: "PvP", value: "pvp", emoji: "⚔️" },
-                  { label: "Base", value: "base", emoji: "🏗️" },
-                  { label: "Vehicles", value: "vehicles", emoji: "🚗" },
-                  { label: "Shops", value: "shops", emoji: "🏪" },
-                  { label: "Map", value: "map", emoji: "🗺️" },
+                  {
+                    label: "Post All Rules Together",
+                    value: "all",
+                    emoji: "📚",
+                  },
+                  {
+                    label: "Post Server Info Only",
+                    value: "server",
+                    emoji: "📡",
+                  },
                 ])
             ),
           ],
@@ -261,8 +293,8 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
       return;
     }
 
-    if (interaction.customId === "post_sec") {
-      session.sec = interaction.values[0];
+    if (interaction.customId === "post_rule_mode") {
+      session.ruleMode = interaction.values[0];
       await askForCategory(interaction);
       return;
     }
