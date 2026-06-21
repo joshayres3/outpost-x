@@ -135,7 +135,7 @@ async function handlePostWhereSelect(interaction, liveRules) {
   pending.targetChannelId = channelId;
 
   // If posting guide, post it directly
-  if (pending.what === "guide") {
+  if (pending.what === "help") {
     try {
       const channel = await interaction.guild.channels.fetch(pending.targetChannelId);
       if (!channel) throw new Error("Channel not found");
@@ -300,7 +300,7 @@ async function handlePostChannelSelect(interaction, liveRules) {
   }
 
   // If guide, post it directly
-  if (pending.what === "guide") {
+  if (pending.what === "help") {
     try {
       const { postHelpPanel } = require("./guide");
       await postHelpPanel(channel);

@@ -339,7 +339,7 @@ discord.on("messageCreate", async (message) => {
         }
         
         // If guide, post it directly
-        if (pending.what === "guide") {
+        if (pending.what === "help") {
           const { postHelpPanel } = require("./guide");
           await postHelpPanel(targetChannel);
           await message.reply(`✅ Guide posted to <#${targetChannel.id}>!`);
