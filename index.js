@@ -27,6 +27,10 @@ const {
 } = require("./welcome");
 const { handleSupportRedirect } = require("./support");
 const { handleWatcherFlavor } = require("./watcherFlavor");
+const {
+  handleWatcherCommand,
+  isPublicRepliesEnabled,
+} = require("./watcherControls");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -60,6 +64,42 @@ const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY, {
 
 let rules = {};
 const channels = new Set();
+
+async function loadWatcherData() {
+  const { data: ruleRows, error: rulesError } = await db.from("rules").select("*");
+  if (rulesError) throw rulesError;
+
+  rules = {};
+  for (const r of ruleRows || []) {
+    rules[r.section] = r.content;
+  }
+
+  const { data: channelRows, error: channelsError } = await db
+    .from("assistant_channels")
+    .select("channel_id");
+
+  if (channelsError) throw channelsError;
+
+  channels.clear();
+  for (const c of channelRows || []) {
+    channels.add(c.channel_id);
+  }
+
+  return {
+    ruleCount: Object.keys(rules).length,
+    channelCount: channels.size,
+  };
+}
+
+function getWatcherContext() {
+  return {
+    bot,
+    db,
+    rules,
+    channels,
+    reloadData: loadWatcherData,
+  };
+}
 
 function shouldAnswerWithAssistant(content) {
   if (!content) return false;
@@ -110,28 +150,10 @@ bot.once(Events.ClientReady, async () => {
   console.log(`✅ The Watcher is online as ${bot.user.tag}`);
 
   try {
-    const { data: ruleRows, error: rulesError } = await db.from("rules").select("*");
-    if (rulesError) throw rulesError;
+    const result = await loadWatcherData();
 
-    rules = {};
-    for (const r of ruleRows || []) {
-      rules[r.section] = r.content;
-    }
-
-    console.log(`📚 Loaded ${Object.keys(rules).length} rule sections`);
-
-    const { data: channelRows, error: channelsError } = await db
-      .from("assistant_channels")
-      .select("channel_id");
-
-    if (channelsError) throw channelsError;
-
-    channels.clear();
-    for (const c of channelRows || []) {
-      channels.add(c.channel_id);
-    }
-
-    console.log(`✅ Assistant in ${channels.size} channel(s)`);
+    console.log(`📚 Loaded ${result.ruleCount} rule sections`);
+    console.log(`✅ Assistant in ${result.channelCount} channel(s)`);
 
     startEventScheduler(bot, db);
   } catch (err) {
@@ -204,6 +226,8 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     if (msg.author.bot) return;
 
+    if (await handleWatcherCommand(msg, getWatcherContext())) return;
+
     if (await handleWelcomeBackfillCommand(msg, bot, db)) return;
 
     if (await handleEventCommand(msg)) return;
@@ -243,6 +267,8 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     // Public automatic responses below this point are locked to the main chat only.
     if (msg.channelId !== MAIN_CHAT_CHANNEL_ID) return;
+
+    if (!isPublicRepliesEnabled()) return;
 
     if (await handleSupportRedirect(msg)) return;
 
