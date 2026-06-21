@@ -138,7 +138,9 @@ function buildRuleEmbed(sectionKey, content) {
 }
 
 async function postAllRules(channel, liveRules) {
-  const order = ["server", "general", "pvp", "base", "vehicles", "shops", "map"];
+  // Server Info is intentionally NOT included here.
+  // Use "Post Server Info Only" when you want the server info post.
+  const order = ["general", "pvp", "base", "vehicles", "shops", "map"];
 
   for (const sectionKey of order) {
     const content = liveRules[sectionKey];
@@ -152,6 +154,16 @@ async function postAllRules(channel, liveRules) {
 async function finishAction(interaction, session, liveRules, discord, supabase, enabledChannels) {
   await deferIfNeeded(interaction);
 
+  if (session.completed || session.processing) {
+    await safeReply(interaction, {
+      content: "This action is already being processed.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  session.processing = true;
+
   const chan = await discord.channels.fetch(session.ch);
 
   if (session.act === "help") {
@@ -161,6 +173,8 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
     });
 
     await postGuide(chan);
+
+    session.completed = true;
 
     await safeReply(interaction, {
       content: "✅ Help Center posted.",
@@ -181,6 +195,8 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
       await postAllRules(chan, liveRules);
 
+      session.completed = true;
+
       await safeReply(interaction, {
         content: "✅ All rules posted.",
         ephemeral: true,
@@ -200,6 +216,8 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
       const cont = liveRules.server;
 
       if (!cont) {
+        session.completed = true;
+
         await safeReply(interaction, {
           content: "Server Info section not found.",
           ephemeral: true,
@@ -212,6 +230,8 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
       const embed = buildRuleEmbed("server", cont);
       await chan.send({ embeds: [embed] });
+
+      session.completed = true;
 
       await safeReply(interaction, {
         content: "✅ Server Info posted.",
@@ -232,6 +252,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
     if (error) throw error;
 
     enabledChannels.add(session.ch);
+    session.completed = true;
 
     await safeReply(interaction, {
       content: `✅ Assistant enabled in <#${session.ch}>.`,
@@ -252,6 +273,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
     if (error) throw error;
 
     enabledChannels.delete(session.ch);
+    session.completed = true;
 
     await safeReply(interaction, {
       content: `✅ Assistant disabled in <#${session.ch}>.`,
@@ -264,12 +286,16 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
   }
 
   if (session.act === "ann") {
+    session.processing = false;
+
     await safeReply(interaction, {
       content: `Type the announcement message now. I will post it in <#${session.ch}>.`,
       ephemeral: true,
     });
     return;
   }
+
+  session.processing = false;
 }
 
 async function handlePostMenu(interaction, liveRules, discord, supabase, enabledChannels) {
@@ -282,6 +308,8 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
       userSession[uid] = {
         act,
         startedAt: Date.now(),
+        processing: false,
+        completed: false,
       };
 
       if (act === "rules") {
@@ -363,6 +391,9 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
   } catch (err) {
     console.error("❌ Post menu error:", err);
 
+    const session = userSession[uid];
+    if (session) session.processing = false;
+
     await safeReply(interaction, {
       content: `Error: ${err.message}`,
       ephemeral: true,
@@ -376,6 +407,13 @@ async function handleAnnText(msg) {
   const sess = userSession[msg.author.id];
 
   if (!sess || sess.act !== "ann" || !sess.ch) return false;
+
+  if (sess.processing) {
+    await msg.reply("That announcement is already being posted.").catch(() => {});
+    return true;
+  }
+
+  sess.processing = true;
 
   try {
     const chan = await msg.client.channels.fetch(sess.ch);
@@ -394,6 +432,7 @@ async function handleAnnText(msg) {
     return true;
   } catch (err) {
     console.error("❌ Announcement error:", err);
+    sess.processing = false;
     msg.reply("I could not post that announcement.").catch(() => {});
     return true;
   }
