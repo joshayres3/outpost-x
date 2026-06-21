@@ -42,19 +42,23 @@ async function handlePostWhatSelect(interaction) {
     return true;
   }
 
-  // For guide, post it directly to the channel they specify
+  // For guide, also use category selection
   if (what === "guide") {
     await interaction.reply({
-      content: `**${labels[what]}**\n\nWhich channel do you want to post the guide in?`,
+      content: `**${labels[what]}**\n\nWhich category?`,
       components: [
         new ActionRowBuilder().addComponents(
           new StringSelectMenuBuilder()
-            .setCustomId("post_where_select")
-            .setPlaceholder("Choose a channel...")
+            .setCustomId("post_category_select")
+            .setPlaceholder("Choose a category...")
             .addOptions(
-              { label: "Admin Channel", value: "1518059656302301245" },
-              { label: "Main Chat", value: "1516269437932670977" },
-              { label: "Other Channel", value: "other" }
+              interaction.guild.channels.cache
+                .filter(ch => ch.type === 4) // Type 4 = Category
+                .map(cat => ({
+                  label: cat.name,
+                  value: cat.id
+                }))
+                .slice(0, 25)
             )
         )
       ],
