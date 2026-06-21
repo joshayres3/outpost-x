@@ -1,6 +1,6 @@
 const { EmbedBuilder } = require("discord.js");
 
-const helpSections = [
+const GUIDE_SECTIONS = [
   { emoji: "🎯", title: "Getting Started", content: "Spawn, orient yourself, learn the menus and character setup." },
   { emoji: "⚙️", title: "Game Mechanics", content: "Metabolism, BCU, attributes, focus mode, stamina - core survival systems." },
   { emoji: "🏗️", title: "Base Building", content: "Build smart. Placement rules, materials, security, and expansion." },
@@ -12,16 +12,15 @@ const helpSections = [
   { emoji: "👥", title: "Multiplayer Tips", content: "KOS mentality, raiding, base hiding, squad dynamics." },
 ];
 
-async function postHelpPanel(channel) {
-  for (const section of helpSections) {
+async function postGuide(channel) {
+  for (const section of GUIDE_SECTIONS) {
     const embed = new EmbedBuilder()
       .setTitle(`${section.emoji} ${section.title}`)
       .setDescription(section.content)
       .setColor(0x3b82f6)
       .setFooter({ text: "Outpost X Help Center" });
-
     await channel.send({ embeds: [embed] });
   }
 }
 
-module.exports = { postHelpPanel };
+module.exports = { postGuide };

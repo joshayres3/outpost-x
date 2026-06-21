@@ -1,218 +1,155 @@
 const { ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder, ChannelType } = require("discord.js");
-const { postHelpPanel } = require("./guide");
+const { postGuide } = require("./guide");
 
-const userSessions = {};
+const userSession = {};
 
-function buildActionMenu() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("post_action")
-      .setPlaceholder("What to post?")
-      .addOptions([
-        { label: "📚 Help Center", value: "help" },
-        { label: "📋 Rules", value: "rules" },
-        { label: "🤖 Enable Assistant", value: "assistant_on" },
-        { label: "🔇 Disable Assistant", value: "assistant_off" },
-        { label: "📣 Announcement", value: "announce" },
-      ])
-  );
-}
-
-function buildRulesMenu() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("post_rules")
-      .setPlaceholder("Select section...")
-      .addOptions([
-        { label: "📡 Server Info", value: "server" },
-        { label: "📋 General Rules", value: "general" },
-        { label: "⚔️ PvP Rules", value: "pvp" },
-        { label: "🏗️ Base Building", value: "base" },
-        { label: "🚗 Vehicles", value: "vehicles" },
-        { label: "🏪 Shops", value: "shops" },
-        { label: "🗺️ Map Info", value: "map" },
-      ])
-  );
-}
-
-function buildRuleEmbed(section, content) {
-  const emojis = {
-    server: "📡",
-    general: "📋",
-    pvp: "⚔️",
-    base: "🏗️",
-    vehicles: "🚗",
-    shops: "🏪",
-    map: "🗺️",
-  };
-  const colors = {
-    server: 0x60a5fa,
-    general: 0xc8a04a,
-    pvp: 0xef4444,
-    base: 0xf59e0b,
-    vehicles: 0x8b5cf6,
-    shops: 0x22c55e,
-    map: 0x3b82f6,
-  };
-
-  const lines = content.split("\n");
-  const title = lines[0];
-  const body = lines.slice(1).join("\n").trim();
-
-  return new EmbedBuilder()
-    .setTitle(`${emojis[section] || "📋"} ${title}`)
-    .setDescription(body || content)
-    .setColor(colors[section] || 0x3b82f6)
-    .setFooter({ text: "Outpost X Server Rules" });
-}
-
-async function handlePostInteraction(interaction, liveRules, discord, supabase, enabledChannels) {
-  const userId = interaction.user.id;
-  const session = userSessions[userId] || {};
-
+async function handlePostMenu(interaction, liveRules, discord, supabase, enabledChannels) {
+  const uid = interaction.user.id;
+  
   try {
-    // Category selection
-    if (interaction.customId === "post_category") {
-      session.categoryId = interaction.values[0];
-      userSessions[userId] = session;
-
-      const guild = interaction.guild;
-      const channels = guild.channels.cache
-        .filter(ch => ch.parentId === session.categoryId && ch.type === ChannelType.GuildText)
-        .map(ch => ({ name: ch.name, value: ch.id }));
-
-      if (channels.length === 0) {
-        await interaction.reply({ content: "❌ No channels in this category", ephemeral: true });
-        delete userSessions[userId];
-        return true;
+    // Category
+    if (interaction.customId === "post_cat") {
+      userSession[uid] = { cat: interaction.values[0] };
+      const cat = interaction.guild.channels.cache.get(userSession[uid].cat);
+      const chans = interaction.guild.channels.cache
+        .filter(c => c.parentId === userSession[uid].cat && c.type === ChannelType.GuildText)
+        .map(c => ({ name: c.name, value: c.id }));
+      
+      if (!chans.length) {
+        await interaction.reply({ content: "No channels", ephemeral: true });
+        delete userSession[uid];
+        return;
       }
 
       await interaction.reply({
-        content: "**Which channel?**",
-        components: [
-          new ActionRowBuilder().addComponents(
-            new StringSelectMenuBuilder()
-              .setCustomId("post_channel")
-              .setPlaceholder("Select channel...")
-              .addOptions(channels)
-          ),
-        ],
+        content: "Which channel?",
+        components: [new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder().setCustomId("post_ch").setOptions(chans)
+        )],
         ephemeral: true,
       });
-      return true;
+      return;
     }
 
-    // Channel selection
-    if (interaction.customId === "post_channel") {
-      session.channelId = interaction.values[0];
-      userSessions[userId] = session;
-
+    // Channel
+    if (interaction.customId === "post_ch") {
+      userSession[uid].ch = interaction.values[0];
       await interaction.reply({
-        content: "**What to post?**",
-        components: [buildActionMenu()],
+        content: "What to post?",
+        components: [new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder().setCustomId("post_act").addOptions([
+            { label: "Help", value: "help" },
+            { label: "Rules", value: "rules" },
+            { label: "Enable Assistant", value: "ast_on" },
+            { label: "Disable Assistant", value: "ast_off" },
+            { label: "Announcement", value: "ann" },
+          ])
+        )],
         ephemeral: true,
       });
-      return true;
+      return;
     }
 
-    // Action selection
-    if (interaction.customId === "post_action") {
-      const action = interaction.values[0];
-      session.action = action;
-      userSessions[userId] = session;
+    // Action
+    if (interaction.customId === "post_act") {
+      const act = interaction.values[0];
+      userSession[uid].act = act;
+      const chan = await discord.channels.fetch(userSession[uid].ch);
 
-      const channel = await discord.channels.fetch(session.channelId);
-
-      // Help Center
-      if (action === "help") {
-        await postHelpPanel(channel);
-        await interaction.reply({ content: "✅ Help Center posted!", ephemeral: true });
-        delete userSessions[userId];
-        return true;
+      if (act === "help") {
+        await postGuide(chan);
+        await interaction.reply({ content: "✅ Posted!", ephemeral: true });
+        delete userSession[uid];
+        return;
       }
 
-      // Rules
-      if (action === "rules") {
+      if (act === "rules") {
         await interaction.reply({
-          content: "**Which section?**",
-          components: [buildRulesMenu()],
+          content: "Which section?",
+          components: [new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId("post_sec").addOptions([
+              { label: "Server Info", value: "server" },
+              { label: "General", value: "general" },
+              { label: "PvP", value: "pvp" },
+              { label: "Base", value: "base" },
+              { label: "Vehicles", value: "vehicles" },
+              { label: "Shops", value: "shops" },
+              { label: "Map", value: "map" },
+            ])
+          )],
           ephemeral: true,
         });
-        return true;
+        return;
       }
 
-      // Assistant
-      if (action === "assistant_on" || action === "assistant_off") {
-        if (action === "assistant_on") {
-          await supabase.from("assistant_channels").insert({ channel_id: session.channelId });
-          enabledChannels.add(session.channelId);
+      if (act === "ast_on" || act === "ast_off") {
+        if (act === "ast_on") {
+          await supabase.from("assistant_channels").insert({ channel_id: userSession[uid].ch });
+          enabledChannels.add(userSession[uid].ch);
         } else {
-          await supabase.from("assistant_channels").delete().eq("channel_id", session.channelId);
-          enabledChannels.delete(session.channelId);
+          await supabase.from("assistant_channels").delete().eq("channel_id", userSession[uid].ch);
+          enabledChannels.delete(userSession[uid].ch);
         }
-        const verb = action === "assistant_on" ? "enabled" : "disabled";
-        await interaction.reply({ content: `✅ Assistant ${verb}!`, ephemeral: true });
-        delete userSessions[userId];
-        return true;
+        await interaction.reply({ content: "✅ Done!", ephemeral: true });
+        delete userSession[uid];
+        return;
       }
 
-      // Announcement
-      if (action === "announce") {
-        await interaction.reply({ content: "Type your announcement:", ephemeral: true });
-        return true;
+      if (act === "ann") {
+        await interaction.reply({ content: "Type announcement:", ephemeral: true });
+        return;
       }
     }
 
-    // Rules section
-    if (interaction.customId === "post_rules") {
-      session.section = interaction.values[0];
-      userSessions[userId] = session;
+    // Section
+    if (interaction.customId === "post_sec") {
+      userSession[uid].sec = interaction.values[0];
+      const chan = await discord.channels.fetch(userSession[uid].ch);
+      const cont = liveRules[userSession[uid].sec];
 
-      const channel = await discord.channels.fetch(session.channelId);
-      const content = liveRules[session.section];
-
-      if (!content) {
-        await interaction.reply({ content: "❌ Section not found", ephemeral: true });
-        delete userSessions[userId];
-        return true;
+      if (!cont) {
+        await interaction.reply({ content: "Not found", ephemeral: true });
+        delete userSession[uid];
+        return;
       }
 
-      const embed = buildRuleEmbed(session.section, content);
-      await channel.send({ embeds: [embed] });
+      const lines = cont.split("\n");
+      const title = lines[0];
+      const body = lines.slice(1).join("\n").trim();
+      const emojis = { server: "📡", general: "📋", pvp: "⚔️", base: "🏗️", vehicles: "🚗", shops: "🏪", map: "🗺️" };
+      const colors = { server: 0x60a5fa, general: 0xc8a04a, pvp: 0xef4444, base: 0xf59e0b, vehicles: 0x8b5cf6, shops: 0x22c55e, map: 0x3b82f6 };
+
+      const embed = new EmbedBuilder()
+        .setTitle(`${emojis[userSession[uid].sec]} ${title}`)
+        .setDescription(body || cont)
+        .setColor(colors[userSession[uid].sec] || 0x3b82f6)
+        .setFooter({ text: "Outpost X Rules" });
+
+      await chan.send({ embeds: [embed] });
       await interaction.reply({ content: "✅ Posted!", ephemeral: true });
-      delete userSessions[userId];
-      return true;
+      delete userSession[uid];
+      return;
     }
   } catch (err) {
-    console.error("❌ Interaction error:", err.message);
-    await interaction.reply({
-      content: `❌ Error: ${err.message}`,
-      ephemeral: true,
-    }).catch(() => {});
+    console.error(err);
+    await interaction.reply({ content: `Error: ${err.message}`, ephemeral: true }).catch(() => {});
   }
-
-  return false;
 }
 
-async function handleAnnouncementText(message, discord) {
-  const session = userSessions[message.author.id];
-  if (!session || session.action !== "announce" || !session.channelId) return false;
+async function handleAnnText(msg) {
+  const sess = userSession[msg.author.id];
+  if (!sess || sess.act !== "ann" || !sess.ch) return false;
 
   try {
-    const channel = await discord.channels.fetch(session.channelId);
-    await channel.send(message.content);
-    await message.reply("✅ Posted!");
-    delete userSessions[message.author.id];
+    const chan = await msg.client.channels.fetch(sess.ch);
+    await chan.send(msg.content);
+    await msg.reply("✅ Posted!");
+    delete userSession[msg.author.id];
     return true;
   } catch (err) {
-    console.error("❌ Announcement error:", err.message);
+    console.error(err);
     return false;
   }
 }
 
-module.exports = {
-  userSessions,
-  buildActionMenu,
-  handlePostInteraction,
-  handleAnnouncementText,
-};
+module.exports = { handlePostMenu, handleAnnText, userSession };
