@@ -219,6 +219,13 @@ discord.on(Events.InteractionCreate, async (interaction) => {
         liveRules[pending.section] = pending.newText;
         delete pendingUpdates[interaction.user.id];
         await interaction.update({ content: `✅ **${pending.section.toUpperCase()}** rules saved permanently.`, components: [] });
+        
+        // Auto-update any posted rule messages
+        const { updatePostedRules } = require("./poster");
+        updatePostedRules(pending.section, pending.newText, liveRules, supabase, discord).catch(e => 
+          console.error("Failed to auto-update posted rules:", e.message)
+        );
+        
         setTimeout(async () => { 
           try { 
             if (interaction.message) await interaction.message.delete();
@@ -342,4 +349,6 @@ const {
   handleRuleUpdateSectionSelect,
   handleRuleUpdateText,
   handleRuleUpdateCancel,
+  postRules,
+  updatePostedRules,
 } = require("./poster");

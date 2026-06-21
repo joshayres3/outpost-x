@@ -308,6 +308,100 @@ async function handlePostCancel(interaction) {
 
 // ─── Rule Update handlers ─────────────────────────────────────────────────────
 
+// ─── Post rules to a channel and track message IDs ──────────────────────────────
+async function postRules(channel, liveRules, supabase) {
+  const sectionEmojis = {
+    server: "📡", general: "📋", pvp: "⚔️", base: "🏗️",
+    vehicles: "🚗", shops: "🏪", map: "🗺️"
+  };
+  const sectionColors = {
+    server: 0x60a5fa, general: 0xc8a04a, pvp: 0xef4444, base: 0xf59e0b,
+    vehicles: 0x8b5cf6, shops: 0x22c55e, map: 0x3b82f6
+  };
+
+  const sectionMessages = {};
+  const { EmbedBuilder } = require("discord.js");
+
+  for (const [section, content] of Object.entries(liveRules)) {
+    const lines = content.split("\n");
+    const title = lines[0];
+    const body = lines.slice(1).join("\n").trim();
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${sectionEmojis[section] || "📋"} ${title}`)
+      .setDescription(body || content)
+      .setColor(sectionColors[section] || 0x3b82f6)
+      .setFooter({ text: "Outpost X Server Rules" });
+
+    try {
+      const msg = await channel.send({ embeds: [embed] });
+      sectionMessages[section] = msg.id;
+    } catch (e) {
+      console.error(`Failed to post ${section} rules:`, e.message);
+    }
+  }
+
+  // Track the posted messages in Supabase
+  try {
+    await supabase.from("posted_rules_messages").upsert({
+      channel_id: channel.id,
+      section_messages: JSON.stringify(sectionMessages),
+    }, { onConflict: "channel_id" });
+  } catch (e) {
+    console.error("Failed to track posted rules:", e.message);
+  }
+}
+
+// ─── Auto-update posted rule messages when rules are changed ──────────────────
+async function updatePostedRules(updatedSection, newContent, liveRules, supabase, discord) {
+  try {
+    const { data } = await supabase.from("posted_rules_messages").select("*");
+    if (!data || data.length === 0) return;
+
+    const sectionEmojis = {
+      server: "📡", general: "📋", pvp: "⚔️", base: "🏗️",
+      vehicles: "🚗", shops: "🏪", map: "🗺️"
+    };
+    const sectionColors = {
+      server: 0x60a5fa, general: 0xc8a04a, pvp: 0xef4444, base: 0xf59e0b,
+      vehicles: 0x8b5cf6, shops: 0x22c55e, map: 0x3b82f6
+    };
+
+    const { EmbedBuilder } = require("discord.js");
+
+    for (const record of data) {
+      const messageIds = JSON.parse(record.section_messages);
+      const sectionMsgId = messageIds[updatedSection];
+      if (!sectionMsgId) continue;
+
+      try {
+        const channel = await discord.channels.fetch(record.channel_id);
+        if (!channel) continue;
+        
+        const message = await channel.messages.fetch(sectionMsgId);
+        if (!message) continue;
+
+        const lines = newContent.split("\n");
+        const title = lines[0];
+        const body = lines.slice(1).join("\n").trim();
+
+        const embed = new EmbedBuilder()
+          .setTitle(`${sectionEmojis[updatedSection]} ${title}`)
+          .setDescription(body || newContent)
+          .setColor(sectionColors[updatedSection])
+          .setFooter({ text: "Outpost X Server Rules" });
+
+        await message.edit({ embeds: [embed] });
+        console.log(`✅ Updated ${updatedSection} rules in channel ${channel.name}`);
+      } catch (e) {
+        console.error(`Failed to update rules in channel ${record.channel_id}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error("Failed to update posted rules:", e.message);
+  }
+}
+
 async function handleRuleUpdateSectionSelect(interaction, liveRules, pendingUpdates) {
   if (interaction.customId !== "ruleupdate_select_section") return false;
 
@@ -408,4 +502,6 @@ module.exports = {
   handleRuleUpdateText,
   handleRuleUpdateCancel,
   handleAnnouncementText,
+  postRules,
+  updatePostedRules,
 };
