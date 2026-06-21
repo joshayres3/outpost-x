@@ -185,8 +185,8 @@ function hasAdminRole(member) {
 const pendingUpdates = {};
 
 // ─── Ready ────────────────────────────────────────────────────────────────────
-discord.once("ready", async () => {
-  console.log(`✅ The Watcher is online as ${discord.user.tag}`);
+discord.once(Events.ClientReady, async (client) => {
+  console.log(`✅ The Watcher is online as ${client.user.tag}`);
   await loadRules();
   await loadEnabledChannels();
   console.log(`📡 Admin channel: ${ADMIN_CHANNEL_ID}`);
