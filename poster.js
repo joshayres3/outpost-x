@@ -1,4 +1,4 @@
-const { ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder } = require("discord.js");
+const { ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder, ChannelType } = require("discord.js");
 const { postHelpPanel } = require("./guide");
 
 const userSessions = {};
@@ -78,7 +78,7 @@ async function handlePostInteraction(interaction, liveRules, discord, supabase, 
 
       const guild = interaction.guild;
       const channels = guild.channels.cache
-        .filter(ch => ch.parentId === session.categoryId && ch.isTextBased())
+        .filter(ch => ch.parentId === session.categoryId && ch.type === ChannelType.GuildText)
         .map(ch => ({ name: ch.name, value: ch.id }));
 
       if (channels.length === 0) {

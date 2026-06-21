@@ -1,5 +1,5 @@
 require("dotenv").config();
-const { Client, Events, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder } = require("discord.js");
+const { Client, Events, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder, ChannelType } = require("discord.js");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -88,7 +88,7 @@ discord.on(Events.MessageCreate, async (message) => {
     try {
       const guild = message.guild;
       const categories = guild.channels.cache
-        .filter(ch => ch.isCategory())
+        .filter(ch => ch.type === ChannelType.GuildCategory)
         .map(cat => ({ name: cat.name, value: cat.id }))
         .slice(0, 25);
 
