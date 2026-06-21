@@ -10,7 +10,7 @@ const ALLOWED_ROLES     = ["Owner", "Admin"];
 const ADMIN_WHITELIST   = [];
 
 // ─── Initialize clients ───────────────────────────────────────────────────────
-const discord  = new Client({ intents: 131072 });
+const discord  = new Client({ intents: [32767, "MessageContent"] });
 const genAI    = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
