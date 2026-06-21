@@ -1,5 +1,21 @@
 require("dotenv").config();
 
+process.on("uncaughtException", (err) => {
+  console.error("🔥 UNCAUGHT EXCEPTION:");
+  console.error(err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("🔥 UNHANDLED REJECTION:");
+  console.error(reason);
+});
+
+process.on("SIGINT", () => {
+  console.log("⚠️ SIGINT received. Bot was manually stopped.");
+  bot?.destroy?.();
+  process.exit(0);
+});
+
 const {
   Client,
   Events,
@@ -185,6 +201,9 @@ bot.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
+      // Poster buttons such as ann_confirm / ann_revise / ann_cancel
+      // must be routed here or Discord will show "This interaction failed."
+      await handlePostMenu(interaction, rules, bot, db, channels);
       return;
     }
 
@@ -280,7 +299,7 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     if (await handleEventText(msg)) return;
 
-    if (await handleAnnText(msg)) return;
+    if (await handleAnnText(msg, genai)) return;
 
     // Public automatic responses below this point are locked to the main chat only.
     if (msg.channelId !== MAIN_CHAT_CHANNEL_ID) return;
@@ -329,18 +348,14 @@ If the rules do not clearly answer the question, say:
 
 bot.on("error", (err) => console.error("❌ Discord error:", err));
 
-process.on("unhandledRejection", (err) => {
-  console.error("❌ Unhandled rejection:", err);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("❌ Uncaught exception:", err);
-});
-
 process.on("SIGTERM", () => {
-  console.log("🛑 SIGTERM received. Shutting down cleanly.");
+  console.log("⚠️ SIGTERM received. The host/container is stopping the bot.");
   bot.destroy();
   process.exit(0);
 });
+
+setInterval(() => {
+  console.log(`💓 Watcher heartbeat: ${new Date().toISOString()}`);
+}, 5 * 60 * 1000);
 
 bot.login(process.env.DISCORD_TOKEN);
