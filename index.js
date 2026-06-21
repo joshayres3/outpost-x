@@ -38,6 +38,7 @@ discord.on(Events.ClientReady, async () => {
   console.log(`✅ The Watcher is online as ${discord.user.tag}`);
 
   try {
+    console.log("   → Loading rules from Supabase...");
     const { data } = await supabase.from("rules").select("*");
     data.forEach(({ section, content }) => {
       liveRules[section] = content;
@@ -48,6 +49,7 @@ discord.on(Events.ClientReady, async () => {
   }
 
   try {
+    console.log("   → Loading enabled assistant channels...");
     const { data } = await supabase.from("assistant_channels").select("channel_id");
     data.forEach(({ channel_id }) => enabledChannels.add(channel_id));
     console.log(`✅ Assistant enabled in ${enabledChannels.size} channel(s).`);
@@ -57,6 +59,7 @@ discord.on(Events.ClientReady, async () => {
 
   console.log(`📡 Admin channel: ${ADMIN_CHANNEL_ID}`);
   console.log(`💬 Assistant channel: ${ASSISTANT_CHANNEL_ID}`);
+  console.log("   ✅ Bot fully ready");
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -149,11 +152,28 @@ Answer concisely (1-2 sentences). Be helpful and friendly.
 // ERROR HANDLING
 // ═══════════════════════════════════════════════════════════════════════════
 
-discord.on("error", err => console.error("❌ Discord error:", err));
-process.on("unhandledRejection", err => console.error("❌ Unhandled rejection:", err));
+discord.on("error", err => {
+  console.error("❌ Discord client error:", err);
+});
+
+discord.on("warn", msg => {
+  console.warn("⚠️ Discord warning:", msg);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Unhandled rejection at:", promise, "reason:", reason);
+});
+
+process.on("uncaughtException", err => {
+  console.error("❌ Uncaught exception:", err);
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LOGIN
 // ═══════════════════════════════════════════════════════════════════════════
 
-discord.login(process.env.DISCORD_TOKEN);
+console.log("   → Attempting to login...");
+discord.login(process.env.DISCORD_TOKEN).catch(err => {
+  console.error("❌ Login failed:", err);
+  process.exit(1);
+});
