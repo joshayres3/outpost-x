@@ -10,6 +10,7 @@ const {
 } = require("discord.js");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
+const WebSocket = require("ws");
 const { handlePostMenu, handleAnnText } = require("./poster");
 
 const ADMIN_CH = process.env.ADMIN_CHANNEL_ID || "1518059656302301245";
@@ -36,7 +37,11 @@ const bot = new Client({
 });
 
 const genai = new GoogleGenerativeAI(GEMINI_API_KEY);
-const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+const db = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  realtime: {
+    transport: WebSocket,
+  },
+});
 
 let rules = {};
 const channels = new Set();
