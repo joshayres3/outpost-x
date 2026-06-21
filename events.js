@@ -60,6 +60,47 @@ function nextOccurrence(isoTime, recurrence) {
   return null;
 }
 
+function trackMessage(session, msg) {
+  if (!session || !msg) return;
+
+  if (!session.cleanupMessages) session.cleanupMessages = [];
+
+  session.cleanupMessages.push({
+    channelId: msg.channelId,
+    messageId: msg.id,
+  });
+}
+
+async function deleteTrackedMessages(client, session) {
+  if (!session || !session.cleanupMessages) return;
+
+  for (const item of session.cleanupMessages) {
+    try {
+      const channel = await client.channels.fetch(item.channelId).catch(() => null);
+      if (!channel || !channel.messages) continue;
+
+      const message = await channel.messages.fetch(item.messageId).catch(() => null);
+      if (message && message.deletable) {
+        await message.delete().catch(() => {});
+      }
+    } catch {
+      // Ignore cleanup failures.
+    }
+  }
+
+  session.cleanupMessages = [];
+}
+
+async function deleteInteractionMessage(interaction) {
+  try {
+    if (interaction.message && interaction.message.deletable) {
+      await interaction.message.delete().catch(() => {});
+    }
+  } catch {
+    // Ignore cleanup failures.
+  }
+}
+
 async function getRsvpCount(db, eventId) {
   const { count, error } = await db
     .from("event_rsvps")
@@ -203,22 +244,29 @@ async function handleEventCommand(msg) {
 
   if (!isStaff(msg.member)) return true;
 
-  await msg.reply({
+  const menuMsg = await msg.reply({
     content: "What do you want to do with events?",
     components: buildAdminMenu(),
   });
 
   msg.delete().catch(() => {});
+
+  // This menu cleans itself once an option is chosen.
   return true;
 }
 
 async function beginCreate(interaction) {
-  createSessions[interaction.user.id] = {
+  const session = {
     step: "title",
     createdAt: Date.now(),
     channelId: interaction.channelId,
     data: {},
+    cleanupMessages: [],
   };
+
+  createSessions[interaction.user.id] = session;
+
+  await deleteInteractionMessage(interaction);
 
   await interaction.reply({
     content:
@@ -228,6 +276,8 @@ async function beginCreate(interaction) {
 }
 
 async function showUpcoming(interaction, db) {
+  await deleteInteractionMessage(interaction);
+
   const { data, error } = await db
     .from("events")
     .select("*")
@@ -256,6 +306,8 @@ async function showUpcoming(interaction, db) {
 }
 
 async function showCloseMenu(interaction, db) {
+  await deleteInteractionMessage(interaction);
+
   const { data, error } = await db
     .from("events")
     .select("*")
@@ -403,10 +455,12 @@ async function confirmCreate(interaction, bot, db) {
 
   await postEvent(bot, db, event);
 
+  await deleteTrackedMessages(interaction.client, session);
+
   delete createSessions[interaction.user.id];
 
   await interaction.reply({
-    content: `✅ Event posted in <#${EVENTS_CH}>.`,
+    content: `✅ Event posted in <#${EVENTS_CH}>. Setup messages cleaned up.`,
     ephemeral: true,
   });
 }
@@ -544,6 +598,9 @@ async function handleEventInteraction(interaction, bot, db) {
     }
 
     session.data.recurrence = interaction.values[0];
+
+    await deleteTrackedMessages(interaction.client, session);
+
     await showPreview(interaction, session);
     return true;
   }
@@ -562,10 +619,16 @@ async function handleEventInteraction(interaction, bot, db) {
   }
 
   if (customId === "event_cancel_create") {
+    const session = createSessions[interaction.user.id];
+
+    if (session) {
+      await deleteTrackedMessages(interaction.client, session);
+    }
+
     delete createSessions[interaction.user.id];
 
     await interaction.reply({
-      content: "❌ Event creation cancelled.",
+      content: "❌ Event creation cancelled. Setup messages cleaned up.",
       ephemeral: true,
     });
     return true;
@@ -613,6 +676,12 @@ function parseEventDateTime(dateText, timeText) {
   return null;
 }
 
+async function replyAndTrack(msg, session, payload) {
+  const reply = await msg.reply(payload).catch(() => null);
+  trackMessage(session, reply);
+  return reply;
+}
+
 async function handleEventText(msg) {
   const session = createSessions[msg.author.id];
 
@@ -620,8 +689,11 @@ async function handleEventText(msg) {
 
   if (msg.channelId !== session.channelId) return false;
 
+  trackMessage(session, msg);
+
   const age = Date.now() - session.createdAt;
   if (age > 15 * 60 * 1000) {
+    await deleteTrackedMessages(msg.client, session);
     delete createSessions[msg.author.id];
     await msg.reply("Event creation expired. Run `!event` again.").catch(() => {});
     return true;
@@ -631,40 +703,42 @@ async function handleEventText(msg) {
 
   if (session.step === "title") {
     if (!text || text.length > 100) {
-      await msg.reply("Title is required and must be 100 characters or less. Send the title again.").catch(() => {});
+      await replyAndTrack(msg, session, "Title is required and must be 100 characters or less. Send the title again.");
       return true;
     }
 
     session.data.title = cleanText(text, 100);
     session.step = "description";
 
-    await msg.reply("Now send the event **description**.\n\nRequired. Limit: 900 characters.").catch(() => {});
+    await replyAndTrack(msg, session, "Now send the event **description**.\n\nRequired. Limit: 900 characters.");
     return true;
   }
 
   if (session.step === "description") {
     if (!text || text.length > 900) {
-      await msg.reply("Description is required and must be 900 characters or less. Send it again.").catch(() => {});
+      await replyAndTrack(msg, session, "Description is required and must be 900 characters or less. Send it again.");
       return true;
     }
 
     session.data.description = cleanText(text, 900);
     session.step = "location";
 
-    await msg.reply("Now send the event **location**.\n\nRequired. Limit: 200 characters.").catch(() => {});
+    await replyAndTrack(msg, session, "Now send the event **location**.\n\nRequired. Limit: 200 characters.");
     return true;
   }
 
   if (session.step === "location") {
     if (!text || text.length > 200) {
-      await msg.reply("Location is required and must be 200 characters or less. Send it again.").catch(() => {});
+      await replyAndTrack(msg, session, "Location is required and must be 200 characters or less. Send it again.");
       return true;
     }
 
     session.data.location = cleanText(text, 200);
     session.step = "date";
 
-    await msg.reply(
+    await replyAndTrack(
+      msg,
+      session,
       [
         "Now send the event **date** using server time.",
         "",
@@ -672,7 +746,7 @@ async function handleEventText(msg) {
         "`2026-06-22`",
         "`6/22/2026`",
       ].join("\n")
-    ).catch(() => {});
+    );
     return true;
   }
 
@@ -680,7 +754,9 @@ async function handleEventText(msg) {
     session.data.date = text;
     session.step = "time";
 
-    await msg.reply(
+    await replyAndTrack(
+      msg,
+      session,
       [
         "Now send the event **time** using server time.",
         "",
@@ -688,7 +764,7 @@ async function handleEventText(msg) {
         "`8:00 PM`",
         "`20:00`",
       ].join("\n")
-    ).catch(() => {});
+    );
     return true;
   }
 
@@ -697,30 +773,32 @@ async function handleEventText(msg) {
 
     if (!dt || !dt.isValid) {
       session.step = "date";
-      await msg.reply(
+      await replyAndTrack(
+        msg,
+        session,
         [
           "I could not read that date/time.",
           "",
           "Send the date again first.",
           "Examples: `2026-06-22` or `6/22/2026`",
         ].join("\n")
-      ).catch(() => {});
+      );
       return true;
     }
 
     if (dt <= DateTime.now().setZone(SERVER_TZ)) {
       session.step = "date";
-      await msg.reply("That event time is in the past. Send the date again.").catch(() => {});
+      await replyAndTrack(msg, session, "That event time is in the past. Send the date again.");
       return true;
     }
 
     session.data.event_time = dt.toUTC().toISO();
     session.step = "recurrence";
 
-    await msg.reply({
+    await replyAndTrack(msg, session, {
       content: "Choose whether this event repeats.",
       components: buildRecurrenceMenu(),
-    }).catch(() => {});
+    });
 
     return true;
   }
