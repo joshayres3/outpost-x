@@ -1,5 +1,5 @@
 require("dotenv").config();
-const { Client, Events } = require("discord.js");
+const { Client, Events, GatewayIntentBits } = require("discord.js");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -10,7 +10,14 @@ const ALLOWED_ROLES     = ["Owner", "Admin"];
 const ADMIN_WHITELIST   = [];
 
 // ─── Initialize clients ───────────────────────────────────────────────────────
-const discord  = new Client({ intents: [32767, "MessageContent"] });
+const discord  = new Client({ 
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.MessageContent,
+  ]
+});
 const genAI    = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
