@@ -5,7 +5,7 @@ const {
   ButtonStyle,
   EmbedBuilder,
 } = require("discord.js");
-const { postGuidePanel } = require("./guide");
+const { postHelpPanel } = require("./guide");
 
 // Tracks what each admin selected in step 1 (what to post)
 const pendingPosts = {};
@@ -140,7 +140,7 @@ async function handlePostWhereSelect(interaction, liveRules) {
       const channel = await interaction.guild.channels.fetch(pending.targetChannelId);
       if (!channel) throw new Error("Channel not found");
       
-      await postGuidePanel(channel);
+      await postHelpPanel(channel);
       await interaction.update({
         content: `✅ Guide posted to <#${pending.targetChannelId}>!`,
         components: []
@@ -302,8 +302,8 @@ async function handlePostChannelSelect(interaction, liveRules) {
   // If guide, post it directly
   if (pending.what === "guide") {
     try {
-      const { postGuidePanel } = require("./guide");
-      await postGuidePanel(channel);
+      const { postHelpPanel } = require("./guide");
+      await postHelpPanel(channel);
       await interaction.update({
         content: `✅ Guide posted to <#${channelId}>!`,
         components: []

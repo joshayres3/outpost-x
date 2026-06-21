@@ -152,7 +152,8 @@ discord.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
   if (interaction.isButton()) {
-    if (await handlePostThisChannel(interaction, liveRules, genAI, enabledChannels, supabase)) return;
+    const { handleHelpButton } = require("./guide");
+    if (await handleHelpButton(interaction)) return;
     if (await handlePostPickChannel(interaction)) return;
     if (await handlePostConfirm(interaction, liveRules, genAI, enabledChannels, supabase)) return;
     if (await handlePostCancel(interaction)) return;
@@ -269,7 +270,7 @@ discord.on("messageCreate", async (message) => {
         .setCustomId("post_select_what")
         .setPlaceholder("What do you want to do?")
         .addOptions([
-          { label: "📖 Player Survival Guide", description: "Interactive guide with 6 gameplay topics", value: "guide" },
+          { label: "📚 Player Help Center", description: "Comprehensive survival guides & mechanics", value: "help" },
           { label: "📋 Server Rules", description: "Post the full server rules", value: "rules" },
           { label: "🤖 Enable Assistant Mode", description: "Turn on rule answers in a channel", value: "assistant_on" },
           { label: "🔇 Disable Assistant Mode", description: "Turn off assistant in a channel", value: "assistant_off" },
@@ -339,8 +340,8 @@ discord.on("messageCreate", async (message) => {
         
         // If guide, post it directly
         if (pending.what === "guide") {
-          const { postGuidePanel } = require("./poster");
-          await postGuidePanel(targetChannel);
+          const { postHelpPanel } = require("./guide");
+          await postHelpPanel(targetChannel);
           await message.reply(`✅ Guide posted to <#${targetChannel.id}>!`);
           delete pendingPosts[message.author.id];
           try { await message.delete(); } catch(e) {}
@@ -405,7 +406,6 @@ const {
   handlePostWhatSelect,
   handlePostCategorySelect,
   handlePostChannelSelect,
-  handlePostThisChannel,
   handlePostPickChannel,
   handlePostConfirm,
   handlePostCancel,
