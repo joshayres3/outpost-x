@@ -67,9 +67,19 @@ function shouldAnswerWithAssistant(content) {
 
   const text = content.toLowerCase().trim().replace(/\s+/g, " ");
 
+  // Avoid obvious casual/meta statements that contain rule-ish words.
+  const casualBlocks = [
+    /\bnow i'?m on cooldown\b/i,
+    /\bi'?m on cooldown\b/i,
+    /\bon cooldown\b/i,
+    /\bnot a rule\b/i,
+    /\bthat'?s not a rule\b/i,
+  ];
+
+  if (casualBlocks.some((pattern) => pattern.test(text))) return false;
+
   const ruleQuestionPatterns = [
     // Direct rule wording.
-    /\b(rule|rules|server rule|server rules)\b/i,
     /\bwhat (are|is).*\b(rule|rules|limit|limits)\b/i,
     /\bdo we have .*\brules\b/i,
     /\bare there .*\brules\b/i,
@@ -88,8 +98,9 @@ function shouldAnswerWithAssistant(content) {
     // Trader / safezone / parking rule questions.
     /\b(can i|can we|am i allowed to|are we allowed to|is it allowed to)\b.*\b(park|leave|store|claim)\b.*\b(trader|safezone|safe zone|outpost|vehicle|car|truck)\b/i,
 
-    // Timers that usually mean server mechanics.
-    /\b(raid timer|raid timers|restart timer|restart timers|purge timer|purge timers|cooldown|cooldowns)\b/i,
+    // Timers/cooldowns only when clearly about server mechanics.
+    /\b(raid timer|raid timers|raid cooldown|raid cooldowns|restart timer|restart timers|restart cooldown|restart cooldowns|purge timer|purge timers|purge cooldown|purge cooldowns|pvp timer|pvp timers|pvp cooldown|pvp cooldowns)\b/i,
+    /\b(how long|when|what time).*\b(raid|restart|purge|pvp).*\b(timer|cooldown)\b/i,
   ];
 
   return ruleQuestionPatterns.some((pattern) => pattern.test(text));
@@ -256,7 +267,10 @@ ${txt}
 QUESTION:
 ${msg.content}
 
-Answer in 1-2 sentences. Be clear, helpful, and do not invent rules.`
+Answer in 1-2 sentences. Be clear, helpful, and do not invent rules.
+
+If the rules do not clearly answer the question, say:
+"I do not see that covered clearly in the posted rules. Open a ticket or ask staff before assuming."`
       );
 
       await msg.reply(res.response.text());
