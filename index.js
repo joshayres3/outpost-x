@@ -146,11 +146,8 @@ discord.once(Events.ClientReady, async (client) => {
 discord.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isStringSelectMenu()) {
     if (await handlePostWhatSelect(interaction)) return;
-    if (await handlePostHelpChannel(interaction, discord)) return;
-    if (await handlePostRulesSection(interaction, liveRules, discord)) return;
-    if (await handlePostRulesChannel(interaction, liveRules, null, discord)) return;
-    if (await handlePostAssistantChannel(interaction, discord, supabase)) return;
-    if (await handlePostAnnounceChannel(interaction)) return;
+    if (await handleRuleSectionSelect(interaction, liveRules)) return;
+    if (await handleChannelSelect(interaction, liveRules, discord, supabase)) return;
     return;
   }
   if (interaction.isButton()) {
@@ -270,7 +267,7 @@ discord.on("messageCreate", async (message) => {
       
       const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
       const selectWhat = new StringSelectMenuBuilder()
-        .setCustomId("post_select_what")
+        .setCustomId("post_what")
         .setPlaceholder("What do you want to do?")
         .addOptions([
           { label: "📚 Player Help Center", description: "Comprehensive survival guides & mechanics", value: "help" },
@@ -408,10 +405,7 @@ discord.login(process.env.DISCORD_TOKEN);
 // ─── Import handlers ──────────────────────────────────────────────────────────
 const { 
   handlePostWhatSelect,
-  handlePostHelpChannel,
-  handlePostRulesSection,
-  handlePostRulesChannel,
-  handlePostAssistantChannel,
-  handlePostAnnounceChannel,
+  handleRuleSectionSelect,
+  handleChannelSelect,
   handleAnnouncementText,
 } = require("./poster");
