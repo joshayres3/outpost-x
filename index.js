@@ -406,6 +406,7 @@ const {
   handlePostWhatSelect,
   handlePostCategorySelect,
   handlePostChannelSelect,
+  handlePostWhereSelect,
   handlePostPickChannel,
   handlePostConfirm,
   handlePostCancel,
