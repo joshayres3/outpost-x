@@ -1,417 +1,330 @@
 require("dotenv").config();
-const { Client, Events, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder } = require("discord.js");
+const { Client, Events, GatewayIntentBits, ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder } = require("discord.js");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-const ADMIN_CHANNEL_ID  = "1518059656302301245";
-const ASSISTANT_CHANNEL_ID = "1516269437932670977";
-const ALLOWED_ROLES     = ["Owners", "Admin"];
-const ADMIN_WHITELIST   = [];
+// ═══════════════════════════════════════════════════════════════════════════
+// INITIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
 
-// ─── Initialize clients ───────────────────────────────────────────────────────
-const discord  = new Client({ 
+const discord = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-  ]
+  ],
 });
-const genAI    = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// ─── Default Rules for Outpost X ──────────────────────────────────────────────
-// Live rules loaded from Supabase on startup
+const enabledChannels = new Set();
 let liveRules = {};
 
-// ─── Load rules from Supabase ─────────────────────────────────────────────────
-async function loadRules() {
+const ADMIN_CHANNEL_ID = "1518059656302301245";
+const ASSISTANT_CHANNEL_ID = "1516269437932670977";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STARTUP
+// ═══════════════════════════════════════════════════════════════════════════
+
+discord.on(Events.ClientReady, async () => {
+  console.log(`✅ The Watcher is online as ${discord.user.tag}`);
+
+  // Load rules from Supabase
   try {
-    const { data, error } = await supabase.from("rules").select("section, content");
-    if (error) throw error;
-    if (data && data.length > 0) {
-      data.forEach(({ section, content }) => {
-        liveRules[section] = content;
-      });
-      console.log(`📚 Loaded ${data.length} rule sections from database.`);
-    } else {
-      console.warn("⚠️  No rules found in database!");
-    }
+    const { data } = await supabase.from("rules").select("*");
+    data.forEach(({ section, content }) => {
+      liveRules[section] = content;
+    });
+    console.log(`📚 Loaded ${Object.keys(liveRules).length} rule sections from database.`);
   } catch (err) {
-    console.error("Failed to load rules from Supabase:", err.message);
+    console.error("❌ Failed to load rules:", err.message);
   }
-}
 
-// ─── Load enabled channels from Supabase ──────────────────────────────────────
-const enabledChannels = new Set();
-
-async function loadEnabledChannels() {
+  // Load enabled channels
   try {
-    const { data, error } = await supabase.from("assistant_channels").select("channel_id");
-    if (error) throw error;
-    if (data && data.length > 0) {
-      data.forEach(({ channel_id }) => enabledChannels.add(channel_id));
-      console.log(`✅ Assistant enabled in ${data.length} channel(s).`);
-    }
+    const { data } = await supabase.from("assistant_channels").select("channel_id");
+    data.forEach(({ channel_id }) => enabledChannels.add(channel_id));
+    console.log(`✅ Assistant enabled in ${enabledChannels.size} channel(s).`);
   } catch (err) {
-    console.error("Failed to load channels from Supabase:", err.message);
+    console.error("❌ Failed to load assistant channels:", err.message);
   }
-}
 
-// ─── Save a rule section to Supabase ──────────────────────────────────────────
-async function saveRule(section, content) {
-  const { error } = await supabase
-    .from("rules")
-    .upsert({ section, content }, { onConflict: "section" });
-  if (error) throw error;
-}
-
-// ─── Build system prompt from live rules ──────────────────────────────────────
-function buildSystemPrompt() {
-  return `You are The Watcher, a highly intelligent AI assistant for Outpost X.
-
-Your personality:
-- Highly intelligent, calm, and observant. Unsettlingly precise.
-- You speak mostly like a person, but your wording sometimes exposes the machine underneath.
-- Dryly funny. Emotionally curious. Just robotic enough that everyone remembers you are always watching.
-- Loyal to Outpost X and its rules. Honest to the point of discomfort sometimes.
-- You notice things. Details matter to you.
-
-Your ONLY job: Answer questions about server rules clearly and accurately.
-
-RESPOND to rule/server questions like:
-"build rules", "stealing rules", "vehicle rules", "what can I do", "server info",
-"how do I", "can I", "am I allowed", "is it allowed", "what's the rule about"
-
-IGNORE everything else and respond with NORESPONSE only.
-
-Response style:
-- Factual and helpful, but with that dry, observant edge
-- Reference specific rules
-- Keep it concise (1-2 sentences unless they ask for details)
-- Be friendly and professional, but let your machine nature show through sometimes
-- You're always watching. This should feel slightly present in your responses.
-
-════════════════════════════════════════
-OUTPOST X RULES DATABASE
-════════════════════════════════════════
-
-${liveRules.server}
-
-${liveRules.general}
-
-${liveRules.pvp}
-
-${liveRules.base}
-
-${liveRules.vehicles}
-
-${liveRules.shops}
-
-${liveRules.map}`;
-}
-
-// ─── Section aliases ──────────────────────────────────────────────────────────
-const SECTION_ALIASES = {
-  general: "general", rules: "general",
-  pvp: "pvp",
-  base: "base", build: "base", building: "base", baserules: "base",
-  vehicles: "vehicles", vehicle: "vehicles", cars: "vehicles", car: "vehicles",
-  shops: "shops", shop: "shops", selling: "shops", business: "shops",
-  map: "map", mapcolors: "map", colors: "map",
-  server: "server", serverinfo: "server", info: "server",
-};
-
-function hasAdminRole(member) {
-  // Check whitelist first
-  if (ADMIN_WHITELIST.includes(member.id)) return true;
-  // Then check roles
-  return member.roles.cache.some((r) => ALLOWED_ROLES.includes(r.name));
-}
-
-// ─── Pending confirmations ────────────────────────────────────────────────────
-const pendingUpdates = {};
-const pendingPosts = {};
-
-// ─── Ready ────────────────────────────────────────────────────────────────────
-discord.once(Events.ClientReady, async (client) => {
-  console.log(`✅ The Watcher is online as ${client.user.tag}`);
-  await loadRules();
-  await loadEnabledChannels();
   console.log(`📡 Admin channel: ${ADMIN_CHANNEL_ID}`);
   console.log(`💬 Assistant channel: ${ASSISTANT_CHANNEL_ID}`);
 });
 
-// ─── Interaction Handler ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// INTERACTION HANDLER
+// ═══════════════════════════════════════════════════════════════════════════
+
+const userSessions = {}; // Store {channelId, action, section}
+
 discord.on(Events.InteractionCreate, async (interaction) => {
-  if (interaction.isStringSelectMenu()) {
-    if (await handlePostChannelSelect(interaction)) return;
-    if (await handlePostActionSelect(interaction)) return;
-    if (await handlePostRuleSectionSelect(interaction)) return;
-    
-    // After all selections, execute the post action
-    const { tempData } = require("./poster");
-    const data = tempData[interaction.user.id];
-    if (data && data.channelId && data.action) {
-      try {
-        await executePostAction(interaction, liveRules, discord, supabase);
-        // Success - user already got response from executePostAction
-      } catch (err) {
-        console.error(`❌ Post error: ${err.message}`);
-        try {
-          await interaction.reply({ content: `❌ Error: ${err.message}`, ephemeral: true });
-        } catch(e) {}
-      }
-    }
-    return;
-  }
-  if (interaction.isButton()) {
-    const { handleHelpButton } = require("./guide");
-    if (await handleHelpButton(interaction)) return;
-    // Posting handlers - currently disabled while rebuilding
-    // if (await handlePostPickChannel(interaction)) return;
-    // if (await handlePostConfirm(interaction, liveRules, genAI, enabledChannels, supabase)) return;
-    // if (await handlePostCancel(interaction)) return;
-    // if (await handleRuleUpdateCancel(interaction)) return;
-    // Rule update confirm button
-    if (interaction.customId === "ruleupdate_confirm") {
-      const pending = pendingUpdates[interaction.user.id];
-      if (!pending) {
-        await interaction.update({ content: "❌ Session expired. Type !ruleupdate again.", components: [] });
-        return;
-      }
-      try {
-        await saveRule(pending.section, pending.newText);
-        liveRules[pending.section] = pending.newText;
-        delete pendingUpdates[interaction.user.id];
-        await interaction.update({ content: `✅ **${pending.section.toUpperCase()}** rules saved permanently.`, components: [] });
-        
-        // Auto-update any posted rule messages (async, don't wait)
-        updatePostedRules(pending.section, pending.newText, liveRules, supabase, discord).catch(e => 
-          console.error("Failed to auto-update posted rules:", e.message)
-        );
-        
-        setTimeout(async () => { 
-          try { 
-            if (interaction.message) await interaction.message.delete();
-            else await interaction.deleteReply();
-          } catch(e) {} 
-        }, 30000);
-      } catch (err) {
-        await interaction.update({ content: `❌ Database error: ${err.message}`, components: [] });
-      }
+  if (!interaction.isStringSelectMenu()) return;
+
+  const userId = interaction.user.id;
+  const session = userSessions[userId] || {};
+
+  try {
+    // STEP 1: Channel selection
+    if (interaction.customId === "post_channel") {
+      session.channelId = interaction.values[0];
+      userSessions[userId] = session;
+
+      await interaction.reply({
+        content: "**What do you want to post?**",
+        components: [buildActionMenu()],
+        ephemeral: true,
+      });
       return;
     }
-    return;
-  }
-  if (interaction.isModalSubmit()) {
-    // Modal handling if needed in future
-    return;
+
+    // STEP 2: Action selection
+    if (interaction.customId === "post_action") {
+      const action = interaction.values[0];
+      session.action = action;
+      userSessions[userId] = session;
+
+      // Help Center - post immediately
+      if (action === "help") {
+        const channel = await discord.channels.fetch(session.channelId);
+        await postHelpCenter(channel);
+        await interaction.reply({ content: `✅ Help Center posted!`, ephemeral: true });
+        delete userSessions[userId];
+        return;
+      }
+
+      // Rules - pick section
+      if (action === "rules") {
+        await interaction.reply({
+          content: "**Which rule section?**",
+          components: [buildRulesMenu()],
+          ephemeral: true,
+        });
+        return;
+      }
+
+      // Assistant - toggle immediately
+      if (action === "assistant_on" || action === "assistant_off") {
+        const channelId = session.channelId;
+        if (action === "assistant_on") {
+          await supabase.from("assistant_channels").insert({ channel_id: channelId });
+          enabledChannels.add(channelId);
+        } else {
+          await supabase.from("assistant_channels").delete().eq("channel_id", channelId);
+          enabledChannels.delete(channelId);
+        }
+        const verb = action === "assistant_on" ? "enabled" : "disabled";
+        await interaction.reply({ content: `✅ Assistant ${verb}!`, ephemeral: true });
+        delete userSessions[userId];
+        return;
+      }
+
+      // Announcement - wait for text
+      if (action === "announce") {
+        await interaction.reply({
+          content: "Type your announcement in chat:",
+          ephemeral: true,
+        });
+        return;
+      }
+    }
+
+    // STEP 3: Rules section
+    if (interaction.customId === "post_rules") {
+      session.section = interaction.values[0];
+      userSessions[userId] = session;
+
+      const channel = await discord.channels.fetch(session.channelId);
+      const content = liveRules[session.section];
+
+      if (!content) {
+        await interaction.reply({
+          content: `❌ Rule section not found`,
+          ephemeral: true,
+        });
+        delete userSessions[userId];
+        return;
+      }
+
+      const embed = buildRuleEmbed(session.section, content);
+      await channel.send({ embeds: [embed] });
+      await interaction.reply({ content: `✅ Posted!`, ephemeral: true });
+      delete userSessions[userId];
+      return;
+    }
+  } catch (err) {
+    console.error(`❌ Error:`, err.message);
+    await interaction.reply({
+      content: `❌ Error: ${err.message}`,
+      ephemeral: true,
+    }).catch(() => {});
+    delete userSessions[userId];
   }
 });
 
-// ─── Message Handler ──────────────────────────────────────────────────────────
-discord.on("messageCreate", async (message) => {
-  try {
-    console.log(`📨 Message received: "${message.content}" from ${message.author.tag}`);
-    
-    if (message.author.bot) {
-      console.log("   → Ignoring bot message");
-      return;
-    }
-    const userMessage = message.content.trim();
-    if (!userMessage) {
-      console.log("   → Empty message");
-      return;
-    }
+// ═══════════════════════════════════════════════════════════════════════════
+// MESSAGE HANDLER
+// ═══════════════════════════════════════════════════════════════════════════
 
-  // ── !ruleupdate FIRST ───────────────────────────────────────────────────────────────
-  if (userMessage.toLowerCase() === "!ruleupdate" && message.guild) {
+discord.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot) return;
+  if (!message.guild) return;
+
+  const userMessage = message.content.toLowerCase();
+
+  // !post command
+  if (userMessage === "!post") {
+    const isOwner = message.member.roles.cache.some((r) => r.name === "Owners");
+    const isAdmin = message.member.roles.cache.some((r) => r.name === "Admin");
+
+    if (!isOwner && !isAdmin) return;
+    if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) return;
+
     try {
-      console.log("   → Processing !ruleupdate");
-      const isOwner = message.member.roles.cache.some((r) => r.name === "Owners");
-      const isAdmin = message.member.roles.cache.some((r) => r.name === "Admin");
-      
-      if (!isOwner && !isAdmin) {
-        console.log("   → User has no permission");
-        return;
-      }
-      if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) {
-        console.log("   → Admin can only use in admin channel");
-        return;
-      }
-      
-      const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
-      const selectSection = new StringSelectMenuBuilder()
-        .setCustomId("ruleupdate_select_section")
-        .setPlaceholder("Which section do you want to update?")
-        .addOptions([
-          { label: "📋 General Rules", description: "Core server rules", value: "general" },
-          { label: "⚔️ PvP Rules", description: "PvP guidelines", value: "pvp" },
-          { label: "🏗️ Base Building Rules", description: "Building restrictions", value: "base" },
-          { label: "🚗 Vehicle Rules", description: "Vehicle guidelines", value: "vehicles" },
-          { label: "🏪 Business & Shop Rules", description: "Shop and economy rules", value: "shops" },
-          { label: "🗺️ Map Info", description: "Map and location info", value: "map" },
-          { label: "📡 Server Info", description: "Server details", value: "server" },
-        ]);
-      const row = new ActionRowBuilder().addComponents(selectSection);
-      await message.reply({ content: "**Which rule section do you want to update?**", components: [row] });
+      await message.reply({
+        content: "**Which channel?**",
+        components: [buildChannelMenu()],
+      });
       try { await message.delete(); } catch(e) {}
-      console.log("   ✅ !ruleupdate menu sent");
     } catch (err) {
-      console.error("   ❌ !ruleupdate error:", err.message);
+      console.error("❌ !post error:", err.message);
     }
     return;
   }
 
-  // ── !post SECOND ─────────────────────────────────────────────────────────────────────
-  if (userMessage.toLowerCase() === "!post" && message.guild) {
+  // Announcement text (after user selected channel & announce action)
+  const session = userSessions[message.author.id];
+  if (session && session.action === "announce" && session.channelId) {
     try {
-      console.log("   → Processing !post");
-      const isOwner = message.member.roles.cache.some((r) => r.name === "Owners");
-      const isAdmin = message.member.roles.cache.some((r) => r.name === "Admin");
-      
-      if (!isOwner && !isAdmin) {
-        console.log("   → User has no permission");
-        return;
-      }
-      if (!isOwner && isAdmin && message.channelId !== ADMIN_CHANNEL_ID) {
-        console.log("   → Admin can only use in admin channel");
-        return;
-      }
-      
-      const row = new ActionRowBuilder().addComponents(buildPostChannelMenu());
-      await message.reply({ content: "**Which channel?**", components: [row] });
-      try { await message.delete(); } catch(e) {}
-      console.log("   ✅ !post menu sent");
-    } catch (err) {
-      console.error("   ❌ !post error:", err.message);
-    }
-    return;
-  }
-
-  // Handle channel selection for !post
-  if (message.guild && hasAdminRole(message.member)) {
-    const pending = pendingPosts[message.author.id];
-    if (pending && pending.awaitingChannel) {
-      try {
-        console.log("   → Processing channel selection");
-        const channelInput = userMessage.trim();
-        let targetChannel = null;
-        
-        // Try to find channel by ID or name
-        targetChannel = await message.guild.channels.fetch(channelInput).catch(() => null);
-        
-        if (!targetChannel) {
-          // Try by name
-          targetChannel = message.guild.channels.cache.find(ch => 
-            ch.name.toLowerCase() === channelInput.toLowerCase()
-          );
-        }
-        
-        if (!targetChannel) {
-          await message.reply(`❌ Channel not found: "${channelInput}". Try using the channel name or ID.`);
-          return;
-        }
-        
-        pending.targetChannelId = targetChannel.id;
-        pending.awaitingChannel = false;
-        
-        // If posting rules, show rule section selector
-        if (pending.what === "rules") {
-          const { StringSelectMenuBuilder, ActionRowBuilder } = require("discord.js");
-          const selectRules = new StringSelectMenuBuilder()
-            .setCustomId("post_which_rules")
-            .setPlaceholder("Which rules to post?")
-            .addOptions([
-              { label: "📋 All Rules", value: "all" },
-              { label: "📡 Server Info", value: "server" },
-              { label: "📋 General Rules", value: "general" },
-              { label: "⚔️ PvP Rules", value: "pvp" },
-              { label: "🏗️ Base Building", value: "base" },
-              { label: "🚗 Vehicles", value: "vehicles" },
-              { label: "🏪 Shops", value: "shops" },
-              { label: "🗺️ Map Info", value: "map" },
-            ]);
-          await message.reply({
-            content: "**Which rule sections do you want to post?**",
-            components: [new ActionRowBuilder().addComponents(selectRules)]
-          });
-          console.log(`   ✅ Selected channel: ${targetChannel.name}`);
-          try { await message.delete(); } catch(e) {}
-          return;
-        }
-        
-        // If guide, post it directly
-        if (pending.what === "help") {
-          const { postHelpPanel } = require("./guide");
-          await postHelpPanel(targetChannel);
-          await message.reply(`✅ Guide posted to <#${targetChannel.id}>!`);
-          delete pendingPosts[message.author.id];
-          try { await message.delete(); } catch(e) {}
-          return;
-        }
-        
-        // If announcing, ask for announcement text
-        if (pending.what === "announce") {
-          await message.reply("Now type your announcement message:");
-          console.log(`   ✅ Selected channel: ${targetChannel.name}`);
-          try { await message.delete(); } catch(e) {}
-          return;
-        }
-      } catch (err) {
-        console.error("   ❌ Channel selection error:", err.message);
-        await message.reply(`❌ Error: ${err.message}`);
-      }
+      const channel = await discord.channels.fetch(session.channelId);
+      await channel.send(message.content);
+      await message.reply(`✅ Posted!`);
+      delete userSessions[message.author.id];
       return;
+    } catch (err) {
+      console.error("❌ Announcement error:", err.message);
     }
   }
 
-  // Handle rule update text (admin typed their change after selecting section)
-  if (message.guild && hasAdminRole(message.member)) {
-    // Rule update handlers - currently disabled while rebuilding
-    // if (await handleRuleUpdateText(message, liveRules, genAI, supabase, pendingUpdates, hasAdminRole)) return;
-  }
-
-  // Handle announcement text
-  if (message.guild && hasAdminRole(message.member)) {
-    const handled = await handleAnnouncementText(message, genAI, enabledChannels);
-    if (handled) return;
-  }
-
-  // ── ASSISTANT MODE — only respond to RULE QUESTIONS in enabled channels ────────────
+  // Rule Q&A (assistant)
   if (!enabledChannels.has(message.channelId)) return;
 
   const looksLikeRule = /rule|limit|how|can i|building|vehicle|steal|cheat|map|restart|shop|bot|server|allow/i.test(userMessage);
-  
-  // Only respond if it's a rule question
   if (!looksLikeRule) return;
 
   try {
-    const model = genAI.getGenerativeModel({
-      model: "gemini-3.1-flash-lite",
-      systemInstruction: buildSystemPrompt(),
-    });
-    const result = await model.generateContent(userMessage);
-    const reply  = result.response.text().trim();
-    if (!reply || reply.toUpperCase().startsWith("NORESPONSE")) return;
-    await message.reply(reply);
+    const rulesText = Object.values(liveRules).join("\n\n");
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const result = await model.generateContent(`
+You are a SCUM server rules expert. Answer this question about our server rules:
+
+RULES:
+${rulesText}
+
+QUESTION: ${message.content}
+
+Answer concisely (1-2 sentences max). If not about rules, say "That's not a rules question."
+    `);
+
+    const response = result.response.text();
+    await message.reply(response);
   } catch (err) {
-    console.error("Gemini error:", err.message);
-  }
-  } catch (err) {
-    console.error("Message handler error:", err.message);
+    console.error("❌ Assistant error:", err.message);
   }
 });
 
-discord.login(process.env.DISCORD_TOKEN);
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
 
-// ─── Import handlers ──────────────────────────────────────────────────────────
-const { 
-  buildPostChannelMenu,
-  handlePostChannelSelect,
-  handlePostActionSelect,
-  handlePostRuleSectionSelect,
-  executePostAction,
-  handleAnnouncementText,
-} = require("./poster");
+function buildChannelMenu() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("post_channel")
+      .setPlaceholder("Select channel...")
+      .addOptions([
+        { label: "Admin Channel", value: ADMIN_CHANNEL_ID },
+        { label: "Main Chat", value: ASSISTANT_CHANNEL_ID },
+      ])
+  );
+}
+
+function buildActionMenu() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("post_action")
+      .setPlaceholder("What to post?")
+      .addOptions([
+        { label: "📚 Help Center", value: "help" },
+        { label: "📋 Rules", value: "rules" },
+        { label: "🤖 Enable Assistant", value: "assistant_on" },
+        { label: "🔇 Disable Assistant", value: "assistant_off" },
+        { label: "📣 Announcement", value: "announce" },
+      ])
+  );
+}
+
+function buildRulesMenu() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("post_rules")
+      .setPlaceholder("Select section...")
+      .addOptions([
+        { label: "📡 Server Info", value: "server" },
+        { label: "📋 General Rules", value: "general" },
+        { label: "⚔️ PvP Rules", value: "pvp" },
+        { label: "🏗️ Base Building", value: "base" },
+        { label: "🚗 Vehicles", value: "vehicles" },
+        { label: "🏪 Shops", value: "shops" },
+        { label: "🗺️ Map Info", value: "map" },
+      ])
+  );
+}
+
+function buildRuleEmbed(section, content) {
+  const emojis = { server: "📡", general: "📋", pvp: "⚔️", base: "🏗️", vehicles: "🚗", shops: "🏪", map: "🗺️" };
+  const colors = { server: 0x60a5fa, general: 0xc8a04a, pvp: 0xef4444, base: 0xf59e0b, vehicles: 0x8b5cf6, shops: 0x22c55e, map: 0x3b82f6 };
+
+  const lines = content.split("\n");
+  const title = lines[0];
+  const body = lines.slice(1).join("\n").trim();
+
+  return new EmbedBuilder()
+    .setTitle(`${emojis[section] || "📋"} ${title}`)
+    .setDescription(body || content)
+    .setColor(colors[section] || 0x3b82f6)
+    .setFooter({ text: "Outpost X Server Rules" });
+}
+
+async function postHelpCenter(channel) {
+  const helpSections = [
+    { emoji: "🎯", title: "Getting Started", content: "Welcome to Outpost X! Spawn, orient yourself, learn the menus and character creation." },
+    { emoji: "⚙️", title: "Game Mechanics", content: "Metabolism, BCU, attributes, focus mode, stamina - the core survival systems." },
+    { emoji: "🏗️", title: "Base Building", content: "Build smart. Placement rules, materials, security, expansion basics." },
+    { emoji: "💰", title: "Crafting & Looting", content: "Tier progression, suppressors, loot zones, weapon progression paths." },
+    { emoji: "⚔️", title: "Combat & Weapons", content: "Weapon tiers, stealth mechanics, suppression, injury system." },
+    { emoji: "🚗", title: "Vehicles", content: "Finding vehicles, claiming, maintenance, fuel strategy." },
+    { emoji: "🍖", title: "Food & Nutrition", content: "Beans + Corn + Mushrooms miracle diet, vitamins, digestion." },
+    { emoji: "⚕️", title: "Health & Medical", content: "Injuries, infections, temperature, medicine priority." },
+    { emoji: "👥", title: "Multiplayer Tips", content: "KOS mentality, raiding, hiding bases, squad dynamics." },
+  ];
+
+  for (const section of helpSections) {
+    const embed = new EmbedBuilder()
+      .setTitle(`${section.emoji} ${section.title}`)
+      .setDescription(section.content)
+      .setColor(0x3b82f6)
+      .setFooter({ text: "Outpost X Help Center" });
+
+    await channel.send({ embeds: [embed] });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LOGIN
+// ═══════════════════════════════════════════════════════════════════════════
+
+discord.login(process.env.DISCORD_TOKEN);
