@@ -25,6 +25,7 @@ const {
   handleWelcomeMessage,
   handleWelcomeBackfillCommand,
 } = require("./welcome");
+const { handleSupportRedirect } = require("./support");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -134,9 +135,9 @@ bot.on(Events.InteractionCreate, async (interaction) => {
 
 bot.on(Events.MessageCreate, async (msg) => {
   try {
-    if (msg.author.bot) return;
-
     if (!msg.guild) {
+      if (msg.author.bot) return;
+
       await msg.reply(
         [
           "Thanks for the message!",
@@ -151,8 +152,10 @@ bot.on(Events.MessageCreate, async (msg) => {
       return;
     }
 
-    // Must run before normal server message handling because Sapphire posts the welcome message.
+    // Must run before ignoring bot messages because Sapphire posts the welcome message.
     await handleWelcomeMessage(msg, db);
+
+    if (msg.author.bot) return;
 
     if (await handleWelcomeBackfillCommand(msg, bot, db)) return;
 
@@ -190,6 +193,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleEventText(msg)) return;
 
     if (await handleAnnText(msg)) return;
+
+    if (await handleSupportRedirect(msg)) return;
 
     if (!channels.has(msg.channelId)) return;
 
