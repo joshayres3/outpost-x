@@ -4,6 +4,7 @@ const {
   ButtonStyle,
   EmbedBuilder,
   StringSelectMenuBuilder,
+  MessageFlags,
 } = require("discord.js");
 
 const { DateTime } = require("luxon");
@@ -271,7 +272,7 @@ async function beginCreate(interaction) {
   await interaction.reply({
     content:
       "📅 **Create Event**\n\nSend the event **title** now.\n\nLimit: 100 characters.",
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -290,7 +291,7 @@ async function showUpcoming(interaction, db) {
   if (!data || !data.length) {
     await interaction.reply({
       content: "No upcoming open events found.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -301,7 +302,7 @@ async function showUpcoming(interaction, db) {
 
   await interaction.reply({
     content: `📅 **Upcoming Events**\n\n${lines.join("\n")}`,
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -320,7 +321,7 @@ async function showCloseMenu(interaction, db) {
   if (!data || !data.length) {
     await interaction.reply({
       content: "No open events to close.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -341,7 +342,7 @@ async function showCloseMenu(interaction, db) {
           )
       ),
     ],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -356,7 +357,7 @@ async function closeEventById(interaction, bot, db, eventId) {
   if (!event) {
     await interaction.reply({
       content: "Event not found.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -368,7 +369,7 @@ async function closeEventById(interaction, bot, db, eventId) {
 
   await interaction.reply({
     content: `🔒 Closed event: **${event.title}**`,
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -419,7 +420,7 @@ async function showPreview(interaction, session) {
           .setStyle(ButtonStyle.Danger)
       ),
     ],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -429,7 +430,7 @@ async function confirmCreate(interaction, bot, db) {
   if (!session || !session.data.event_time || !session.data.recurrence) {
     await interaction.reply({
       content: "No event creation session found. Run `!event` again.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -461,7 +462,7 @@ async function confirmCreate(interaction, bot, db) {
 
   await interaction.reply({
     content: `✅ Event posted in <#${EVENTS_CH}>. Setup messages cleaned up.`,
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -477,7 +478,7 @@ async function handleRsvp(interaction, bot, db, eventId) {
   if (!event || event.status !== "open") {
     await interaction.reply({
       content: "This event is closed.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -498,7 +499,7 @@ async function handleRsvp(interaction, bot, db, eventId) {
   await interaction.reply({
     content:
       "✅ You are RSVP’d. You’ll get private reminders 24 hours before, 1 hour before, and when the event starts.",
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -521,7 +522,7 @@ async function handleUnrsvp(interaction, bot, db, eventId) {
 
   await interaction.reply({
     content: "❌ RSVP removed.",
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -537,7 +538,7 @@ async function handleDetails(interaction, db, eventId) {
   if (!event) {
     await interaction.reply({
       content: "Event not found.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -546,7 +547,7 @@ async function handleDetails(interaction, db, eventId) {
 
   await interaction.reply({
     embeds: [buildEventEmbed(event, count, event.status !== "open")],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -559,7 +560,7 @@ async function handleEventInteraction(interaction, bot, db) {
     if (!isAdminChannel(interaction.channelId) || !isStaff(interaction.member)) {
       await interaction.reply({
         content: "You cannot use event admin controls here.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return true;
     }
@@ -577,7 +578,7 @@ async function handleEventInteraction(interaction, bot, db) {
     if (!isAdminChannel(interaction.channelId) || !isStaff(interaction.member)) {
       await interaction.reply({
         content: "You cannot close events here.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return true;
     }
@@ -592,7 +593,7 @@ async function handleEventInteraction(interaction, bot, db) {
     if (!session) {
       await interaction.reply({
         content: "No event creation session found. Run `!event` again.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return true;
     }
@@ -609,7 +610,7 @@ async function handleEventInteraction(interaction, bot, db) {
     if (!isAdminChannel(interaction.channelId) || !isStaff(interaction.member)) {
       await interaction.reply({
         content: "You cannot create events here.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return true;
     }
@@ -629,7 +630,7 @@ async function handleEventInteraction(interaction, bot, db) {
 
     await interaction.reply({
       content: "❌ Event creation cancelled. Setup messages cleaned up.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return true;
   }

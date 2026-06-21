@@ -4,6 +4,7 @@ const {
   ButtonStyle,
   EmbedBuilder,
   StringSelectMenuBuilder,
+  MessageFlags,
 } = require("discord.js");
 
 const RULES_CHANNEL_ID =
@@ -252,7 +253,7 @@ async function handleRuleUpdateInteraction(interaction, ctx) {
   if (!canUseRuleEditor(interaction)) {
     await interaction.reply({
       content: "Rule updates are restricted to Owners in admin, main chat, or the rules channel.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     }).catch(() => {});
     return true;
   }
@@ -263,7 +264,7 @@ async function handleRuleUpdateInteraction(interaction, ctx) {
   if (!session) {
     await interaction.reply({
       content: "No active rule update session. Run `!ruleupdate` again.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     }).catch(() => {});
     return true;
   }
@@ -329,7 +330,7 @@ async function handleRuleUpdateInteraction(interaction, ctx) {
     if (!session.section || !session.draft) {
       await interaction.reply({
         content: "Missing draft data. Run `!ruleupdate` again.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
       return true;
     }

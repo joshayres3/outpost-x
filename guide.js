@@ -3,6 +3,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  MessageFlags,
 } = require("discord.js");
 
 const GUIDE_SECTIONS = {
@@ -502,7 +503,7 @@ async function handleHelpButton(interaction) {
   if (!section) {
     await interaction.reply({
       content: "That help topic was not found.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -533,7 +534,7 @@ async function handleHelpButton(interaction) {
 
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 

@@ -5,6 +5,7 @@ const {
   ChannelType,
   ButtonBuilder,
   ButtonStyle,
+  MessageFlags,
 } = require("discord.js");
 
 const { postGuide } = require("./guide");
@@ -31,7 +32,7 @@ async function safeReply(interaction, payload) {
 
 async function deferIfNeeded(interaction) {
   if (!interaction.deferred && !interaction.replied) {
-    await interaction.deferReply({ ephemeral: true }).catch(() => {});
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 }
 
@@ -94,7 +95,7 @@ async function askForCategory(interaction) {
   if (!cats.length) {
     await safeReply(interaction, {
       content: "No categories found.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     delete userSession[interaction.user.id];
     return;
@@ -110,7 +111,7 @@ async function askForCategory(interaction) {
           .setOptions(cats)
       ),
     ],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -120,7 +121,7 @@ async function askForChannel(interaction, session) {
   if (!chans.length) {
     await safeReply(interaction, {
       content: "No text channels found in that category.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     delete userSession[interaction.user.id];
     return;
@@ -136,7 +137,7 @@ async function askForChannel(interaction, session) {
           .setOptions(chans)
       ),
     ],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -249,7 +250,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
   if (session.completed || session.processing) {
     await safeReply(interaction, {
       content: "This action is already being processed.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -261,7 +262,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
   if (session.act === "help") {
     await safeReply(interaction, {
       content: "Posting Help Center...",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
 
     await postGuide(chan);
@@ -270,7 +271,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
     await safeReply(interaction, {
       content: "✅ Help Center posted.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
 
     await cleanupMenuMessage(interaction);
@@ -282,7 +283,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
     if (session.ruleMode === "all") {
       await safeReply(interaction, {
         content: "Posting all rules...",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
 
       await postAllRules(chan, liveRules);
@@ -291,7 +292,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
       await safeReply(interaction, {
         content: "✅ All rules posted.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
 
       await cleanupMenuMessage(interaction);
@@ -302,7 +303,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
     if (session.ruleMode === "server") {
       await safeReply(interaction, {
         content: "Posting Server Info...",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
 
       const cont = liveRules.server;
@@ -312,7 +313,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
         await safeReply(interaction, {
           content: "Server Info section not found.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
 
         await cleanupMenuMessage(interaction);
@@ -327,7 +328,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
       await safeReply(interaction, {
         content: "✅ Server Info posted.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
 
       await cleanupMenuMessage(interaction);
@@ -348,7 +349,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
     await safeReply(interaction, {
       content: `✅ Assistant enabled in <#${session.ch}>.`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
 
     await cleanupMenuMessage(interaction);
@@ -369,7 +370,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
 
     await safeReply(interaction, {
       content: `✅ Assistant disabled in <#${session.ch}>.`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
 
     await cleanupMenuMessage(interaction);
@@ -387,7 +388,7 @@ async function finishAction(interaction, session, liveRules, discord, supabase, 
         "",
         `I will clean it up, format it, and show you a preview before posting in <#${session.ch}>.`,
       ].join("\n"),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -405,7 +406,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
       if (!session || session.act !== "ann") {
         await safeReply(interaction, {
           content: "That announcement session expired. Run `!post` again.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -446,7 +447,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
         if (!session.polishedAnnouncement || !session.ch) {
           await safeReply(interaction, {
             content: "Missing announcement draft. Run `!post` again.",
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
           return;
         }
@@ -517,7 +518,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
                 ])
             ),
           ],
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -531,7 +532,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
     if (!session) {
       await safeReply(interaction, {
         content: "That menu expired. Run `!post` again.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       await cleanupMenuMessage(interaction);
       return;
@@ -542,7 +543,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
       delete userSession[uid];
       await safeReply(interaction, {
         content: "That menu expired. Run `!post` again.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       await cleanupMenuMessage(interaction);
       return;
@@ -579,7 +580,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
 
     await safeReply(interaction, {
       content: `Error: ${err.message}`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
 
     await cleanupMenuMessage(interaction);

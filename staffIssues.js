@@ -6,6 +6,7 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  MessageFlags,
 } = require("discord.js");
 const { DateTime } = require("luxon");
 
@@ -404,7 +405,7 @@ async function handleIssueInteraction(interaction) {
   if (!canUseIssueSystem(interaction)) {
     const payload = {
       content: "Staff issue tracking is restricted to staff in admin, main chat, or the staff issues channel.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     };
 
     await interaction.reply(payload).catch(() => {});
@@ -429,7 +430,7 @@ async function handleIssueInteraction(interaction) {
     if (!data) {
       await interaction.reply({
         content: "Could not read this issue card.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
       return true;
     }
@@ -466,7 +467,7 @@ async function handleIssueInteraction(interaction) {
       if (!isOwner(interaction.member)) {
         await interaction.reply({
           content: "Only Owners can assign staff issues.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         }).catch(() => {});
         return true;
       }
@@ -485,7 +486,7 @@ async function handleIssueInteraction(interaction) {
       await updateIssueMessage(message, data);
       await interaction.reply({
         content: `Issue claimed by ${interaction.user}.`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
       return true;
     }
@@ -538,7 +539,7 @@ async function handleIssueInteraction(interaction) {
 
       await interaction.reply({
         content: `Issue logged in <#${STAFF_ISSUES_CHANNEL_ID}>: ${issueMessage.url}`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
 
       return true;
@@ -551,7 +552,7 @@ async function handleIssueInteraction(interaction) {
     if (!message) {
       await interaction.reply({
         content: "Could not find that issue card.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
       return true;
     }
@@ -560,7 +561,7 @@ async function handleIssueInteraction(interaction) {
     if (!data) {
       await interaction.reply({
         content: "Could not read that issue card.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
       return true;
     }
@@ -569,7 +570,7 @@ async function handleIssueInteraction(interaction) {
       if (!isOwner(interaction.member)) {
         await interaction.reply({
           content: "Only Owners can assign staff issues.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         }).catch(() => {});
         return true;
       }
@@ -585,7 +586,7 @@ async function handleIssueInteraction(interaction) {
 
       await interaction.reply({
         content: `Issue assigned to **${assignedTo}**.`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
 
       return true;
@@ -600,7 +601,7 @@ async function handleIssueInteraction(interaction) {
 
       await interaction.reply({
         content: "Note added.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
 
       return true;
@@ -621,7 +622,7 @@ async function handleIssueInteraction(interaction) {
 
       await interaction.reply({
         content: "Issue marked closed.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
 
       return true;
@@ -642,7 +643,7 @@ async function handleIssueInteraction(interaction) {
 
       await interaction.reply({
         content: "Issue reopened.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
 
       return true;

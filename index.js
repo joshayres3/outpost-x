@@ -23,6 +23,7 @@ const {
   Partials,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  MessageFlags,
 } = require("discord.js");
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -221,7 +222,7 @@ bot.on(Events.InteractionCreate, async (interaction) => {
 
     const payload = {
       content: `Error: ${err.message}`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     };
 
     if (interaction.deferred || interaction.replied) {
