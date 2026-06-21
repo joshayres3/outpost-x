@@ -1,7 +1,7 @@
 {
-  "name": "mrs-cobble",
+  "name": "the-watcher",
   "version": "1.0.0",
-  "description": "Cobblestone SCUM Server bot",
+  "description": "The Watcher - Outpost X SCUM Server Discord Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,7 +9,6 @@
   "dependencies": {
     "@google/generative-ai": "^0.15.0",
     "@supabase/supabase-js": "^2.43.0",
-    "basic-ftp": "^5.0.5",
     "discord.js": "^14.15.0",
     "dotenv": "^16.4.5"
   }
