@@ -30,7 +30,7 @@ async function handlePostWhatSelect(interaction) {
   pendingPosts[interaction.user.id] = { what, sourceChannelId: interaction.channelId };
 
   const labels = {
-    guide:         "📖 Player Survival Guide",
+    help:          "📚 Player Help Center",
     rules:         "📋 Server Rules",
     assistant_on:  "🤖 Enable Assistant Mode",
     assistant_off: "🔇 Disable Assistant Mode",
