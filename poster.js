@@ -41,6 +41,39 @@ async function cleanupMenuMessage(interaction) {
   }
 }
 
+async function trackMessage(session, message) {
+  if (!session || !message) return;
+
+  if (!session.cleanupMessages) session.cleanupMessages = [];
+
+  session.cleanupMessages.push({
+    channelId: message.channelId,
+    messageId: message.id,
+  });
+}
+
+async function cleanupTrackedMessages(client, session) {
+  if (!client || !session?.cleanupMessages?.length) return;
+
+  const seen = new Set();
+
+  for (const item of session.cleanupMessages) {
+    const key = `${item.channelId}:${item.messageId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const channel = await client.channels.fetch(item.channelId).catch(() => null);
+    if (!channel) continue;
+
+    const message = await channel.messages.fetch(item.messageId).catch(() => null);
+    if (!message) continue;
+
+    await message.delete().catch(() => {});
+  }
+
+  session.cleanupMessages = [];
+}
+
 function buildCategoryOptions(guild) {
   return guild.channels.cache
     .filter((c) => c.type === ChannelType.GuildCategory)
@@ -140,6 +173,8 @@ function buildRuleEmbed(sectionKey, content) {
 }
 
 async function postAllRules(channel, liveRules) {
+  // Server Info is intentionally NOT included here.
+  // Use "Post Server Info Only" when you want the server info post.
   const order = ["general", "pvp", "base", "vehicles", "shops", "map"];
 
   for (const sectionKey of order) {
@@ -178,7 +213,9 @@ function buildAnnouncementButtons() {
 }
 
 async function polishAnnouncement(genai, roughText) {
-  if (!genai) return roughText.trim();
+  if (!genai) {
+    return roughText.trim();
+  }
 
   const model = genai.getGenerativeModel({ model: "gemini-2.5-flash" });
 
@@ -196,6 +233,7 @@ Rules:
 - Make it clear and professional, but still natural for a game server.
 - Do not invent details, dates, rewards, rules, wipes, events, or promises.
 - Do not add @everyone, @here, role pings, or channel links unless they were already included.
+- Keep any existing role mentions exactly as provided, such as <@&1516270776272031796>.
 - Keep it concise.
 - Use Discord-friendly formatting.
 - Return only the announcement body text.`
@@ -361,7 +399,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
   const uid = interaction.user.id;
 
   try {
-    if (["ann_confirm", "ann_revise", "ann_cancel"].includes(interaction.customId)) {
+    if (interaction.customId === "ann_confirm" || interaction.customId === "ann_revise" || interaction.customId === "ann_cancel") {
       const session = userSession[uid];
 
       if (!session || session.act !== "ann") {
@@ -373,12 +411,16 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
       }
 
       if (interaction.customId === "ann_cancel") {
+        await cleanupTrackedMessages(interaction.client, session);
         delete userSession[uid];
+
         await interaction.update({
           content: "Announcement cancelled.",
           embeds: [],
           components: [],
         }).catch(() => {});
+
+        setTimeout(() => interaction.deleteReply().catch(() => {}), 5000);
         return;
       }
 
@@ -386,6 +428,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
         session.stage = "ann_waiting_text";
         session.processing = false;
 
+        // Remove the old preview message after turning it into a revise prompt.
         await interaction.update({
           content: [
             "Type the revised announcement instructions or full replacement text.",
@@ -395,6 +438,7 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
           embeds: [],
           components: [],
         }).catch(() => {});
+
         return;
       }
 
@@ -412,6 +456,8 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
         const chan = await interaction.client.channels.fetch(session.ch);
         await chan.send({ embeds: [buildAnnouncementEmbed(session.polishedAnnouncement)] });
 
+        await cleanupTrackedMessages(interaction.client, session);
+
         await interaction.editReply({
           content: `✅ Announcement posted in <#${session.ch}>.`,
           embeds: [],
@@ -427,6 +473,8 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
         }
 
         delete userSession[uid];
+
+        setTimeout(() => interaction.deleteReply().catch(() => {}), 8000);
         return;
       }
     }
@@ -439,7 +487,13 @@ async function handlePostMenu(interaction, liveRules, discord, supabase, enabled
         startedAt: Date.now(),
         processing: false,
         completed: false,
+        cleanupMessages: [],
       };
+
+      if (interaction.message) {
+        userSession[uid].menuMessageId = interaction.message.id;
+        userSession[uid].menuChannelId = interaction.channelId;
+      }
 
       if (act === "rules") {
         await safeReply(interaction, {
@@ -536,6 +590,7 @@ async function handleAnnText(msg, genai = null) {
   const sess = userSession[msg.author.id];
 
   if (!sess || sess.act !== "ann" || !sess.ch) return false;
+
   if (sess.stage !== "ann_waiting_text" && sess.stage !== "ann_preview") return false;
 
   if (sess.processing) {
@@ -554,7 +609,10 @@ async function handleAnnText(msg, genai = null) {
       return true;
     }
 
-    await msg.reply("Polishing announcement and preparing preview...").catch(() => {});
+    await trackMessage(sess, msg);
+
+    const workingMsg = await msg.reply("Polishing announcement and preparing preview...").catch(() => null);
+    await trackMessage(sess, workingMsg);
 
     const polished = await polishAnnouncement(genai, roughText);
 
@@ -563,7 +621,7 @@ async function handleAnnText(msg, genai = null) {
     sess.stage = "ann_preview";
     sess.processing = false;
 
-    await msg.reply({
+    const previewMsg = await msg.reply({
       content: [
         `Preview for <#${sess.ch}>`,
         "",
@@ -571,7 +629,9 @@ async function handleAnnText(msg, genai = null) {
       ].join("\n"),
       embeds: [buildAnnouncementEmbed(polished)],
       components: [buildAnnouncementButtons()],
-    }).catch(() => {});
+    }).catch(() => null);
+
+    await trackMessage(sess, previewMsg);
 
     return true;
   } catch (err) {
