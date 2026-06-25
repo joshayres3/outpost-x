@@ -102,6 +102,22 @@ async function deleteInteractionMessage(interaction) {
   }
 }
 
+async function replyOrEdit(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload).catch(async () => {
+      return interaction.followUp(payload).catch(() => {});
+    });
+  }
+
+  return interaction.reply(payload).catch(() => {});
+}
+
+async function deferEphemeral(interaction) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
+  }
+}
+
 async function getRsvpCount(db, eventId) {
   const { count, error } = await db
     .from("event_rsvps")
@@ -403,7 +419,7 @@ function buildPreviewEmbed(session) {
 }
 
 async function showPreview(interaction, session) {
-  await interaction.reply({
+  await replyOrEdit(interaction, {
     content: "Review the event preview. Post it?",
     embeds: [buildPreviewEmbed(session)],
     components: [
@@ -425,10 +441,12 @@ async function showPreview(interaction, session) {
 }
 
 async function confirmCreate(interaction, bot, db) {
+  await deferEphemeral(interaction);
+
   const session = createSessions[interaction.user.id];
 
   if (!session || !session.data.event_time || !session.data.recurrence) {
-    await interaction.reply({
+    await replyOrEdit(interaction, {
       content: "No event creation session found. Run `!event` again.",
       flags: MessageFlags.Ephemeral,
     });
@@ -460,7 +478,7 @@ async function confirmCreate(interaction, bot, db) {
 
   delete createSessions[interaction.user.id];
 
-  await interaction.reply({
+  await replyOrEdit(interaction, {
     content: `✅ Event posted in <#${EVENTS_CH}>. Setup messages cleaned up.`,
     flags: MessageFlags.Ephemeral,
   });
@@ -588,10 +606,12 @@ async function handleEventInteraction(interaction, bot, db) {
   }
 
   if (customId === "event_recurrence_select") {
+    await deferEphemeral(interaction);
+
     const session = createSessions[interaction.user.id];
 
     if (!session) {
-      await interaction.reply({
+      await replyOrEdit(interaction, {
         content: "No event creation session found. Run `!event` again.",
         flags: MessageFlags.Ephemeral,
       });
@@ -620,6 +640,8 @@ async function handleEventInteraction(interaction, bot, db) {
   }
 
   if (customId === "event_cancel_create") {
+    await deferEphemeral(interaction);
+
     const session = createSessions[interaction.user.id];
 
     if (session) {
@@ -628,7 +650,7 @@ async function handleEventInteraction(interaction, bot, db) {
 
     delete createSessions[interaction.user.id];
 
-    await interaction.reply({
+    await replyOrEdit(interaction, {
       content: "❌ Event creation cancelled. Setup messages cleaned up.",
       flags: MessageFlags.Ephemeral,
     });
