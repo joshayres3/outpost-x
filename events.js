@@ -102,17 +102,17 @@ async function deleteInteractionMessage(interaction) {
   }
 }
 
-async function deferComponent(interaction) {
+async function deferEphemeral(interaction) {
   if (!interaction.deferred && !interaction.replied) {
-    await interaction.deferUpdate().catch(async () => {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
-    });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 }
 
-async function safeFollowUp(interaction, payload) {
+async function replyOrEdit(interaction, payload) {
   if (interaction.deferred || interaction.replied) {
-    return interaction.followUp(payload).catch(() => {});
+    return interaction.editReply(payload).catch(async () => {
+      return interaction.followUp(payload).catch(() => {});
+    });
   }
 
   return interaction.reply(payload).catch(() => {});
@@ -194,17 +194,13 @@ async function postEvent(bot, db, event) {
     },
   });
 
-  const { error } = await db
+  await db
     .from("events")
     .update({
       channel_id: msg.channelId,
       message_id: msg.id,
     })
     .eq("id", event.id);
-
-  if (error) {
-    throw new Error(`Event posted to Discord, but failed to save event message ID: ${error.message}`);
-  }
 
   return msg;
 }
@@ -423,7 +419,7 @@ function buildPreviewEmbed(session) {
 }
 
 async function showPreview(interaction, session) {
-  await safeFollowUp(interaction, {
+  await interaction.reply({
     content: "Review the event preview. Post it?",
     embeds: [buildPreviewEmbed(session)],
     components: [
@@ -445,12 +441,10 @@ async function showPreview(interaction, session) {
 }
 
 async function confirmCreate(interaction, bot, db) {
-  await deferComponent(interaction);
-
   const session = createSessions[interaction.user.id];
 
   if (!session || !session.data.event_time || !session.data.recurrence) {
-    await safeFollowUp(interaction, {
+    await interaction.reply({
       content: "No event creation session found. Run `!event` again.",
       flags: MessageFlags.Ephemeral,
     });
@@ -468,130 +462,158 @@ async function confirmCreate(interaction, bot, db) {
     created_by: interaction.user.id,
   };
 
+  const { data: event, error } = await db
+    .from("events")
+    .insert(insertPayload)
+    .select()
+    .single();
+
+  if (error) throw error;
+
+  await postEvent(bot, db, event);
+
+  await deleteTrackedMessages(interaction.client, session);
+
+  delete createSessions[interaction.user.id];
+
+  await interaction.reply({
+    content: `✅ Event posted in <#${EVENTS_CH}>. Setup messages cleaned up.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleRsvp(interaction, bot, db, eventId) {
+  await deferEphemeral(interaction);
+
+  try {
+    const { data: event, error: eventError } = await db
+      .from("events")
+      .select("*")
+      .eq("id", eventId)
+      .single();
+
+    if (eventError) throw eventError;
+
+    if (!event || event.status !== "open") {
+      await replyOrEdit(interaction, {
+        content: "This event is closed.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const { error } = await db.from("event_rsvps").upsert(
+      {
+        event_id: eventId,
+        user_id: interaction.user.id,
+        username: interaction.user.tag,
+      },
+      { onConflict: "event_id,user_id" }
+    );
+
+    if (error) throw error;
+
+    await updateEventPost(bot, db, event, false);
+
+    await replyOrEdit(interaction, {
+      content:
+        "✅ You are RSVP’d. You’ll get private reminders 24 hours before, 1 hour before, and when the event starts.",
+      flags: MessageFlags.Ephemeral,
+    });
+  } catch (err) {
+    console.error("❌ RSVP failed:", err);
+
+    await replyOrEdit(interaction, {
+      content: [
+        "❌ RSVP failed.",
+        "",
+        "The Watcher could not save your RSVP right now.",
+        `Error: ${err.message}`,
+      ].join("\n"),
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+}
+
+async function handleUnrsvp(interaction, bot, db, eventId) {
+  await deferEphemeral(interaction);
+
+  try {
+    const { data: event, error: eventError } = await db
+      .from("events")
+      .select("*")
+      .eq("id", eventId)
+      .single();
+
+    if (eventError) throw eventError;
+
+    const { error } = await db
+      .from("event_rsvps")
+      .delete()
+      .eq("event_id", eventId)
+      .eq("user_id", interaction.user.id);
+
+    if (error) throw error;
+
+    if (event) await updateEventPost(bot, db, event, event.status !== "open");
+
+    await replyOrEdit(interaction, {
+      content: "❌ RSVP removed.",
+      flags: MessageFlags.Ephemeral,
+    });
+  } catch (err) {
+    console.error("❌ Cancel RSVP failed:", err);
+
+    await replyOrEdit(interaction, {
+      content: [
+        "❌ Cancel RSVP failed.",
+        "",
+        "The Watcher could not remove your RSVP right now.",
+        `Error: ${err.message}`,
+      ].join("\n"),
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+}
+
+async function handleDetails(interaction, db, eventId) {
+  await deferEphemeral(interaction);
+
   try {
     const { data: event, error } = await db
       .from("events")
-      .insert(insertPayload)
-      .select()
+      .select("*")
+      .eq("id", eventId)
       .single();
 
     if (error) throw error;
 
-    const postedMessage = await postEvent(bot, db, event);
+    if (!event) {
+      await replyOrEdit(interaction, {
+        content: "Event not found.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
 
-    await safeFollowUp(interaction, {
-      content: [
-        `✅ Event posted to <#${EVENTS_CH}>.`,
-        "",
-        postedMessage.url,
-        "",
-        "Cleaning up setup messages now.",
-      ].join("\n"),
+    const count = await getRsvpCount(db, eventId);
+
+    await replyOrEdit(interaction, {
+      embeds: [buildEventEmbed(event, count, event.status !== "open")],
       flags: MessageFlags.Ephemeral,
     });
-
-    await deleteTrackedMessages(interaction.client, session);
-
-    delete createSessions[interaction.user.id];
   } catch (err) {
-    console.error("❌ Event create failed:", err);
+    console.error("❌ Event details failed:", err);
 
-    await safeFollowUp(interaction, {
+    await replyOrEdit(interaction, {
       content: [
-        "❌ Event was not posted.",
+        "❌ Could not load event details.",
         "",
         `Error: ${err.message}`,
-        "",
-        "The setup session was kept so you can try **Post Event** again or cancel.",
       ].join("\n"),
       flags: MessageFlags.Ephemeral,
     });
   }
-}
-
-async function handleRsvp(interaction, bot, db, eventId) {
-  const { data: event, error: eventError } = await db
-    .from("events")
-    .select("*")
-    .eq("id", eventId)
-    .single();
-
-  if (eventError) throw eventError;
-
-  if (!event || event.status !== "open") {
-    await interaction.reply({
-      content: "This event is closed.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  const { error } = await db.from("event_rsvps").upsert(
-    {
-      event_id: eventId,
-      user_id: interaction.user.id,
-      username: interaction.user.tag,
-    },
-    { onConflict: "event_id,user_id" }
-  );
-
-  if (error) throw error;
-
-  await updateEventPost(bot, db, event, false);
-
-  await interaction.reply({
-    content:
-      "✅ You are RSVP’d. You’ll get private reminders 24 hours before, 1 hour before, and when the event starts.",
-    flags: MessageFlags.Ephemeral,
-  });
-}
-
-async function handleUnrsvp(interaction, bot, db, eventId) {
-  const { data: event, error: eventError } = await db
-    .from("events")
-    .select("*")
-    .eq("id", eventId)
-    .single();
-
-  if (eventError) throw eventError;
-
-  await db
-    .from("event_rsvps")
-    .delete()
-    .eq("event_id", eventId)
-    .eq("user_id", interaction.user.id);
-
-  if (event) await updateEventPost(bot, db, event, event.status !== "open");
-
-  await interaction.reply({
-    content: "❌ RSVP removed.",
-    flags: MessageFlags.Ephemeral,
-  });
-}
-
-async function handleDetails(interaction, db, eventId) {
-  const { data: event, error } = await db
-    .from("events")
-    .select("*")
-    .eq("id", eventId)
-    .single();
-
-  if (error) throw error;
-
-  if (!event) {
-    await interaction.reply({
-      content: "Event not found.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  const count = await getRsvpCount(db, eventId);
-
-  await interaction.reply({
-    embeds: [buildEventEmbed(event, count, event.status !== "open")],
-    flags: MessageFlags.Ephemeral,
-  });
 }
 
 async function handleEventInteraction(interaction, bot, db) {
@@ -631,12 +653,10 @@ async function handleEventInteraction(interaction, bot, db) {
   }
 
   if (customId === "event_recurrence_select") {
-    await deferComponent(interaction);
-
     const session = createSessions[interaction.user.id];
 
     if (!session) {
-      await safeFollowUp(interaction, {
+      await interaction.reply({
         content: "No event creation session found. Run `!event` again.",
         flags: MessageFlags.Ephemeral,
       });
@@ -665,8 +685,6 @@ async function handleEventInteraction(interaction, bot, db) {
   }
 
   if (customId === "event_cancel_create") {
-    await deferComponent(interaction);
-
     const session = createSessions[interaction.user.id];
 
     if (session) {
@@ -675,7 +693,7 @@ async function handleEventInteraction(interaction, bot, db) {
 
     delete createSessions[interaction.user.id];
 
-    await safeFollowUp(interaction, {
+    await interaction.reply({
       content: "❌ Event creation cancelled. Setup messages cleaned up.",
       flags: MessageFlags.Ephemeral,
     });
