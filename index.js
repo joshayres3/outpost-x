@@ -54,6 +54,10 @@ const {
   handleRuleUpdateText,
 } = require("./rulesEditor");
 const { handleIssueCommand, handleIssueInteraction } = require("./staffIssues");
+const {
+  handleWatcherDmCommand,
+  handleWatcherDmInteraction,
+} = require("./watcherDm");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -189,6 +193,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await handleRuleUpdateInteraction(interaction, getWatcherContext())) return;
 
+    if (await handleWatcherDmInteraction(interaction, getWatcherContext())) return;
+
     if (await handleIssueInteraction(interaction)) return;
 
     if (interaction.isButton()) {
@@ -258,6 +264,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot) return;
 
     if (await handleWatcherCommand(msg, getWatcherContext())) return;
+
+    if (await handleWatcherDmCommand(msg, getWatcherContext())) return;
 
     if (await handleRuleUpdateCommand(msg, getWatcherContext())) return;
 
