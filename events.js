@@ -118,6 +118,36 @@ async function replyOrEdit(interaction, payload) {
   return interaction.reply(payload).catch(() => {});
 }
 
+async function safeDeferUpdate(interaction) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferUpdate().catch(() => {});
+  }
+}
+
+async function safeFollowUp(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.followUp(payload).catch(() => {});
+  }
+
+  return interaction.reply(payload).catch(() => {});
+}
+
+async function safeEditSourceMessage(interaction, payload) {
+  if (interaction.message) {
+    return interaction.message.edit(payload).catch(async () => {
+      return safeFollowUp(interaction, {
+        ...payload,
+        flags: MessageFlags.Ephemeral,
+      });
+    });
+  }
+
+  return safeFollowUp(interaction, {
+    ...payload,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
 async function getRsvpCount(db, eventId) {
   const { count, error } = await db
     .from("event_rsvps")
@@ -194,13 +224,17 @@ async function postEvent(bot, db, event) {
     },
   });
 
-  await db
+  const { error } = await db
     .from("events")
     .update({
       channel_id: msg.channelId,
       message_id: msg.id,
     })
     .eq("id", event.id);
+
+  if (error) {
+    throw new Error(`Event posted to Discord, but failed to save event message ID: ${error.message}`);
+  }
 
   return msg;
 }
@@ -419,7 +453,7 @@ function buildPreviewEmbed(session) {
 }
 
 async function showPreview(interaction, session) {
-  await interaction.reply({
+  await safeEditSourceMessage(interaction, {
     content: "Review the event preview. Post it?",
     embeds: [buildPreviewEmbed(session)],
     components: [
@@ -436,15 +470,16 @@ async function showPreview(interaction, session) {
           .setStyle(ButtonStyle.Danger)
       ),
     ],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
 async function confirmCreate(interaction, bot, db) {
+  await safeDeferUpdate(interaction);
+
   const session = createSessions[interaction.user.id];
 
   if (!session || !session.data.event_time || !session.data.recurrence) {
-    await interaction.reply({
+    await safeFollowUp(interaction, {
       content: "No event creation session found. Run `!event` again.",
       flags: MessageFlags.Ephemeral,
     });
@@ -462,24 +497,46 @@ async function confirmCreate(interaction, bot, db) {
     created_by: interaction.user.id,
   };
 
-  const { data: event, error } = await db
-    .from("events")
-    .insert(insertPayload)
-    .select()
-    .single();
+  try {
+    const { data: event, error } = await db
+      .from("events")
+      .insert(insertPayload)
+      .select()
+      .single();
 
-  if (error) throw error;
+    if (error) throw error;
 
-  await postEvent(bot, db, event);
+    const postedMessage = await postEvent(bot, db, event);
 
-  await deleteTrackedMessages(interaction.client, session);
+    await safeEditSourceMessage(interaction, {
+      content: [
+        `✅ Event posted to <#${EVENTS_CH}>.`,
+        "",
+        postedMessage.url,
+        "",
+        "Cleaning up setup messages now.",
+      ].join("\n"),
+      embeds: [],
+      components: [],
+    });
 
-  delete createSessions[interaction.user.id];
+    await deleteTrackedMessages(interaction.client, session);
 
-  await interaction.reply({
-    content: `✅ Event posted in <#${EVENTS_CH}>. Setup messages cleaned up.`,
-    flags: MessageFlags.Ephemeral,
-  });
+    delete createSessions[interaction.user.id];
+  } catch (err) {
+    console.error("❌ Event create failed:", err);
+
+    await safeFollowUp(interaction, {
+      content: [
+        "❌ Event was not posted.",
+        "",
+        `Error: ${err.message}`,
+        "",
+        "The setup session was kept so you can try **Post Event** again or cancel.",
+      ].join("\n"),
+      flags: MessageFlags.Ephemeral,
+    });
+  }
 }
 
 async function handleRsvp(interaction, bot, db, eventId) {
@@ -653,10 +710,12 @@ async function handleEventInteraction(interaction, bot, db) {
   }
 
   if (customId === "event_recurrence_select") {
+    await safeDeferUpdate(interaction);
+
     const session = createSessions[interaction.user.id];
 
     if (!session) {
-      await interaction.reply({
+      await safeFollowUp(interaction, {
         content: "No event creation session found. Run `!event` again.",
         flags: MessageFlags.Ephemeral,
       });
@@ -664,8 +723,6 @@ async function handleEventInteraction(interaction, bot, db) {
     }
 
     session.data.recurrence = interaction.values[0];
-
-    await deleteTrackedMessages(interaction.client, session);
 
     await showPreview(interaction, session);
     return true;
@@ -685,7 +742,15 @@ async function handleEventInteraction(interaction, bot, db) {
   }
 
   if (customId === "event_cancel_create") {
+    await safeDeferUpdate(interaction);
+
     const session = createSessions[interaction.user.id];
+
+    await safeEditSourceMessage(interaction, {
+      content: "❌ Event creation cancelled. Setup messages cleaned up.",
+      embeds: [],
+      components: [],
+    });
 
     if (session) {
       await deleteTrackedMessages(interaction.client, session);
@@ -693,10 +758,6 @@ async function handleEventInteraction(interaction, bot, db) {
 
     delete createSessions[interaction.user.id];
 
-    await interaction.reply({
-      content: "❌ Event creation cancelled. Setup messages cleaned up.",
-      flags: MessageFlags.Ephemeral,
-    });
     return true;
   }
 
