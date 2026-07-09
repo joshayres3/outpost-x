@@ -3701,6 +3701,189 @@ function startCargoScheduleOnBoot(bot) {
   });
 }
 
+
+function getKillDecision(event) {
+  const type = String(event?.type || "").toLowerCase();
+  const killerIsPlayer = eventPersonHasSteamId(event?.killer);
+  const victimIsPlayer = eventPersonHasSteamId(event?.victim);
+
+  if (victimIsPlayer) return { post: true, reason: "victim has a Steam ID" };
+  if (isLikelyPlayerDeathWithoutSteamId(event)) return { post: true, reason: "looks like a player death even though the event has no victim Steam ID" };
+  if (type === "npc" && killerIsPlayer && !victimIsPlayer) {
+    if (isNpcCategoryAllowed(event?.cat) || isHostileNpcName(event?.victim?.name) || isHostileNpcName(event?.weaponRaw)) {
+      return { post: true, reason: "important hostile NPC event" };
+    }
+    return { post: false, reason: "player killed normal puppet/animal/NPC farming target" };
+  }
+
+  return { post: false, reason: "not recognized as a player death" };
+}
+
+function parsePullRangeAndQuery(args) {
+  const values = [...(args || [])];
+  let range = "24h";
+  const allowedRanges = new Set(["session", "24h", "48h", "all"]);
+  if (values.length && allowedRanges.has(String(values[values.length - 1]).toLowerCase())) {
+    range = String(values.pop()).toLowerCase();
+  }
+  return { range, query: values.join(" ").trim() };
+}
+
+async function fetchKillHistory(range = "24h", playerQuery = "") {
+  const params = new URLSearchParams();
+  params.set("range", range || "24h");
+  params.set("type", "all");
+  if (String(playerQuery || "").trim()) params.set("player", String(playerQuery || "").trim());
+  return ggconGet(`/kill-feed/history.json?${params.toString()}`);
+}
+
+function formatKillDiagnosticEvent(event, index) {
+  const decision = getKillDecision(event);
+  const location = getKillEventLocation(event);
+  const lines = [
+    `**${index + 1}. ${decision.post ? "POST" : "IGNORE"}** — ${formatDate(event?.t)}`,
+    `Type: ${event?.type || "Unknown"}`,
+    `Killer/Cause: ${formatKillPerson(event?.killer)}`,
+    `Victim/Death: ${formatKillPerson(event?.victim)}`,
+    event?.weapon ? `Weapon/Cause: ${event.weapon}` : null,
+    event?.weaponRaw ? `Raw Cause: ${event.weaponRaw}` : null,
+    event?.dmgType ? `Damage Type: ${event.dmgType}` : null,
+    event?.cat ? `Category: ${event.cat}` : null,
+    `Location: ${formatLocation(location)}`,
+    `Watcher Decision: ${decision.post ? "Would post" : "Would ignore"} — ${decision.reason}`,
+  ].filter(Boolean);
+
+  return lines.join("\n");
+}
+
+async function handleKillLogPull(message, args) {
+  const { range, query } = parsePullRangeAndQuery(args);
+  const data = await fetchKillHistory(range, query);
+  const events = Array.isArray(data.events) ? data.events : [];
+  const sorted = events.slice().sort((a, b) => Number(b.t || 0) - Number(a.t || 0));
+  const state = await loadKillStatePersistent();
+  const shown = sorted.slice(0, 6);
+
+  const header = [
+    "☠️ **Kill Log Pull**",
+    `Range: ${range}`,
+    `Player Filter: ${query || "None"}`,
+    `Events Returned: ${events.length}`,
+    data.capped ? "Result was capped by the server feed." : null,
+    `Saved Cursor: ${state?.cursor ?? "None"}`,
+    "",
+    shown.length ? shown.map(formatKillDiagnosticEvent).join("\n\n") : "No death/kill events were returned for that filter.",
+    "",
+    "Tip: after a missed death, run `!killlogpull <player name or SteamID> 24h` and paste the result to Josh/dev chat.",
+  ].filter(Boolean).join("\n");
+
+  await message.reply(clampDiscord(header)).catch(() => {});
+}
+
+function isLikelyVehicleEntityId(value) {
+  const text = String(value || "").trim();
+  return /^\d{1,12}$/.test(text);
+}
+
+function vehicleDiagnosticMatches(vehicle, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  const compactQ = q.replace(/[^a-z0-9]/g, "");
+  const fields = [
+    vehicle?.id,
+    vehicle?.name,
+    vehicle?.class,
+    vehicle?.owner,
+    vehicle?.ownerSteamId,
+  ].map((value) => String(value || "").toLowerCase());
+
+  return fields.some((field) => field.includes(q) || field.replace(/[^a-z0-9]/g, "").includes(compactQ));
+}
+
+function buildVehicleDiagnosticBlock(id, liveVehicle, savedVehicle, pending, confirmScans) {
+  const sourceVehicle = liveVehicle || savedVehicle || pending?.vehicle || { id };
+  const missedScans = Number(pending?.missedScans || 0);
+  const eligibleForMissingAlert = hasVehicleOwner(savedVehicle) || hasVehicleOwner(pending?.vehicle);
+  const status = liveVehicle ? "Currently visible" : pending ? "Missing / pending confirmation" : savedVehicle ? "Missing from live list" : "Not tracked";
+
+  const lines = [
+    `**Vehicle ID:** \`${id}\``,
+    `Name/Class: ${sourceVehicle?.name || "Vehicle"} / ${sourceVehicle?.class || "Unknown"}`,
+    `Status: ${status}`,
+    `Current Owner: ${liveVehicle ? formatVehicleOwner(liveVehicle) : "Not visible right now"}`,
+    `Last Saved Owner: ${savedVehicle ? formatVehicleOwner(savedVehicle) : "None"}`,
+    `Current Location: ${formatLocation(liveVehicle?.location)}`,
+    `Last Saved Location: ${formatLocation(savedVehicle?.location || pending?.vehicle?.location)}`,
+    `Missing Scans: ${missedScans}/${confirmScans}`,
+    `Alert Eligible: ${eligibleForMissingAlert ? "Yes" : "No — no owner was saved for this vehicle"}`,
+    pending?.alertedAt ? `Alerted At: ${formatDate(pending.alertedAt)}` : null,
+  ].filter(Boolean);
+
+  return lines.join("\n");
+}
+
+async function handleVehicleLogPull(message, args) {
+  const query = args.join(" ").trim();
+  const data = await ggconGet("/vehicles.json");
+  const vehicles = Array.isArray(data.vehicles) ? data.vehicles : [];
+  const current = buildVehicleSnapshot(vehicles);
+  const state = (await loadVehicleStatePersistent()) || {};
+  const saved = state.vehicles || {};
+  const pending = state.pendingMissing || {};
+  const confirmScans = Number(state.missingConfirmationScans || process.env.GGCON_VEHICLE_MISSING_CONFIRMATION_SCANS || "2") || 2;
+
+  if (!query) {
+    const pendingRows = Object.entries(pending).slice(0, 8).map(([id, entry]) => {
+      const vehicle = entry?.vehicle || saved[id] || { id };
+      return `• \`${id}\` ${vehicle.name || vehicle.class || "Vehicle"} — ${Number(entry?.missedScans || 0)}/${confirmScans} scans missing`;
+    });
+
+    await message.reply(clampDiscord([
+      "🚗 **Vehicle Log Pull**",
+      `Live Vehicles Visible: ${vehicles.length}`,
+      `Saved Vehicles: ${Object.keys(saved).length}`,
+      `Saved Owned Vehicles: ${Object.values(saved).filter(hasVehicleOwner).length}`,
+      `Pending Missing: ${Object.keys(pending).length}`,
+      `Confirm Missing After: ${confirmScans} scans`,
+      "",
+      pendingRows.length ? ["**Pending Missing Vehicles:**", pendingRows.join("\n")].join("\n") : "No vehicles are pending missing confirmation right now.",
+      "",
+      "Use `!vehiclelogpull <vehicleID>` or `!vehiclelogpull <vehicle name/player name>` for details.",
+    ].join("\n"))).catch(() => {});
+    return;
+  }
+
+  const matches = new Map();
+
+  if (isLikelyVehicleEntityId(query)) {
+    const id = String(query);
+    if (current[id] || saved[id] || pending[id]) matches.set(id, { live: current[id], saved: saved[id], pending: pending[id] });
+  }
+
+  for (const [id, vehicle] of Object.entries(current)) {
+    if (vehicleDiagnosticMatches(vehicle, query)) matches.set(id, { live: current[id], saved: saved[id], pending: pending[id] });
+  }
+  for (const [id, vehicle] of Object.entries(saved)) {
+    if (vehicleDiagnosticMatches(vehicle, query)) matches.set(id, { live: current[id], saved: saved[id], pending: pending[id] });
+  }
+  for (const [id, entry] of Object.entries(pending)) {
+    if (vehicleDiagnosticMatches(entry?.vehicle, query)) matches.set(id, { live: current[id], saved: saved[id], pending: pending[id] });
+  }
+
+  const blocks = Array.from(matches.entries()).slice(0, 6).map(([id, record]) => buildVehicleDiagnosticBlock(id, record.live, record.saved, record.pending, confirmScans));
+
+  await message.reply(clampDiscord([
+    "🚗 **Vehicle Log Pull**",
+    `Filter: ${query}`,
+    `Matches Found: ${matches.size}`,
+    "",
+    blocks.length ? blocks.join("\n\n") : "No matching vehicle was found in the live list, saved baseline, or pending missing list.",
+    matches.size > 6 ? `\nShowing 6 of ${matches.size} matches.` : null,
+    "",
+    "Tip: if a destroyed vehicle shows `Alert Eligible: No`, it did not have saved owner data when the vehicle log baseline was created.",
+  ].filter(Boolean).join("\n"))).catch(() => {});
+}
+
 async function handleKillLogSetup(message, bot) {
   await saveKillLogConfigPersistent({
     channelId: message.channel.id,
@@ -3896,7 +4079,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!killlogpull", "!vehiclelogpull", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -4031,6 +4214,16 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!killlogscan") {
       await handleKillLogScan(message, bot);
+      return true;
+    }
+
+    if (command === "!killlogpull") {
+      await handleKillLogPull(message, args);
+      return true;
+    }
+
+    if (command === "!vehiclelogpull") {
+      await handleVehicleLogPull(message, args);
       return true;
     }
 
