@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
 
 const DEFAULT_GGCON_BASE_URL = "https://ggcon.gghost.games/s/2788404";
@@ -1716,6 +1716,71 @@ function buildMissingVehicleAlert(vehicle) {
   ].join("\n"));
 }
 
+
+function friendlyVehicleNameFromClass(value) {
+  const raw = String(value || "Vehicle").trim();
+  if (!raw) return "Vehicle";
+  return raw
+    .replace(/^BPC[_-]?/i, "")
+    .replace(/_ES$/i, "")
+    .replace(/_C_.*$/i, "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim() || raw;
+}
+
+function parseVehicleDestructionLog(entry) {
+  const line = String(entry?.line || "").trim();
+  if (!/\[Destroyed\]/i.test(line)) return null;
+
+  const destroyedMatch = line.match(/\[Destroyed\]\s+(.+?)\.\s*VehicleId:\s*(\d+)/i);
+  const ownerMatch = line.match(/Owner:\s*([0-9]{15,20})\s*\((?:[^,)]*,\s*)?([^)]*)\)/i);
+  const locationMatch = line.match(/Location:\s*X=([-\d.]+)\s+Y=([-\d.]+)\s+Z=([-\d.]+)/i);
+
+  const vehicleClass = destroyedMatch?.[1]?.trim() || "Vehicle";
+  const vehicleId = destroyedMatch?.[2]?.trim() || null;
+  if (!vehicleId) return null;
+
+  const ownerSteamId = ownerMatch?.[1]?.trim() || "";
+  const ownerName = ownerMatch?.[2]?.trim() || "Unknown";
+  const location = locationMatch
+    ? { x: Number(locationMatch[1]), y: Number(locationMatch[2]), z: Number(locationMatch[3]) }
+    : null;
+
+  return {
+    key: `${entry?.t || ""}:${vehicleId}:${vehicleClass}`,
+    t: entry?.t || Date.now(),
+    vehicleId,
+    vehicleClass,
+    vehicleName: friendlyVehicleNameFromClass(vehicleClass),
+    ownerSteamId,
+    ownerName,
+    location,
+    rawLine: line,
+  };
+}
+
+function buildVehicleDestroyedAlert(event) {
+  return clampDiscord([
+    "💥 **Vehicle Destroyed**",
+    "",
+    `**Vehicle:** ${event.vehicleName || event.vehicleClass || "Vehicle"}`,
+    `**ID:** \`${event.vehicleId}\``,
+    `**Class:** ${event.vehicleClass || "Unknown"}`,
+    `**Owner:** ${event.ownerName || "Unknown"}`,
+    event.ownerSteamId ? `**Owner Steam ID:** \`${event.ownerSteamId}\`` : null,
+    `**Location:** ${formatLocation(event.location)}`,
+    `**Time:** ${formatDate(event.t)}`,
+    "",
+    "This is a confirmed vehicle destruction event from the server logs.",
+  ].filter(Boolean).join("\n"));
+}
+
+async function fetchVehicleDestructionLogsSince(since) {
+  const range = { since: Math.max(0, Number(since || 0)), label: "vehicle_destruction" };
+  return fetchRawServerLogs(range, "vehicle_destruction");
+}
+
 async function sendVehicleWatchAlerts(bot, channelId, alerts) {
   if (!alerts.length) return 0;
 
@@ -1748,6 +1813,16 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
   const previousState = await loadVehicleStatePersistent();
   const previous = previousState?.vehicles || null;
   const now = Date.now();
+  let destructionData = null;
+  let destructionCursor = previousState?.vehicleDestructionCursor || null;
+
+  try {
+    const initialSince = Math.max(0, now - (5 * 60 * 1000));
+    destructionData = await fetchVehicleDestructionLogsSince(destructionCursor || initialSince);
+    destructionCursor = destructionData?.next || destructionCursor || now;
+  } catch (err) {
+    console.error("❌ Vehicle destruction log scan failed:", err.message);
+  }
 
   if (baselineOnly || !previous) {
     await saveVehicleStatePersistent({
@@ -1755,6 +1830,9 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
       count: vehicles.length,
       ownershipResolved: data.ownershipResolved,
       vehicles: current,
+      pendingMissing: previousState?.pendingMissing || {},
+      vehicleDestructionCursor: destructionCursor,
+      vehicleDestructionSeen: previousState?.vehicleDestructionSeen || [],
     });
 
     return {
@@ -1762,11 +1840,24 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
       baselineOnly: true,
       vehicleCount: vehicles.length,
       ownedTracked: Object.values(current).filter(hasVehicleOwner).length,
+      destroyedEvents: 0,
       alerts: 0,
     };
   }
 
   const alerts = [];
+  const destructionSeen = new Set(previousState?.vehicleDestructionSeen || []);
+  const destroyedEvents = [];
+  const destructionLines = Array.isArray(destructionData?.lines) ? destructionData.lines : [];
+  for (const entry of destructionLines) {
+    const event = parseVehicleDestructionLog(entry);
+    if (!event || destructionSeen.has(event.key)) continue;
+    destructionSeen.add(event.key);
+    if (event.ownerSteamId || (event.ownerName && event.ownerName !== "Unknown")) {
+      destroyedEvents.push(event);
+      alerts.push({ type: "destroyed", content: buildVehicleDestroyedAlert(event) });
+    }
+  }
   const confirmScansValue = Number(process.env.GGCON_VEHICLE_MISSING_CONFIRMATION_SCANS || "2");
   const confirmScans = Math.max(1, Number.isFinite(confirmScansValue) ? Math.floor(confirmScansValue) : 2);
   const priorPending = previousState?.pendingMissing && typeof previousState.pendingMissing === "object"
@@ -1836,6 +1927,8 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
     vehicles: normalizedCurrent,
     pendingMissing,
     missingConfirmationScans: confirmScans,
+    vehicleDestructionCursor: destructionCursor,
+    vehicleDestructionSeen: Array.from(destructionSeen).slice(-1000),
   });
 
   return {
@@ -1844,6 +1937,7 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
     ownedTracked: Object.values(normalizedCurrent).filter(hasVehicleOwner).length,
     pendingMissing: Object.keys(pendingMissing).length,
     confirmationScans: confirmScans,
+    destroyedEvents: destroyedEvents.length,
     alerts: alerts.length,
     sent,
   };
@@ -1881,8 +1975,9 @@ async function handleVehicleLogSetup(message, bot) {
 
   await message.reply([
     "Vehicle watch is now active in this channel.",
-    "I saved the current vehicle list as the baseline.",
-    "Alerts only post when a tracked player-owned vehicle disappears and stays missing for multiple scans.",
+    "I saved the current vehicle list and destruction-log position as the baseline.",
+    "Alerts post for confirmed player-owned vehicle destruction events.",
+    "It also alerts if a tracked player-owned vehicle disappears and stays missing for multiple scans.",
     "Owner flicker, owner changes, and temporary unknown owner data are ignored.",
     "Use `!vehiclelogscan` to force an immediate check instead of waiting for the timer.",
   ].join("\n")).catch(() => {});
@@ -1921,8 +2016,9 @@ async function handleVehicleLogStatus(message) {
     `Unowned Vehicles Ignored for Alerts: ${unownedTracked}`,
     `Pending Missing Confirmations: ${state?.pendingMissing ? Object.keys(state.pendingMissing).length : 0}`,
     `Confirm Missing After: ${state?.missingConfirmationScans || 2} scans`,
+    `Last Destruction Log Cursor: ${state?.vehicleDestructionCursor || "Not saved yet"}`,
     `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
-    "Alerts only post for vehicles that disappear from the live list and stay missing.",
+    "Alerts post for confirmed vehicle destruction events and confirmed missing vehicles.",
     "Owner flicker, owner changes, and temporary unknown owner data are ignored.",
   ].join("\n")).catch(() => {});
 }
@@ -1941,6 +2037,7 @@ async function handleVehicleLogScan(message, bot) {
     `Owned Vehicles Tracked: ${result.ownedTracked ?? "Unknown"}`,
     `Pending Missing Confirmations: ${result.pendingMissing ?? 0}`,
     `Confirm Missing After: ${result.confirmationScans ?? 2} scans`,
+    `Confirmed Destruction Events: ${result.destroyedEvents ?? 0}`,
     `Alerts Found: ${result.alerts ?? 0}`,
     `Alerts Sent: ${result.sent ?? 0}`,
   ].join("\n")).catch(() => {});
@@ -4049,6 +4146,67 @@ async function handleRawLogPull(message, args) {
   await message.reply(clampDiscord(output)).catch(() => {});
 }
 
+function parseRawLogDumpArgs(args) {
+  const values = [...(args || [])].map((v) => String(v || "").trim()).filter(Boolean);
+  let sources = "";
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    const lower = values[i].toLowerCase();
+    if (lower.startsWith("sources:")) {
+      sources = values[i].slice(values[i].indexOf(":") + 1).trim();
+      values.splice(i, 1);
+    }
+  }
+  return { sources };
+}
+
+function buildRawLogDumpText(lines, range, sources, data) {
+  const sorted = (lines || []).slice().sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
+  const header = [
+    "Outpost X server log dump",
+    `Generated: ${new Date().toISOString()}`,
+    `Range: last ${range.label}`,
+    `Source filter: ${sources || "all visible sources"}`,
+    `Raw lines returned: ${sorted.length}`,
+    data?.next ? `Next cursor: ${data.next}` : null,
+    "",
+    "Format: [time] [source] line",
+    "",
+  ].filter(Boolean).join("\n");
+
+  const body = sorted.map((entry) => {
+    const t = entry?.t ? new Date(Number(entry.t)).toISOString() : "unknown-time";
+    const src = entry?.src || "Unknown";
+    const line = String(entry?.line || "").replace(/\r?\n/g, " ").trim();
+    return `[${t}] [${src}] ${line}`;
+  }).join("\n");
+
+  return `${header}${body || "No raw log lines were returned."}\n`;
+}
+
+async function handleRawLogDump(message, args) {
+  const { sources } = parseRawLogDumpArgs(args);
+  const range = { label: "5m", since: Math.max(0, Date.now() - (5 * 60 * 1000)), ms: 5 * 60 * 1000 };
+  const data = await fetchRawServerLogs(range, sources);
+  const lines = Array.isArray(data.lines) ? data.lines : [];
+  const dumpText = buildRawLogDumpText(lines, range, sources, data);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const attachment = new AttachmentBuilder(Buffer.from(dumpText, "utf8"), {
+    name: `outpost-x-server-log-dump-${stamp}.txt`,
+  });
+
+  await message.reply({
+    content: [
+      "🧾 **5-Minute Server Log Dump**",
+      `Raw Lines Returned: ${lines.length}`,
+      sources ? `Source Filter: ${sources}` : "Source Filter: All visible log sources",
+      "Attached as a text file so Discord does not trim the output.",
+    ].join("\n"),
+    files: [attachment],
+  }).catch(async () => {
+    await message.reply("Server log dump was created, but Discord would not accept the attachment.").catch(() => {});
+  });
+}
+
 async function handleKillLogSetup(message, bot) {
   await saveKillLogConfigPersistent({
     channelId: message.channel.id,
@@ -4244,7 +4402,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!killlogpull", "!vehiclelogpull", "!rawlogpull", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!rawlogdump", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -4382,18 +4540,8 @@ async function handleGgconCommand(message, bot) {
       return true;
     }
 
-    if (command === "!killlogpull") {
-      await handleKillLogPull(message, args);
-      return true;
-    }
-
-    if (command === "!vehiclelogpull") {
-      await handleVehicleLogPull(message, args);
-      return true;
-    }
-
-    if (command === "!rawlogpull") {
-      await handleRawLogPull(message, args);
+    if (command === "!rawlogdump") {
+      await handleRawLogDump(message, args);
       return true;
     }
 
