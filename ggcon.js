@@ -9,6 +9,7 @@ const VEHICLE_WATCH_FILE = path.join(__dirname, "data", "ggcon-vehicle-watch.jso
 const VEHICLE_STATE_FILE = path.join(__dirname, "data", "ggcon-vehicle-state.json");
 const KILL_LOG_FILE = path.join(__dirname, "data", "ggcon-kill-log.json");
 const KILL_STATE_FILE = path.join(__dirname, "data", "ggcon-kill-state.json");
+const CARGO_SCHEDULE_FILE = path.join(__dirname, "data", "ggcon-cargo-schedule.json");
 const JAIL_STATE_FILE = path.join(__dirname, "data", "ggcon-jail-state.json");
 const JAIL_RETURNS_TABLE = process.env.GGCON_JAIL_RETURNS_TABLE || "watcher_jail_returns";
 const JAIL_LOCATION = { x: 231926.016, y: -289455.094, z: 16877.357, pitch: 308.556671, yaw: 1.584615, roll: 0 };
@@ -22,6 +23,14 @@ const CARGO_FRENZY_FLAG_BUFFER_UNITS = Number(process.env.GGCON_CARGO_FLAG_BUFFE
 const CARGO_FRENZY_DROP_SPACING_UNITS = Number(process.env.GGCON_CARGO_DROP_SPACING_UNITS || "75000");
 const CARGO_FRENZY_GRID_STEP_UNITS = Number(process.env.GGCON_CARGO_GRID_STEP_UNITS || "80000");
 const CARGO_FRENZY_EVENT_NAME = process.env.GGCON_CARGO_EVENT_NAME || "BP_CargoDropEvent";
+const CARGO_SCHEDULE_TIMEZONE = process.env.GGCON_CARGO_SCHEDULE_TIMEZONE || "America/Toronto";
+const CARGO_SCHEDULE_HOURS = String(process.env.GGCON_CARGO_SCHEDULE_HOURS || "0,4,8,12,16,20")
+  .split(",")
+  .map((value) => Number(value.trim()))
+  .filter((value) => Number.isInteger(value) && value >= 0 && value <= 23);
+const CARGO_SCHEDULE_MINUTE = Number(process.env.GGCON_CARGO_SCHEDULE_MINUTE || "30");
+const CARGO_SCHEDULE_WINDOW_MINUTES = Number(process.env.GGCON_CARGO_SCHEDULE_WINDOW_MINUTES || "4");
+const CARGO_SCHEDULE_WAKE_BUFFER_MS = Number(process.env.GGCON_CARGO_SCHEDULE_WAKE_BUFFER_MS || "3000");
 const CARGO_FRENZY_HAND_PICKED_POINTS = [
   { x: -560000, y: -660000 }, { x: -480000, y: -650000 }, { x: -400000, y: -640000 }, { x: -320000, y: -630000 },
   { x: -240000, y: -650000 }, { x: -160000, y: -640000 }, { x: -80000, y: -625000 }, { x: 0, y: -645000 },
@@ -81,6 +90,9 @@ const SIMPLE_VEHICLE_NAMES = "duster, tractor, laika, mariner, rager, ww/wolfswa
 let statusTimer = null;
 let vehicleWatchTimer = null;
 let killLogTimer = null;
+let cargoScheduleTimer = null;
+let cargoScheduleNextSlot = null;
+let cargoScheduleRunning = false;
 let supabaseForGgcon = null;
 
 function getSupabaseForGgcon() {
@@ -320,6 +332,26 @@ function loadKillState() {
 function saveKillState(state) {
   ensureDataFolder();
   fs.writeFileSync(KILL_STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+function loadCargoScheduleConfig() {
+  try {
+    if (!fs.existsSync(CARGO_SCHEDULE_FILE)) return null;
+    return JSON.parse(fs.readFileSync(CARGO_SCHEDULE_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveCargoScheduleConfig(config) {
+  ensureDataFolder();
+  fs.writeFileSync(CARGO_SCHEDULE_FILE, JSON.stringify(config, null, 2));
+}
+
+function clearCargoScheduleConfig() {
+  try {
+    if (fs.existsSync(CARGO_SCHEDULE_FILE)) fs.unlinkSync(CARGO_SCHEDULE_FILE);
+  } catch {}
 }
 
 function normalizeJailState(state) {
@@ -3104,6 +3136,251 @@ async function handleCargoTestCommand(message) {
   await runCargoFrenzy(message, { count: 1, isTest: true });
 }
 
+function getEasternScheduleParts(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: CARGO_SCHEDULE_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+
+  const parts = {};
+  for (const part of formatter.formatToParts(date)) {
+    if (part.type !== "literal") parts[part.type] = part.value;
+  }
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    second: Number(parts.second || 0),
+    keyDate: `${parts.year}-${parts.month}-${parts.day}`,
+  };
+}
+
+function getCargoScheduleLabel() {
+  const hours = CARGO_SCHEDULE_HOURS
+    .slice()
+    .sort((a, b) => a - b)
+    .map((hour) => `${String(hour).padStart(2, "0")}:${String(CARGO_SCHEDULE_MINUTE).padStart(2, "0")}`)
+    .join(", ");
+  return `${hours} ${CARGO_SCHEDULE_TIMEZONE}`;
+}
+
+function buildCargoScheduleSlot(parts, hour = parts.hour) {
+  return {
+    key: `${parts.keyDate}-${String(hour).padStart(2, "0")}-${String(CARGO_SCHEDULE_MINUTE).padStart(2, "0")}`,
+    label: `${parts.keyDate} ${String(hour).padStart(2, "0")}:${String(CARGO_SCHEDULE_MINUTE).padStart(2, "0")} ${CARGO_SCHEDULE_TIMEZONE}`,
+  };
+}
+
+function getCargoScheduleSlot(parts = getEasternScheduleParts()) {
+  if (!CARGO_SCHEDULE_HOURS.includes(parts.hour)) return null;
+  if (parts.minute < CARGO_SCHEDULE_MINUTE) return null;
+  if (parts.minute > CARGO_SCHEDULE_MINUTE + Math.max(0, CARGO_SCHEDULE_WINDOW_MINUTES)) return null;
+
+  return buildCargoScheduleSlot(parts, parts.hour);
+}
+
+function getNextCargoScheduleSlot(date = new Date()) {
+  const parts = getEasternScheduleParts(date);
+  const currentSecondOfDay = (parts.hour * 3600) + (parts.minute * 60) + (parts.second || 0);
+  const scheduledSeconds = CARGO_SCHEDULE_HOURS
+    .slice()
+    .sort((a, b) => a - b)
+    .map((hour) => ({ hour, secondOfDay: (hour * 3600) + (CARGO_SCHEDULE_MINUTE * 60) }));
+
+  let target = scheduledSeconds.find((entry) => entry.secondOfDay > currentSecondOfDay + 2);
+  let secondsUntil;
+
+  if (target) {
+    secondsUntil = target.secondOfDay - currentSecondOfDay;
+  } else {
+    target = scheduledSeconds[0];
+    secondsUntil = (24 * 3600) - currentSecondOfDay + target.secondOfDay;
+  }
+
+  const targetDate = new Date(date.getTime() + (secondsUntil * 1000) + 1000);
+  const targetParts = getEasternScheduleParts(targetDate);
+  const slot = buildCargoScheduleSlot(targetParts, target.hour);
+
+  return {
+    ...slot,
+    delayMs: Math.max(1000, (secondsUntil * 1000) + CARGO_SCHEDULE_WAKE_BUFFER_MS),
+  };
+}
+
+function formatDelay(ms) {
+  const totalMinutes = Math.max(0, Math.round(ms / 60000));
+  if (totalMinutes < 60) return `${totalMinutes} minute(s)`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m`;
+}
+
+async function runScheduledCargoFrenzy(bot, slot) {
+  const config = loadCargoScheduleConfig();
+  if (!config?.enabled || !config.channelId) return;
+  if (config.lastRunKey === slot.key) return;
+  if (cargoScheduleRunning) return;
+
+  const channel = await bot.channels.fetch(config.channelId).catch(() => null);
+  if (!channel) return;
+
+  cargoScheduleRunning = true;
+  try {
+    const pseudoMessage = {
+      reply: (content) => channel.send(content),
+      channel,
+      guild: { id: config.guildId || "default" },
+      author: { id: "scheduled-cargo-frenzy", tag: "Scheduled Cargo Frenzy" },
+    };
+
+    await channel.send(`📦 **Scheduled Cargo Frenzy starting.**\nSlot: ${slot.label}\nTiming: 30 minutes after scheduled restart.`).catch(() => {});
+    await runCargoFrenzy(pseudoMessage, { count: CARGO_FRENZY_COUNT, isTest: false, scheduled: true });
+
+    saveCargoScheduleConfig({
+      ...config,
+      lastRunKey: slot.key,
+      lastRunAt: Date.now(),
+      lastRunLabel: slot.label,
+    });
+  } catch (err) {
+    await channel.send(`📦 **Scheduled Cargo Frenzy failed.**\nSlot: ${slot.label}\nError: ${err.message}`).catch(() => {});
+  } finally {
+    cargoScheduleRunning = false;
+  }
+}
+
+async function checkCargoSchedule(bot) {
+  if (!hasPasswordConfigured()) return false;
+  const config = loadCargoScheduleConfig();
+  if (!config?.enabled || !config.channelId) return false;
+
+  const slot = getCargoScheduleSlot();
+  if (!slot) return false;
+  if (config.lastRunKey === slot.key) return false;
+
+  await runScheduledCargoFrenzy(bot, slot);
+  return true;
+}
+
+function clearCargoScheduleTimer() {
+  if (cargoScheduleTimer) {
+    clearTimeout(cargoScheduleTimer);
+    cargoScheduleTimer = null;
+    cargoScheduleNextSlot = null;
+  }
+}
+
+function ensureCargoScheduleLoop(bot) {
+  clearCargoScheduleTimer();
+
+  if (!hasPasswordConfigured()) return;
+  const config = loadCargoScheduleConfig();
+  if (!config?.enabled || !config.channelId) return;
+
+  const currentSlot = getCargoScheduleSlot();
+  const nextSlot = currentSlot && config.lastRunKey !== currentSlot.key
+    ? { ...currentSlot, delayMs: CARGO_SCHEDULE_WAKE_BUFFER_MS }
+    : getNextCargoScheduleSlot();
+
+  cargoScheduleNextSlot = nextSlot;
+  cargoScheduleTimer = setTimeout(async () => {
+    const scheduledSlot = cargoScheduleNextSlot;
+    cargoScheduleTimer = null;
+    cargoScheduleNextSlot = null;
+
+    try {
+      const ranCatchup = await checkCargoSchedule(bot);
+      if (!ranCatchup && scheduledSlot) {
+        await runScheduledCargoFrenzy(bot, scheduledSlot);
+      }
+    } catch (err) {
+      console.error("❌ GGCON scheduled cargo run failed:", err.message);
+    } finally {
+      ensureCargoScheduleLoop(bot);
+    }
+  }, Math.max(1000, nextSlot.delayMs));
+}
+
+async function handleCargoScheduleSetup(message, bot) {
+  const config = {
+    enabled: true,
+    channelId: message.channel.id,
+    guildId: message.guild?.id || "default",
+    setBy: message.author.id,
+    setAt: Date.now(),
+    lastRunKey: loadCargoScheduleConfig()?.lastRunKey || null,
+    lastRunAt: loadCargoScheduleConfig()?.lastRunAt || null,
+    lastRunLabel: loadCargoScheduleConfig()?.lastRunLabel || null,
+  };
+
+  saveCargoScheduleConfig(config);
+  ensureCargoScheduleLoop(bot);
+
+  await message.reply([
+    "📦 **Automatic Cargo Frenzy is now enabled in this channel.**",
+    "It will run 30 minutes after each scheduled restart.",
+    `Schedule: ${getCargoScheduleLabel()}`,
+    `Drops per run: ${CARGO_FRENZY_COUNT}`,
+    `Cargo event: ${CARGO_FRENZY_EVENT_NAME}`,
+    "It still checks flags/bases first and cancels if it cannot find safe locations.",
+  ].join("\n")).catch(() => {});
+}
+
+async function handleCargoScheduleOff(message) {
+  clearCargoScheduleConfig();
+  clearCargoScheduleTimer();
+  await message.reply("📦 Automatic Cargo Frenzy is now disabled.").catch(() => {});
+}
+
+async function handleCargoScheduleStatus(message) {
+  const config = loadCargoScheduleConfig();
+
+  if (!config?.enabled || !config.channelId) {
+    await message.reply("📦 Automatic Cargo Frenzy is not set up. Run `!cargoschedulesetup` in the channel where scheduled cargo reports should post.").catch(() => {});
+    return;
+  }
+
+  const parts = getEasternScheduleParts();
+  const slot = getCargoScheduleSlot(parts);
+  const nextSlot = cargoScheduleNextSlot || getNextCargoScheduleSlot();
+  const lines = [
+    "📦 **Cargo Schedule Status**",
+    `Enabled: Yes`,
+    `Report Channel: <#${config.channelId}>`,
+    `Schedule: ${getCargoScheduleLabel()}`,
+    `Current ${CARGO_SCHEDULE_TIMEZONE} time: ${parts.keyDate} ${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}:${String(parts.second || 0).padStart(2, "0")}`,
+    `Active window right now: ${slot ? "Yes" : "No"}`,
+    `Next Run: ${nextSlot.label} (about ${formatDelay(nextSlot.delayMs)} from now)`,
+    "Timer Mode: exact sleep-until-next-run, not once-per-minute polling.",
+    `Last Run: ${config.lastRunAt ? formatDate(config.lastRunAt) : "Never"}`,
+    `Last Slot: ${config.lastRunLabel || "None"}`,
+    `Drops per run: ${CARGO_FRENZY_COUNT}`,
+    `Cargo event: ${CARGO_FRENZY_EVENT_NAME}`,
+  ];
+
+  await message.reply(lines.join("\n")).catch(() => {});
+}
+
+function startCargoScheduleOnBoot(bot) {
+  if (!hasPasswordConfigured()) return;
+  const config = loadCargoScheduleConfig();
+  if (!config?.enabled || !config.channelId) return;
+
+  ensureCargoScheduleLoop(bot);
+  checkCargoSchedule(bot).catch((err) => {
+    console.error("❌ GGCON boot cargo schedule catch-up failed:", err.message);
+  });
+}
+
 async function handleKillLogSetup(message, bot) {
   saveKillLogConfig({
     channelId: message.channel.id,
@@ -3274,7 +3551,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -3339,6 +3616,21 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!cargotest") {
       await handleCargoTestCommand(message);
+      return true;
+    }
+
+    if (command === "!cargoschedulesetup") {
+      await handleCargoScheduleSetup(message, bot);
+      return true;
+    }
+
+    if (command === "!cargoscheduleoff") {
+      await handleCargoScheduleOff(message);
+      return true;
+    }
+
+    if (command === "!cargoschedulestatus") {
+      await handleCargoScheduleStatus(message);
       return true;
     }
 
@@ -3425,6 +3717,7 @@ function startGgconStatusOnBoot(bot) {
 
   startVehicleWatchOnBoot(bot);
   startKillLogOnBoot(bot);
+  startCargoScheduleOnBoot(bot);
 
   const ref = loadStatusRef();
   if (!ref?.channelId || !ref?.messageId) return;
