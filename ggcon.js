@@ -21,6 +21,7 @@ const CARGO_FRENZY_SAFE_DISTANCE_UNITS = Number(process.env.GGCON_CARGO_SAFE_DIS
 const CARGO_FRENZY_FLAG_BUFFER_UNITS = Number(process.env.GGCON_CARGO_FLAG_BUFFER_UNITS || "25000");
 const CARGO_FRENZY_DROP_SPACING_UNITS = Number(process.env.GGCON_CARGO_DROP_SPACING_UNITS || "75000");
 const CARGO_FRENZY_GRID_STEP_UNITS = Number(process.env.GGCON_CARGO_GRID_STEP_UNITS || "80000");
+const CARGO_FRENZY_EVENT_NAME = process.env.GGCON_CARGO_EVENT_NAME || "BP_CargoDropEvent";
 const CARGO_FRENZY_HAND_PICKED_POINTS = [
   { x: -560000, y: -660000 }, { x: -480000, y: -650000 }, { x: -400000, y: -640000 }, { x: -320000, y: -630000 },
   { x: -240000, y: -650000 }, { x: -160000, y: -640000 }, { x: -80000, y: -625000 }, { x: 0, y: -645000 },
@@ -3021,6 +3022,7 @@ async function runCargoFrenzy(message, options = {}) {
       `Needed ${plan.requestedCount} safe location(s), but only found ${points.length}.`,
       `Flags checked: ${plan.flagsChecked}`,
       `Safe distance from flags: ${formatApproxDistance(plan.safeDistance)}`,
+      `Cargo event: ${CARGO_FRENZY_EVENT_NAME}`,
       `Candidate locations checked: ${plan.totalCandidates}`,
       `Blocked for being too close to flags: ${plan.blockedCount}`,
       closestBlocked,
@@ -3039,7 +3041,7 @@ async function runCargoFrenzy(message, options = {}) {
 
   const results = [];
   for (const point of points) {
-    const command = `#ScheduleWorldEvent CargoDrop ${point.x} ${point.y} ${point.z}`;
+    const command = `#ScheduleWorldEvent ${CARGO_FRENZY_EVENT_NAME} ${point.x} ${point.y} ${point.z}`;
     const raw = await ggconPostRaw("/command", { command });
     results.push({
       point,
@@ -3057,6 +3059,7 @@ async function runCargoFrenzy(message, options = {}) {
     `Server status: online | players: ${preflight.server?.onlinePlayers ?? "Unknown"} | FPS: ${preflight.server?.fps ?? "Unknown"}`,
     `Flags checked: ${plan.flagsChecked}`,
     `Safe distance from flags: ${formatApproxDistance(plan.safeDistance)}`,
+    `Cargo event: ${CARGO_FRENZY_EVENT_NAME}`,
     `Candidate locations checked: ${plan.totalCandidates}`,
     `Safe candidates found: ${plan.safeCandidateCount}`,
     `Blocked near flags: ${plan.blockedCount}`,
@@ -3087,7 +3090,7 @@ async function runCargoFrenzy(message, options = {}) {
   }
 
   if (!isTest) {
-    lines.push("", "Note: GGCON accepted/dispatched these commands, but SCUM still has to process the scheduled world events. Avoid running this right before a server restart.");
+    lines.push("", "Note: Watcher now uses `#ScheduleWorldEvent BP_CargoDropEvent X Y Z`, which current SCUM builds use for exact-coordinate cargo drops. GGCON accepting the command still means SCUM has to process the event, so avoid running this right before restart.");
   }
 
   await message.reply(clampDiscord(lines.join("\n"))).catch(() => {});
