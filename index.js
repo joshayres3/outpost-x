@@ -58,6 +58,10 @@ const {
   handleWatcherDmCommand,
   handleWatcherDmInteraction,
 } = require("./watcherDm");
+const {
+  handleGgconCommand,
+  startGgconStatusOnBoot,
+} = require("./ggcon");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -184,6 +188,7 @@ bot.once(Events.ClientReady, async () => {
     console.log(`✅ Assistant in ${result.channelCount} channel(s)`);
 
     startEventScheduler(bot, db);
+    startGgconStatusOnBoot(bot);
   } catch (err) {
     console.error("❌ Startup database load failed:", err);
   }
@@ -262,6 +267,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
+
+    if (await handleGgconCommand(msg, bot)) return;
 
     if (await handleWatcherCommand(msg, getWatcherContext())) return;
 
