@@ -128,7 +128,7 @@ function getBaseUrl() {
 function getPassword() {
   const password = process.env.GGCON_PASSWORD;
   if (!password) {
-    throw new Error("Missing GGCON_PASSWORD Railway variable.");
+    throw new Error("Missing server API password Railway variable.");
   }
   return password;
 }
@@ -152,12 +152,12 @@ async function ggconGet(endpoint) {
 
   if (!res.ok) {
     const reason = data?.reason || data?.message || data?.error || `HTTP ${res.status}`;
-    throw new Error(`GGCON request failed: ${reason}`);
+    throw new Error(`Server request failed: ${reason}`);
   }
 
   if (data && data.ok === false) {
-    const reason = data.reason || data.message || data.error || "Unknown GGCON error";
-    throw new Error(`GGCON request failed: ${reason}`);
+    const reason = data.reason || data.message || data.error || "Unknown server API error";
+    throw new Error(`Server request failed: ${reason}`);
   }
 
   return data;
@@ -180,12 +180,12 @@ async function ggconPost(endpoint, body = {}) {
 
   if (!res.ok) {
     const reason = data?.reason || data?.message || data?.error || `HTTP ${res.status}`;
-    throw new Error(`GGCON request failed: ${reason}`);
+    throw new Error(`Server request failed: ${reason}`);
   }
 
   if (data && data.ok === false) {
-    const reason = data.reason || data.message || data.error || "Unknown GGCON error";
-    throw new Error(`GGCON request failed: ${reason}`);
+    const reason = data.reason || data.message || data.error || "Unknown server API error";
+    throw new Error(`Server request failed: ${reason}`);
   }
 
   return data || { ok: true };
@@ -657,7 +657,7 @@ function ensureStatusLoop(bot) {
 
   statusTimer = setInterval(() => {
     updateStatusMessage(bot).catch((err) => {
-      console.error("❌ GGCON status update failed:", err.message);
+      console.error("❌ Server status update failed:", err.message);
     });
   }, intervalMs);
 }
@@ -828,7 +828,7 @@ async function searchPlayers(query) {
     .sort((a, b) => b.score - a.score)
     .map((entry) => entry.player);
 
-  // Fallback: if GGCON's search did not find an offline player, scan the first player pages locally.
+  // Fallback: if the server search did not find an offline player, scan the first player pages locally.
   // This lets staff use short partial names instead of full names or Steam IDs.
   if (matches.length === 0 || cleaned.length < 3) {
     const scannedPlayers = await scanAllPlayerPages();
@@ -1124,7 +1124,7 @@ async function buildVehicleReportForPlayer(player, fallbackLabel) {
 
   const targetName = player.characterName || player.steamName || fallbackLabel || "Unknown";
   const ownershipNote = vehicleData.ownershipResolved === false
-    ? "\n\n⚠️ Vehicle ownership is not fully resolved right now. GGCON says ownership requires at least one player online."
+    ? "\n\n⚠️ Vehicle ownership is not fully resolved right now. Live ownership data may require at least one player online."
     : "";
 
   if (matchingVehicles.length === 0) {
@@ -1557,7 +1557,7 @@ function buildMissingVehicleAlert(vehicle) {
   return clampDiscord([
     "🚨 **Vehicle Loss Detected**",
     "",
-    "The Watcher no longer sees this tracked player-owned vehicle in GGCON.",
+    "The Watcher no longer sees this tracked player-owned vehicle in the live server list.",
     "",
     `**Vehicle:** ${vehicle.name || vehicle.class || "Vehicle"}`,
     `**ID:** \`${vehicle.id}\``,
@@ -1598,7 +1598,7 @@ function buildOwnerClearedVehicleAlert(previous, current) {
     `**Current Location:** ${formatLocation(current.location)}`,
     `**Last Known Location:** ${formatLocation(previous.location)}`,
     "",
-    "This may happen if the vehicle became unowned or GGCON ownership data changed.",
+    "This may happen if the vehicle became unowned or the live ownership data changed.",
   ].join("\n"));
 }
 
@@ -1709,7 +1709,7 @@ function ensureVehicleWatchLoop(bot) {
 
   vehicleWatchTimer = setInterval(() => {
     scanVehiclesAndAlert(bot).catch((err) => {
-      console.error("❌ GGCON vehicle watch failed:", err.message);
+      console.error("❌ Vehicle watch failed:", err.message);
     });
   }, intervalMs);
 }
@@ -1793,7 +1793,7 @@ function startVehicleWatchOnBoot(bot) {
 
   ensureVehicleWatchLoop(bot);
   scanVehiclesAndAlert(bot, { baselineOnly: !loadVehicleState() }).catch((err) => {
-    console.error("❌ GGCON boot vehicle watch failed:", err.message);
+    console.error("❌ Boot vehicle watch failed:", err.message);
   });
 }
 
@@ -2150,7 +2150,7 @@ async function buildNearVehiclesBySteamId(steamId) {
 
   const player = playerResult.player;
   if (!player.location) {
-    return `No usable location found for **${getPlayerDisplayName(player)}**. They may need to be online or have a last-known location in GGCON.`;
+    return `No usable location found for **${getPlayerDisplayName(player)}**. They may need to be online or have a last-known server location.`;
   }
 
   const vehicleData = await ggconGet("/vehicles.json");
@@ -2332,7 +2332,7 @@ async function jailPlayerBySteamId(messageOrInteraction, steamId) {
     `Jail Location: ${getJailLocationText()}`,
     returnLocation ? `Return Point Saved: ${formatLocation(returnLocation)}` : "Return Point Saved: No usable player location was available.",
     "Use `!unjail <player>` to send them back to the saved return point.",
-    "Note: GGCON teleport uses X/Y/Z only. Pitch/yaw/roll from the saved point are ignored.",
+    "Note: teleport uses X/Y/Z only. Pitch/yaw/roll from the saved point are ignored.",
   ].join("\n");
 
   const log = buildAdminActionLog("🚔 **Player Jailed**", [
@@ -2923,7 +2923,7 @@ function ensureKillLogLoop(bot) {
   const intervalMs = getKillLogIntervalSeconds() * 1000;
   killLogTimer = setInterval(() => {
     scanKillsAndAlert(bot).catch((err) => {
-      console.error("❌ GGCON kill log watch failed:", err.message);
+      console.error("❌ Kill log watch failed:", err.message);
     });
   }, intervalMs);
 }
@@ -3073,7 +3073,7 @@ function selectSafeCargoFrenzyPoints(flagData, requestedCountOverride = null) {
 }
 
 function summarizeCargoCommandRaw(raw) {
-  if (!raw) return "No response from GGCON.";
+  if (!raw) return "No response from the server tools.";
   if (raw.error) return raw.error;
 
   const data = raw.data || {};
@@ -3184,7 +3184,7 @@ async function runCargoFrenzy(message, options = {}) {
       `Blocked for being too close to flags: ${plan.blockedCount}`,
       closestBlocked,
       "",
-      "No cargo drops were launched. Add more known-safe presets or lower the safety distance with `GGCON_CARGO_SAFE_DISTANCE_UNITS` if you are sure it is safe.",
+      "No cargo drops were launched. Add more known-safe presets or lower the cargo safety distance if you are sure it is safe.",
     ].filter(Boolean).join("\n"))).catch(() => {});
     return;
   }
@@ -3237,17 +3237,17 @@ async function runCargoFrenzy(message, options = {}) {
   ].filter(Boolean);
 
   if (failed.length) {
-    lines.push("", "Failures / raw GGCON result:");
+    lines.push("", "Failures / raw server result:");
     for (const entry of failed.slice(0, 5)) {
       lines.push(`• ${entry.command}`);
       lines.push(`  ${entry.output}`);
     }
   } else if (isTest) {
-    lines.push("", `GGCON result: ${results[0]?.output || "sent"}`);
+    lines.push("", `Server result: ${results[0]?.output || "sent"}`);
   }
 
   if (!isTest) {
-    lines.push("", "Note: Watcher now uses `#ScheduleWorldEvent BP_CargoDropEvent X Y Z`, which current SCUM builds use for exact-coordinate cargo drops. GGCON accepting the command still means SCUM has to process the event, so avoid running this right before restart.");
+    lines.push("", "Note: Watcher now uses `#ScheduleWorldEvent BP_CargoDropEvent X Y Z`, which current SCUM builds use for exact-coordinate cargo drops. The server accepting the command still means SCUM has to process the event, so avoid running this right before restart.");
   }
 
   await message.reply(clampDiscord(lines.join("\n"))).catch(() => {});
@@ -3428,7 +3428,7 @@ function ensureCargoScheduleLoop(bot) {
         await runScheduledCargoFrenzy(bot, scheduledSlot);
       }
     } catch (err) {
-      console.error("❌ GGCON scheduled cargo run failed:", err.message);
+      console.error("❌ Scheduled cargo run failed:", err.message);
     } finally {
       ensureCargoScheduleLoop(bot);
     }
@@ -3502,7 +3502,7 @@ function startCargoScheduleOnBoot(bot) {
 
   ensureCargoScheduleLoop(bot);
   checkCargoSchedule(bot).catch((err) => {
-    console.error("❌ GGCON boot cargo schedule catch-up failed:", err.message);
+    console.error("❌ Boot cargo schedule catch-up failed:", err.message);
   });
 }
 
@@ -3516,7 +3516,7 @@ async function handleKillLogSetup(message, bot) {
   try {
     await scanKillsAndAlert(bot, { baselineOnly: true });
   } catch (err) {
-    await message.reply(`Kill log setup failed: ${err.message}\nMake sure the GGCON Kill Feed plugin is installed and enabled.`).catch(() => {});
+    await message.reply(`Kill log setup failed: ${err.message}\nMake sure the Kill Feed plugin is installed and enabled.`).catch(() => {});
     return;
   }
 
@@ -3566,7 +3566,7 @@ function startKillLogOnBoot(bot) {
 
   ensureKillLogLoop(bot);
   scanKillsAndAlert(bot, { baselineOnly: !loadKillState() }).catch((err) => {
-    console.error("❌ GGCON boot kill log failed:", err.message);
+    console.error("❌ Boot kill log failed:", err.message);
   });
 }
 
@@ -3656,8 +3656,8 @@ async function handleGgconInteraction(interaction) {
 
     await interaction.reply({ content, ephemeral: true }).catch(() => {});
   } catch (err) {
-    console.error("❌ GGCON button failed:", err);
-    const errorContent = `GGCON error: ${err.message}`;
+    console.error("❌ Server button failed:", err);
+    const errorContent = `Server tool error: ${err.message}`;
     if (interaction.deferred || interaction.replied) {
       await interaction.followUp({ content: errorContent, ephemeral: true }).catch(() => {});
     } else {
@@ -3829,8 +3829,8 @@ async function handleGgconCommand(message, bot) {
       return true;
     }
   } catch (err) {
-    console.error("❌ GGCON command failed:", err);
-    await message.reply(`GGCON error: ${err.message}`).catch(() => {});
+    console.error("❌ Server command failed:", err);
+    await message.reply(`Server tool error: ${err.message}`).catch(() => {});
     return true;
   }
 
@@ -3840,7 +3840,7 @@ async function handleGgconCommand(message, bot) {
 function startGgconStatusOnBoot(bot) {
   if (!hasPasswordConfigured()) {
     if (loadStatusRef() || getVehicleLogChannelId()) {
-      console.warn("⚠️ GGCON startup skipped because GGCON_PASSWORD is not configured.");
+      console.warn("⚠️ Server tool startup skipped because the API password is not configured.");
     }
     return;
   }
@@ -3854,7 +3854,7 @@ function startGgconStatusOnBoot(bot) {
 
   ensureStatusLoop(bot);
   updateStatusMessage(bot).catch((err) => {
-    console.error("❌ GGCON boot status update failed:", err.message);
+    console.error("❌ Boot status update failed:", err.message);
   });
 }
 
