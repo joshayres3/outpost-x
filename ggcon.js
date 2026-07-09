@@ -178,6 +178,38 @@ async function ggconPost(endpoint, body = {}) {
   return data || { ok: true };
 }
 
+async function ggconPostRaw(endpoint, body = {}) {
+  const url = `${getBaseUrl()}${endpoint}`;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Password": getPassword(),
+      },
+      body: JSON.stringify(body || {}),
+    });
+
+    const data = await res.json().catch(() => null);
+
+    return {
+      httpOk: res.ok,
+      status: res.status,
+      data,
+      error: null,
+    };
+  } catch (err) {
+    return {
+      httpOk: false,
+      status: 0,
+      data: null,
+      error: err?.message || String(err),
+    };
+  }
+}
+
 function hasStaffRole(member) {
   const roles = member?.roles?.cache;
   if (!roles) return false;
@@ -2827,8 +2859,9 @@ function isFarEnoughFromSelectedCargo(point, selected, minimumSpacing) {
   });
 }
 
-function selectSafeCargoFrenzyPoints(flagData) {
-  const count = Math.max(1, Math.min(25, Number.isFinite(CARGO_FRENZY_COUNT) ? Math.floor(CARGO_FRENZY_COUNT) : 10));
+function selectSafeCargoFrenzyPoints(flagData, requestedCountOverride = null) {
+  const configuredCount = requestedCountOverride ?? CARGO_FRENZY_COUNT;
+  const count = Math.max(1, Math.min(25, Number.isFinite(configuredCount) ? Math.floor(configuredCount) : 10));
   const z = Math.round(Number.isFinite(CARGO_FRENZY_Z) ? CARGO_FRENZY_Z : 25000);
   const flags = Array.isArray(flagData?.flags) ? flagData.flags.filter((flag) => flag?.location) : [];
   const safeDistance = getCargoSafeDistance(flagData);
@@ -2881,17 +2914,98 @@ function selectSafeCargoFrenzyPoints(flagData) {
   };
 }
 
-async function handleCargoFrenzyCommand(message) {
+function summarizeCargoCommandRaw(raw) {
+  if (!raw) return "No response from GGCON.";
+  if (raw.error) return raw.error;
+
+  const data = raw.data || {};
+  const parts = [];
+
+  if (!raw.httpOk) parts.push(`HTTP ${raw.status}`);
+  if (data.ok === false) parts.push("ok=false");
+  if (data.accepted === false) parts.push("accepted=false");
+  if (data.dispatched === false) parts.push("dispatched=false");
+
+  const message = data.message || data.reason || data.error;
+  if (message) parts.push(message);
+
+  if (Array.isArray(data.lines) && data.lines.length) {
+    parts.push(data.lines.slice(0, 3).join(" | "));
+  }
+
+  if (!parts.length) {
+    parts.push(`accepted=${data.accepted !== false ? "yes" : "no"}, dispatched=${data.dispatched !== false ? "yes" : "no"}`);
+  }
+
+  return parts.join(" | ");
+}
+
+function wasCargoCommandSuccessful(raw) {
+  if (!raw?.httpOk) return false;
+  const data = raw.data || {};
+  if (data.ok === false) return false;
+  if (data.accepted === false) return false;
+  if (data.dispatched === false) return false;
+  return true;
+}
+
+async function getCargoPreflightStatus() {
+  const server = await ggconGet("/server.json");
+
+  if (server?.online === false) {
+    return {
+      ok: false,
+      server,
+      reason: "SCUM world is offline. Cargo commands were not sent.",
+    };
+  }
+
+  const fps = Number(server?.fps ?? server?.avgFps ?? server?.minFps);
+  if (Number.isFinite(fps) && fps <= 1) {
+    return {
+      ok: false,
+      server,
+      reason: "Server FPS looks unavailable/too low. This can happen during startup/shutdown, so cargo commands were not sent.",
+    };
+  }
+
+  return { ok: true, server, reason: "" };
+}
+
+async function runCargoFrenzy(message, options = {}) {
+  const requestedCount = options.count || CARGO_FRENZY_COUNT;
+  const isTest = options.isTest === true;
+
+  let preflight;
+  try {
+    preflight = await getCargoPreflightStatus();
+  } catch (err) {
+    await message.reply(`Cargo ${isTest ? "test" : "frenzy"} cancelled. I could not confirm server status: ${err.message}`).catch(() => {});
+    return;
+  }
+
+  if (!preflight.ok) {
+    await message.reply(clampDiscord([
+      `📦 **Cargo ${isTest ? "Test" : "Frenzy"} cancelled.**`,
+      preflight.reason,
+      `Players online: ${preflight.server?.onlinePlayers ?? "Unknown"}`,
+      `FPS: ${preflight.server?.fps ?? "Unknown"}`,
+      "",
+      "Watcher cannot read GGHOST's restart countdown directly, so avoid running this within 10 minutes of a scheduled restart.",
+    ].join("\n"))).catch(() => {});
+    return;
+  }
+
   let flagData;
 
   try {
     flagData = await ggconGet("/flags.json");
   } catch (err) {
-    await message.reply(`Cargo Frenzy cancelled. I could not read flags to verify base safety: ${err.message}`).catch(() => {});
+    await message.reply(`Cargo ${isTest ? "test" : "frenzy"} cancelled. I could not read flags to verify base safety: ${err.message}`).catch(() => {});
     return;
   }
 
-  const plan = selectSafeCargoFrenzyPoints(flagData);
+  const plan = selectSafeCargoFrenzyPoints(flagData, requestedCount);
   const points = plan.selected;
 
   if (points.length < plan.requestedCount) {
@@ -2903,8 +3017,8 @@ async function handleCargoFrenzyCommand(message) {
       : "";
 
     await message.reply(clampDiscord([
-      "📦 **Cargo Frenzy cancelled.**",
-      `Needed ${plan.requestedCount} safe locations, but only found ${points.length}.`,
+      `📦 **Cargo ${isTest ? "Test" : "Frenzy"} cancelled.**`,
+      `Needed ${plan.requestedCount} safe location(s), but only found ${points.length}.`,
       `Flags checked: ${plan.flagsChecked}`,
       `Safe distance from flags: ${formatApproxDistance(plan.safeDistance)}`,
       `Candidate locations checked: ${plan.totalCandidates}`,
@@ -2916,26 +3030,31 @@ async function handleCargoFrenzyCommand(message) {
     return;
   }
 
-  await ggconPost("/message", {
-    text: `Cargo Frenzy! ${points.length} cargo drops have been scattered across the island. Move fast, Exiles.`,
-    type: "ServerMessage",
-  });
+  if (!isTest) {
+    await ggconPost("/message", {
+      text: `Cargo Frenzy! ${points.length} cargo drops have been scattered across the island. Move fast, Exiles.`,
+      type: "ServerMessage",
+    });
+  }
 
   const results = [];
   for (const point of points) {
     const command = `#ScheduleWorldEvent CargoDrop ${point.x} ${point.y} ${point.z}`;
-    try {
-      const result = await ggconPost("/command", { command });
-      results.push({ point, command, ok: true, output: result?.lines?.join(" | ") || result?.message || "sent" });
-    } catch (err) {
-      results.push({ point, command, ok: false, output: err.message });
-    }
+    const raw = await ggconPostRaw("/command", { command });
+    results.push({
+      point,
+      command,
+      ok: wasCargoCommandSuccessful(raw),
+      output: summarizeCargoCommandRaw(raw),
+      raw,
+    });
   }
 
   const successCount = results.filter((entry) => entry.ok).length;
   const failed = results.filter((entry) => !entry.ok);
 
   const safetyLines = [
+    `Server status: online | players: ${preflight.server?.onlinePlayers ?? "Unknown"} | FPS: ${preflight.server?.fps ?? "Unknown"}`,
     `Flags checked: ${plan.flagsChecked}`,
     `Safe distance from flags: ${formatApproxDistance(plan.safeDistance)}`,
     `Candidate locations checked: ${plan.totalCandidates}`,
@@ -2943,33 +3062,43 @@ async function handleCargoFrenzyCommand(message) {
     `Blocked near flags: ${plan.blockedCount}`,
   ];
 
-  const log = buildAdminActionLog("📦 **Cargo Frenzy Triggered**", [
-    `Triggered by: ${message.member?.displayName || message.author?.tag || "Unknown"}`,
-    `Drops requested: ${points.length}`,
-    `Commands sent: ${successCount}/${points.length}`,
+  const title = isTest ? "📦 **Cargo Test launched.**" : "📦 **Cargo Frenzy launched.**";
+  const lines = [
+    title,
+    isTest ? "One cargo drop was requested for testing." : `Cargo drops sent: ${successCount}/${points.length}`,
+    isTest ? `Command sent: ${successCount}/${points.length}` : null,
     ...safetyLines,
-    failed.length ? `Failures: ${failed.length}` : null,
-    "Locations:",
-    ...results.slice(0, 10).map((entry, index) => {
-      const nearest = entry.point.nearestFlagDistance !== null ? ` | nearest flag: ${formatApproxDistance(entry.point.nearestFlagDistance)}` : " | nearest flag: none found";
-      return `${index + 1}. ${entry.ok ? "✅" : "❌"} X: ${entry.point.x} | Y: ${entry.point.y} | Z: ${entry.point.z}${nearest}`;
-    }),
-  ]);
-
-  await sendGgconActionLog(message.client, message.channel, log).catch(() => {});
-
-  await message.reply(clampDiscord([
-    `📦 **Cargo Frenzy launched.**`,
-    `Cargo drops sent: ${successCount}/${points.length}`,
-    ...safetyLines,
-    failed.length ? `Failures: ${failed.length}` : null,
     "",
     "Locations:",
     ...results.slice(0, 10).map((entry, index) => {
       const nearest = entry.point.nearestFlagDistance !== null ? ` | nearest flag: ${formatApproxDistance(entry.point.nearestFlagDistance)}` : " | nearest flag: none found";
       return `${index + 1}. ${entry.ok ? "✅" : "❌"} X: ${entry.point.x} | Y: ${entry.point.y} | Z: ${entry.point.z}${nearest}`;
     }),
-  ].filter(Boolean).join("\n"))).catch(() => {});
+  ].filter(Boolean);
+
+  if (failed.length) {
+    lines.push("", "Failures / raw GGCON result:");
+    for (const entry of failed.slice(0, 5)) {
+      lines.push(`• ${entry.command}`);
+      lines.push(`  ${entry.output}`);
+    }
+  } else if (isTest) {
+    lines.push("", `GGCON result: ${results[0]?.output || "sent"}`);
+  }
+
+  if (!isTest) {
+    lines.push("", "Note: GGCON accepted/dispatched these commands, but SCUM still has to process the scheduled world events. Avoid running this right before a server restart.");
+  }
+
+  await message.reply(clampDiscord(lines.join("\n"))).catch(() => {});
+}
+
+async function handleCargoFrenzyCommand(message) {
+  await runCargoFrenzy(message, { count: CARGO_FRENZY_COUNT, isTest: false });
+}
+
+async function handleCargoTestCommand(message) {
+  await runCargoFrenzy(message, { count: 1, isTest: true });
 }
 
 async function handleKillLogSetup(message, bot) {
@@ -3142,7 +3271,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -3202,6 +3331,11 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!cargofrenzy") {
       await handleCargoFrenzyCommand(message);
+      return true;
+    }
+
+    if (command === "!cargotest") {
+      await handleCargoTestCommand(message);
       return true;
     }
 
