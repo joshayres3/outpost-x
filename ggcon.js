@@ -6,12 +6,16 @@ const DEFAULT_GGCON_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const STATUS_FILE = path.join(__dirname, "data", "ggcon-status.json");
 const VEHICLE_WATCH_FILE = path.join(__dirname, "data", "ggcon-vehicle-watch.json");
 const VEHICLE_STATE_FILE = path.join(__dirname, "data", "ggcon-vehicle-state.json");
+const KILL_LOG_FILE = path.join(__dirname, "data", "ggcon-kill-log.json");
+const KILL_STATE_FILE = path.join(__dirname, "data", "ggcon-kill-state.json");
+const JAIL_LOCATION = { x: 231926.016, y: -289455.094, z: 16877.357, pitch: 308.556671, yaw: 1.584615, roll: 0 };
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10");
 const DEFAULT_FLAG_PAGE_SIZE = 5;
 
 let statusTimer = null;
 let vehicleWatchTimer = null;
+let killLogTimer = null;
 
 function getBaseUrl() {
   return (process.env.GGCON_BASE_URL || DEFAULT_GGCON_BASE_URL).replace(/\/+$/, "");
@@ -158,6 +162,44 @@ function clearVehicleWatchConfig() {
   try {
     if (fs.existsSync(VEHICLE_WATCH_FILE)) fs.unlinkSync(VEHICLE_WATCH_FILE);
   } catch {}
+}
+
+function loadKillLogConfig() {
+  try {
+    if (!fs.existsSync(KILL_LOG_FILE)) return null;
+    return JSON.parse(fs.readFileSync(KILL_LOG_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveKillLogConfig(config) {
+  ensureDataFolder();
+  fs.writeFileSync(KILL_LOG_FILE, JSON.stringify(config, null, 2));
+}
+
+function clearKillLogConfig() {
+  try {
+    if (fs.existsSync(KILL_LOG_FILE)) fs.unlinkSync(KILL_LOG_FILE);
+  } catch {}
+}
+
+function loadKillState() {
+  try {
+    if (!fs.existsSync(KILL_STATE_FILE)) return null;
+    return JSON.parse(fs.readFileSync(KILL_STATE_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveKillState(state) {
+  ensureDataFolder();
+  fs.writeFileSync(KILL_STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+function getKillLogChannelId() {
+  return process.env.GGCON_KILL_LOG_CHANNEL_ID || loadKillLogConfig()?.channelId || null;
 }
 
 function getVehicleLogChannelId() {
@@ -508,7 +550,7 @@ function buildPlayerLabel(player, index) {
 }
 
 function buildMatchButtons(matches, commandName) {
-  const action = commandName === "!vehicle" || commandName === "!vehicles" ? "vehicle" : commandName === "!flag" || commandName === "!flags" ? "flag" : commandName === "!squad" ? "squad" : commandName === "!nearvehicles" ? "nearvehicles" : "player";
+  const action = commandName === "!vehicle" || commandName === "!vehicles" ? "vehicle" : commandName === "!flag" || commandName === "!flags" ? "flag" : commandName === "!squad" ? "squad" : commandName === "!nearvehicles" ? "nearvehicles" : commandName === "!jail" ? "jail" : "player";
   const usable = matches.filter((player) => player.userId).slice(0, 10);
   const rows = [];
 
@@ -1762,6 +1804,490 @@ async function handleCashOrFameButton(interaction, kind, valueParts) {
   return true;
 }
 
+
+function getJailLocationText() {
+  return `X: ${JAIL_LOCATION.x} | Y: ${JAIL_LOCATION.y} | Z: ${JAIL_LOCATION.z}`;
+}
+
+async function jailPlayerBySteamId(messageOrInteraction, steamId) {
+  const playerResult = await getPlayerForLookup(String(steamId || ""));
+  if (playerResult.type !== "single") {
+    const content = `No player found for \`${steamId}\`.`;
+    if (messageOrInteraction.reply) await messageOrInteraction.reply({ content, ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const player = playerResult.player;
+  const realSteamId = String(player.userId || steamId || "").trim();
+  if (!realSteamId) {
+    const content = "That player does not have a usable Steam ID.";
+    if (messageOrInteraction.reply) await messageOrInteraction.reply({ content, ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  await ggconPost(`/players/${encodeURIComponent(realSteamId)}/teleport`, {
+    x: JAIL_LOCATION.x,
+    y: JAIL_LOCATION.y,
+    z: JAIL_LOCATION.z,
+  });
+
+  const displayName = getPlayerDisplayName(player);
+  const content = [
+    `🚔 **${displayName}** was sent to jail.`,
+    `Steam ID: \`${realSteamId}\``,
+    `Jail Location: ${getJailLocationText()}`,
+    "Note: GGCON teleport uses X/Y/Z only. Pitch/yaw/roll from the saved point are ignored.",
+  ].join("\n");
+
+  const log = buildAdminActionLog("🚔 **Player Jailed**", [
+    `Player: **${displayName}**`,
+    `Steam ID: \`${realSteamId}\``,
+    `Location: ${getJailLocationText()}`,
+    `Jailed by: ${messageOrInteraction.member?.displayName || messageOrInteraction.user?.tag || messageOrInteraction.author?.tag || "Unknown"}`,
+  ]);
+
+  await sendGgconActionLog(messageOrInteraction.client || messageOrInteraction.bot, messageOrInteraction.channel, log).catch(() => {});
+
+  if (messageOrInteraction.update) {
+    await messageOrInteraction.update({ content, components: [] }).catch(() => {});
+  } else {
+    await messageOrInteraction.reply(content).catch(() => {});
+  }
+}
+
+async function handleJailCommand(message, args) {
+  const query = args.join(" ").trim();
+  if (!query) {
+    await message.reply("Use: `!jail <player name or Steam ID>`").catch(() => {});
+    return;
+  }
+
+  const playerResult = await getPlayerForLookup(query);
+
+  if (playerResult.type === "none") {
+    await message.reply(`No player found for **${query}**.`).catch(() => {});
+    return;
+  }
+
+  if (playerResult.type === "multiple") {
+    await message.reply({
+      content: buildMultipleMatchesReply(query, playerResult.matches, "!jail"),
+      components: buildMatchButtons(playerResult.matches, "!jail"),
+    }).catch(() => {});
+    return;
+  }
+
+  await jailPlayerBySteamId(message, playerResult.player.userId);
+}
+
+function normalizeVehicleText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/^bpc[_-]?/g, "")
+    .replace(/[`~!@#$%^&*()_+=\[\]{};:'"\\|,.<>/?-]/g, " ")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function vehicleTypeScore(vehicleType, query) {
+  const rawQuery = String(query || "").trim();
+  const q = normalizeVehicleText(rawQuery);
+  if (!q) return 0;
+
+  const rawClass = String(vehicleType.i || vehicleType.class || "").trim();
+  const normalizedClass = normalizeVehicleText(rawClass);
+  const normalizedNoPrefix = normalizeVehicleText(rawClass.replace(/^BPC[_-]?/i, ""));
+
+  let best = 0;
+  for (const field of [rawClass.toLowerCase(), normalizedClass, normalizedNoPrefix]) {
+    if (!field) continue;
+    if (field === rawQuery.toLowerCase() || field === q) best = Math.max(best, 1000);
+    else if (field.startsWith(q)) best = Math.max(best, 850);
+    else if (field.includes(q)) best = Math.max(best, 650);
+  }
+
+  return best;
+}
+
+async function getVehicleTypes() {
+  const data = await ggconGet("/vehicle-types.json");
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+async function searchVehicleTypes(query) {
+  const types = await getVehicleTypes();
+  return types
+    .map((vehicleType) => ({ vehicleType, score: vehicleTypeScore(vehicleType, query) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || String(a.vehicleType.i || "").localeCompare(String(b.vehicleType.i || "")))
+    .map((entry) => entry.vehicleType);
+}
+
+function buildVehicleTypeList(matches, query) {
+  const rows = matches.slice(0, 10).map((vehicleType, index) => {
+    return `**${index + 1}.** \`${vehicleType.i || "Unknown"}\``;
+  });
+  const extra = matches.length > 10 ? `\n\nShowing 10 of ${matches.length} vehicle type matches.` : "";
+
+  return clampDiscord([
+    `Multiple vehicle types matched **${query}**.`,
+    "",
+    rows.join("\n"),
+    extra,
+    "",
+    "Click a number below, or rerun the command with the exact class.",
+  ].join("\n"));
+}
+
+function buildGiveVehicleTypeButtons(steamId, matches) {
+  const usable = matches.filter((vehicleType) => vehicleType.i).slice(0, 10);
+  const rows = [];
+
+  for (let i = 0; i < usable.length; i += 5) {
+    const row = new ActionRowBuilder();
+    usable.slice(i, i + 5).forEach((vehicleType, offset) => {
+      const index = i + offset;
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ggcon:givevehicleclass:${steamId}:${vehicleType.i}`)
+          .setLabel(String(index + 1))
+          .setStyle(ButtonStyle.Primary)
+      );
+    });
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+function buildGiveVehiclePlayerButtons(matches, vehicleQuery) {
+  const usable = matches.filter((player) => player.userId).slice(0, 10);
+  const safeQuery = encodeURIComponent(String(vehicleQuery || "").slice(0, 45));
+  const rows = [];
+
+  for (let i = 0; i < usable.length; i += 5) {
+    const row = new ActionRowBuilder();
+    usable.slice(i, i + 5).forEach((player, offset) => {
+      const index = i + offset;
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ggcon:givevehicleplayer:${player.userId}:${safeQuery}`)
+          .setLabel(String(index + 1))
+          .setStyle(ButtonStyle.Primary)
+      );
+    });
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+async function giveVehicleToSteamId(messageOrInteraction, steamId, vehicleClass) {
+  const playerResult = await getPlayerForLookup(String(steamId || ""));
+  const player = playerResult.type === "single" ? playerResult.player : { userId: steamId };
+  const realSteamId = String(player.userId || steamId || "").trim();
+
+  await ggconPost("/spawn-vehicle", {
+    steamId: realSteamId,
+    vehicle: vehicleClass,
+  });
+
+  const content = [
+    `🚙 Vehicle spawned for **${getPlayerDisplayName(player, realSteamId)}**.`,
+    `Steam ID: \`${realSteamId}\``,
+    `Vehicle: \`${vehicleClass}\``,
+  ].join("\n");
+
+  const log = buildAdminActionLog("🚙 **Vehicle Spawned by Admin**", [
+    `Player: **${getPlayerDisplayName(player, realSteamId)}**`,
+    `Steam ID: \`${realSteamId}\``,
+    `Vehicle: \`${vehicleClass}\``,
+    `Spawned by: ${messageOrInteraction.member?.displayName || messageOrInteraction.user?.tag || messageOrInteraction.author?.tag || "Unknown"}`,
+  ]);
+
+  await sendGgconActionLog(messageOrInteraction.client || messageOrInteraction.bot, messageOrInteraction.channel, log).catch(() => {});
+
+  if (messageOrInteraction.update) {
+    await messageOrInteraction.update({ content, components: [] }).catch(() => {});
+  } else if (messageOrInteraction.reply) {
+    await messageOrInteraction.reply(content).catch(() => {});
+  }
+}
+
+async function resolveGiveVehicleTarget(messageOrInteraction, steamId, vehicleQuery) {
+  const matches = await searchVehicleTypes(vehicleQuery);
+  if (matches.length === 0) {
+    const content = `No vehicle type found for **${vehicleQuery}**. Try \`!vehicletype ${vehicleQuery}\` to search.`;
+    if (messageOrInteraction.update) await messageOrInteraction.update({ content, components: [] }).catch(() => {});
+    else await messageOrInteraction.reply(content).catch(() => {});
+    return;
+  }
+
+  if (matches.length > 1) {
+    const payload = {
+      content: buildVehicleTypeList(matches, vehicleQuery),
+      components: buildGiveVehicleTypeButtons(steamId, matches),
+    };
+    if (messageOrInteraction.update) await messageOrInteraction.update(payload).catch(() => {});
+    else await messageOrInteraction.reply(payload).catch(() => {});
+    return;
+  }
+
+  await giveVehicleToSteamId(messageOrInteraction, steamId, matches[0].i);
+}
+
+async function handleVehicleTypeCommand(message, args) {
+  const query = args.join(" ").trim();
+  if (!query) {
+    await message.reply("Use: `!vehicletype <vehicle name or class>`").catch(() => {});
+    return;
+  }
+
+  const matches = await searchVehicleTypes(query);
+  if (matches.length === 0) {
+    await message.reply(`No vehicle type found for **${query}**.`).catch(() => {});
+    return;
+  }
+
+  const rows = matches.slice(0, 15).map((vehicleType, index) => `**${index + 1}.** \`${vehicleType.i || "Unknown"}\``);
+  const extra = matches.length > 15 ? `\n\nShowing 15 of ${matches.length} matches.` : "";
+  await message.reply(clampDiscord([`🚙 **Vehicle Type Search: ${query}**`, "", rows.join("\n"), extra].join("\n"))).catch(() => {});
+}
+
+async function handleGiveVehicleCommand(message, args) {
+  if (args.length < 2) {
+    await message.reply("Use: `!givevehicle <player name or Steam ID> <vehicle name or class>`").catch(() => {});
+    return;
+  }
+
+  // Best-effort split: if the first token is a Steam ID, everything after is vehicle query.
+  // Otherwise, try each possible player-name length until a player match is found.
+  let playerQuery = "";
+  let vehicleQuery = "";
+
+  if (isSteamId(args[0])) {
+    playerQuery = args[0];
+    vehicleQuery = args.slice(1).join(" ").trim();
+  } else {
+    // Try the longest possible player name first so names like "Josh Ayres" work.
+    for (let i = args.length - 1; i >= 1; i -= 1) {
+      const possiblePlayer = args.slice(0, i).join(" ").trim();
+      const possibleVehicle = args.slice(i).join(" ").trim();
+      if (!possibleVehicle) continue;
+      const result = await getPlayerForLookup(possiblePlayer);
+      if (result.type !== "none") {
+        playerQuery = possiblePlayer;
+        vehicleQuery = possibleVehicle;
+        break;
+      }
+    }
+  }
+
+  if (!playerQuery || !vehicleQuery) {
+    await message.reply("I could not split the player and vehicle. Use: `!givevehicle <player> <vehicle>` or `!givevehicle <Steam ID> <vehicle>`").catch(() => {});
+    return;
+  }
+
+  const playerResult = await getPlayerForLookup(playerQuery);
+
+  if (playerResult.type === "none") {
+    await message.reply(`No player found for **${playerQuery}**.`).catch(() => {});
+    return;
+  }
+
+  if (playerResult.type === "multiple") {
+    await message.reply({
+      content: buildMultipleMatchesReply(playerQuery, playerResult.matches, "!givevehicle"),
+      components: buildGiveVehiclePlayerButtons(playerResult.matches, vehicleQuery),
+    }).catch(() => {});
+    return;
+  }
+
+  await resolveGiveVehicleTarget(message, playerResult.player.userId, vehicleQuery);
+}
+
+function getKillEventKey(event) {
+  return String(event?.t || "") + ":" + String(event?.type || "") + ":" + String(event?.killer?.sid || event?.killer?.name || "") + ":" + String(event?.victim?.sid || event?.victim?.name || "");
+}
+
+function getKillEventLocation(event) {
+  const victim = event?.victim || {};
+  if ([victim.x, victim.y, victim.z].some((v) => v !== undefined && v !== null && Number.isFinite(Number(v)))) {
+    return { x: victim.x, y: victim.y, z: victim.z };
+  }
+
+  const killer = event?.killer || {};
+  if ([killer.x, killer.y, killer.z].some((v) => v !== undefined && v !== null && Number.isFinite(Number(v)))) {
+    return { x: killer.x, y: killer.y, z: killer.z };
+  }
+
+  return null;
+}
+
+function formatKillPerson(person) {
+  if (!person) return "Unknown";
+  const name = person.name || "Unknown";
+  const sid = person.sid ? ` (\`${person.sid}\`)` : "";
+  return `${name}${sid}`;
+}
+
+function buildKillAlert(event) {
+  const type = String(event.type || "unknown").toLowerCase();
+  const emoji = type === "pvp" ? "☠️" : type === "npc" ? "🐾" : type === "suicide" ? "💀" : type === "trap" ? "🪤" : "⚰️";
+  const title = type === "pvp" ? "PvP Kill" : type === "npc" ? "NPC / Animal Kill" : type === "suicide" ? "Suicide" : type === "trap" ? "Trap Death" : "Kill Event";
+  const location = getKillEventLocation(event);
+
+  return clampDiscord([
+    `${emoji} **${title}**`,
+    "",
+    `Type: ${event.type || "Unknown"}`,
+    event.killer ? `Killer: ${formatKillPerson(event.killer)}` : null,
+    event.victim ? `Victim / Death: ${formatKillPerson(event.victim)}` : null,
+    event.weapon ? `Weapon: ${event.weapon}` : null,
+    event.cat ? `Category: ${event.cat}` : null,
+    event.dist !== undefined && event.dist !== null ? `Distance: ${Number(event.dist).toFixed(1)} m` : null,
+    event.tod ? `In-Game Time: ${event.tod}` : null,
+    `Death Location: ${formatLocation(location)}`,
+  ].filter(Boolean).join("\n"));
+}
+
+function getKillLogIntervalSeconds() {
+  const seconds = Number(process.env.GGCON_KILL_LOG_INTERVAL_SECONDS || "30");
+  return Math.max(15, Number.isFinite(seconds) ? seconds : 30);
+}
+
+async function fetchKillEventsSince(cursor) {
+  const endpoint = `/kill-feed/events.json?since=${encodeURIComponent(String(cursor || 0))}`;
+  return ggconGet(endpoint);
+}
+
+async function scanKillsAndAlert(bot, { baselineOnly = false } = {}) {
+  const channelId = getKillLogChannelId();
+  if (!channelId) return;
+
+  const previous = loadKillState() || {};
+  const cursor = previous.cursor || 0;
+  const data = await fetchKillEventsSince(cursor);
+  const events = Array.isArray(data.events) ? data.events : [];
+  const nextCursor = data.next || events.reduce((max, event) => Math.max(max, Number(event.t || 0)), Number(cursor || 0));
+
+  saveKillState({
+    updatedAt: Date.now(),
+    cursor: nextCursor,
+    total: data.total,
+    lastEventCount: events.length,
+  });
+
+  if (baselineOnly || events.length === 0) return;
+
+  const channel = await bot.channels.fetch(channelId).catch(() => null);
+  if (!channel?.send) return;
+
+  const unique = [];
+  const seen = new Set(previous.seen || []);
+  for (const event of events) {
+    const key = getKillEventKey(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(event);
+  }
+
+  saveKillState({
+    updatedAt: Date.now(),
+    cursor: nextCursor,
+    total: data.total,
+    lastEventCount: events.length,
+    seen: Array.from(seen).slice(-250),
+  });
+
+  for (const event of unique.slice(0, 10)) {
+    await channel.send(buildKillAlert(event)).catch((err) => {
+      console.error("❌ Kill log alert failed:", err.message);
+    });
+  }
+
+  if (unique.length > 10) {
+    await channel.send(`⚠️ ${unique.length - 10} more kill event(s) occurred in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
+  }
+}
+
+function ensureKillLogLoop(bot) {
+  const channelId = getKillLogChannelId();
+  if (!channelId) return;
+  if (killLogTimer) return;
+
+  const intervalMs = getKillLogIntervalSeconds() * 1000;
+  killLogTimer = setInterval(() => {
+    scanKillsAndAlert(bot).catch((err) => {
+      console.error("❌ GGCON kill log watch failed:", err.message);
+    });
+  }, intervalMs);
+}
+
+async function handleKillLogSetup(message, bot) {
+  saveKillLogConfig({
+    channelId: message.channel.id,
+    setBy: message.author.id,
+    setAt: Date.now(),
+  });
+
+  try {
+    await scanKillsAndAlert(bot, { baselineOnly: true });
+  } catch (err) {
+    await message.reply(`Kill log setup failed: ${err.message}\nMake sure the GGCON Kill Feed plugin is installed and enabled.`).catch(() => {});
+    return;
+  }
+
+  ensureKillLogLoop(bot);
+
+  await message.reply([
+    "Kill log is now active in this channel.",
+    "I saved the current kill-feed cursor as the baseline, so I will only alert for new kill events after this point.",
+    `Scan interval: ${getKillLogIntervalSeconds()} seconds`,
+  ].join("\n")).catch(() => {});
+}
+
+async function handleKillLogOff(message) {
+  clearKillLogConfig();
+  if (killLogTimer) {
+    clearInterval(killLogTimer);
+    killLogTimer = null;
+  }
+  await message.reply("Kill log is now disabled.").catch(() => {});
+}
+
+async function handleKillLogStatus(message) {
+  const channelId = getKillLogChannelId();
+  const state = loadKillState();
+
+  if (!channelId) {
+    await message.reply("Kill log is not set up. Run `!killlogsetup` in the channel where kill alerts should post.").catch(() => {});
+    return;
+  }
+
+  await message.reply([
+    "☠️ **Kill Log Status**",
+    `Alert Channel: <#${channelId}>`,
+    `Tracking Active: ${killLogTimer ? "Yes" : "Will start on next bot boot/setup"}`,
+    `Scan Interval: ${getKillLogIntervalSeconds()} seconds`,
+    `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
+    `Last Event Count: ${state?.lastEventCount ?? "Unknown"}`,
+    `Cursor: ${state?.cursor ?? "Unknown"}`,
+  ].join("\n")).catch(() => {});
+}
+
+function startKillLogOnBoot(bot) {
+  if (!hasPasswordConfigured()) return;
+  const channelId = getKillLogChannelId();
+  if (!channelId) return;
+
+  ensureKillLogLoop(bot);
+  scanKillsAndAlert(bot, { baselineOnly: !loadKillState() }).catch((err) => {
+    console.error("❌ GGCON boot kill log failed:", err.message);
+  });
+}
+
 async function handleGgconInteraction(interaction) {
   if (!interaction.isButton?.()) return false;
   if (!String(interaction.customId || "").startsWith("ggcon:")) return false;
@@ -1785,6 +2311,27 @@ async function handleGgconInteraction(interaction) {
 
     if (action === "confirmDestroyBase") {
       return await confirmDestroyBase(interaction);
+    }
+
+    if (action === "jail") {
+      await jailPlayerBySteamId(interaction, value);
+      return true;
+    }
+
+    if (action === "givevehicleplayer") {
+      const parts = interaction.customId.split(":");
+      const steamId = parts[2];
+      const vehicleQuery = decodeURIComponent(parts.slice(3).join(":") || "");
+      await resolveGiveVehicleTarget(interaction, steamId, vehicleQuery);
+      return true;
+    }
+
+    if (action === "givevehicleclass") {
+      const parts = interaction.customId.split(":");
+      const steamId = parts[2];
+      const vehicleClass = parts.slice(3).join(":");
+      await giveVehicleToSteamId(interaction, steamId, vehicleClass);
+      return true;
     }
 
     if (action === "cashop") {
@@ -1842,7 +2389,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cash", "!fame", "!online", "!nearvehicles"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!vehicletype", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -1920,6 +2467,36 @@ async function handleGgconCommand(message, bot) {
       return true;
     }
 
+    if (command === "!jail") {
+      await handleJailCommand(message, args);
+      return true;
+    }
+
+    if (command === "!vehicletype") {
+      await handleVehicleTypeCommand(message, args);
+      return true;
+    }
+
+    if (command === "!givevehicle") {
+      await handleGiveVehicleCommand(message, args);
+      return true;
+    }
+
+    if (command === "!killlogsetup") {
+      await handleKillLogSetup(message, bot);
+      return true;
+    }
+
+    if (command === "!killlogoff") {
+      await handleKillLogOff(message);
+      return true;
+    }
+
+    if (command === "!killlogstatus") {
+      await handleKillLogStatus(message);
+      return true;
+    }
+
     if (command === "!vehiclelogsetup") {
       await handleVehicleLogSetup(message, bot);
       return true;
@@ -1952,6 +2529,7 @@ function startGgconStatusOnBoot(bot) {
   }
 
   startVehicleWatchOnBoot(bot);
+  startKillLogOnBoot(bot);
 
   const ref = loadStatusRef();
   if (!ref?.channelId || !ref?.messageId) return;
