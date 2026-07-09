@@ -1700,9 +1700,10 @@ function formatVehicleOwner(vehicle) {
 
 function buildMissingVehicleAlert(vehicle) {
   return clampDiscord([
-    "🚨 **Vehicle Loss Detected**",
+    "🚨 **Possible Missing Vehicle**",
     "",
-    "The Watcher no longer sees this tracked player-owned vehicle in the live server list.",
+    "The Watcher can no longer see this tracked player-owned vehicle in the live vehicle list.",
+    "This alert only posts after the vehicle is missing for multiple scans.",
     "",
     `**Vehicle:** ${vehicle.name || vehicle.class || "Vehicle"}`,
     `**ID:** \`${vehicle.id}\``,
@@ -1711,39 +1712,7 @@ function buildMissingVehicleAlert(vehicle) {
     `**Last Known Location:** ${formatLocation(vehicle.location)}`,
     `**Spawned:** ${formatDate(vehicle.spawnDate)}`,
     "",
-    "**Possible causes:** destroyed, deleted, cleaned up, or removed outside Watcher.",
-  ].join("\n"));
-}
-
-function buildOwnerChangedVehicleAlert(previous, current) {
-  return clampDiscord([
-    "🚗 **Vehicle Ownership Changed**",
-    "",
-    `**Vehicle:** ${current.name || previous.name || current.class || previous.class || "Vehicle"}`,
-    `**ID:** \`${current.id || previous.id}\``,
-    `**Class:** ${current.class || previous.class || "Unknown"}`,
-    `**Previous Owner:** ${formatVehicleOwner(previous)}`,
-    `**Current Owner:** ${formatVehicleOwner(current)}`,
-    `**Current Location:** ${formatLocation(current.location)}`,
-    `**Last Known Location:** ${formatLocation(previous.location)}`,
-    "",
-    "This can mean the vehicle was claimed, transferred, or ownership data changed.",
-  ].join("\n"));
-}
-
-function buildOwnerClearedVehicleAlert(previous, current) {
-  return clampDiscord([
-    "⚠️ **Tracked Vehicle Lost Owner Data**",
-    "",
-    `**Vehicle:** ${current.name || previous.name || current.class || previous.class || "Vehicle"}`,
-    `**ID:** \`${current.id || previous.id}\``,
-    `**Class:** ${current.class || previous.class || "Unknown"}`,
-    `**Previous Owner:** ${formatVehicleOwner(previous)}`,
-    `**Current Owner:** Unknown / Unowned`,
-    `**Current Location:** ${formatLocation(current.location)}`,
-    `**Last Known Location:** ${formatLocation(previous.location)}`,
-    "",
-    "This may happen if the vehicle became unowned or the live ownership data changed.",
+    "**Possible causes:** destroyed, deleted, cleaned up, or removed by the server.",
   ].join("\n"));
 }
 
@@ -1798,32 +1767,64 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
   }
 
   const alerts = [];
-  const ownershipResolved = !!data.ownershipResolved;
+  const confirmScansValue = Number(process.env.GGCON_VEHICLE_MISSING_CONFIRMATION_SCANS || "2");
+  const confirmScans = Math.max(1, Number.isFinite(confirmScansValue) ? Math.floor(confirmScansValue) : 2);
+  const priorPending = previousState?.pendingMissing && typeof previousState.pendingMissing === "object"
+    ? previousState.pendingMissing
+    : {};
+  const pendingMissing = { ...priorPending };
 
-  for (const previousVehicle of Object.values(previous)) {
-    const currentVehicle = current[String(previousVehicle.id)];
-    const previousOwned = hasVehicleOwner(previousVehicle);
+  const trackedVehicles = {};
+  for (const previousVehicle of Object.values(previous || {})) {
+    if (previousVehicle?.id === null || previousVehicle?.id === undefined) continue;
+    trackedVehicles[String(previousVehicle.id)] = previousVehicle;
+  }
+  for (const [id, pending] of Object.entries(priorPending)) {
+    if (pending?.vehicle && !trackedVehicles[id]) trackedVehicles[id] = pending.vehicle;
+  }
 
-    if (!currentVehicle) {
-      if (previousOwned) {
-        alerts.push({ type: "missing", content: buildMissingVehicleAlert(previousVehicle) });
-      }
-      continue;
+  const normalizedCurrent = {};
+  for (const [id, currentVehicle] of Object.entries(current)) {
+    const previousVehicle = previous?.[id] || priorPending?.[id]?.vehicle || null;
+
+    if (!hasVehicleOwner(currentVehicle) && hasVehicleOwner(previousVehicle)) {
+      normalizedCurrent[id] = {
+        ...currentVehicle,
+        owner: previousVehicle.owner || currentVehicle.owner || null,
+        ownerSteamId: previousVehicle.ownerSteamId || currentVehicle.ownerSteamId || null,
+        lastOwnerCarriedForward: true,
+      };
+    } else {
+      normalizedCurrent[id] = currentVehicle;
     }
 
-    if (!ownershipResolved || !previousOwned) continue;
+    if (pendingMissing[id]) delete pendingMissing[id];
+  }
 
-    const previousOwnerKey = vehicleOwnerKey(previousVehicle);
-    const currentOwnerKey = vehicleOwnerKey(currentVehicle);
+  for (const previousVehicle of Object.values(trackedVehicles)) {
+    const id = String(previousVehicle.id);
+    const currentVehicle = current[id];
+    const pendingVehicle = priorPending?.[id]?.vehicle || null;
+    const wasTrackedOwned = hasVehicleOwner(previousVehicle) || hasVehicleOwner(pendingVehicle);
 
-    if (!currentOwnerKey) {
-      alerts.push({ type: "owner-cleared", content: buildOwnerClearedVehicleAlert(previousVehicle, currentVehicle) });
-      continue;
+    if (currentVehicle || !wasTrackedOwned) continue;
+
+    const existing = priorPending[id] || {};
+    const missedScans = Number(existing.missedScans || 0) + 1;
+    const entry = {
+      vehicle: existing.vehicle || previousVehicle,
+      firstMissingAt: existing.firstMissingAt || now,
+      lastMissingAt: now,
+      missedScans,
+      alertedAt: existing.alertedAt || null,
+    };
+
+    if (missedScans >= confirmScans && !entry.alertedAt) {
+      alerts.push({ type: "missing", content: buildMissingVehicleAlert(entry.vehicle) });
+      entry.alertedAt = now;
     }
 
-    if (previousOwnerKey && currentOwnerKey && previousOwnerKey !== currentOwnerKey) {
-      alerts.push({ type: "owner-changed", content: buildOwnerChangedVehicleAlert(previousVehicle, currentVehicle) });
-    }
+    pendingMissing[id] = entry;
   }
 
   const sent = await sendVehicleWatchAlerts(bot, channelId, alerts);
@@ -1832,13 +1833,17 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
     updatedAt: now,
     count: vehicles.length,
     ownershipResolved: data.ownershipResolved,
-    vehicles: current,
+    vehicles: normalizedCurrent,
+    pendingMissing,
+    missingConfirmationScans: confirmScans,
   });
 
   return {
     scanned: true,
     vehicleCount: vehicles.length,
-    ownedTracked: Object.values(current).filter(hasVehicleOwner).length,
+    ownedTracked: Object.values(normalizedCurrent).filter(hasVehicleOwner).length,
+    pendingMissing: Object.keys(pendingMissing).length,
+    confirmationScans: confirmScans,
     alerts: alerts.length,
     sent,
   };
@@ -1877,7 +1882,8 @@ async function handleVehicleLogSetup(message, bot) {
   await message.reply([
     "Vehicle watch is now active in this channel.",
     "I saved the current vehicle list as the baseline.",
-    "Alerts will post for tracked owned vehicles that disappear, change owner, or lose owner data after this point.",
+    "Alerts only post when a tracked player-owned vehicle disappears and stays missing for multiple scans.",
+    "Owner flicker, owner changes, and temporary unknown owner data are ignored.",
     "Use `!vehiclelogscan` to force an immediate check instead of waiting for the timer.",
   ].join("\n")).catch(() => {});
 }
@@ -1913,9 +1919,11 @@ async function handleVehicleLogStatus(message) {
     `Tracked Vehicles: ${vehicles.length}`,
     `Owned Vehicles Tracked: ${ownedTracked}`,
     `Unowned Vehicles Ignored for Alerts: ${unownedTracked}`,
+    `Pending Missing Confirmations: ${state?.pendingMissing ? Object.keys(state.pendingMissing).length : 0}`,
+    `Confirm Missing After: ${state?.missingConfirmationScans || 2} scans`,
     `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
-    `Ownership Resolved Last Scan: ${state?.ownershipResolved === undefined ? "Unknown" : state.ownershipResolved ? "Yes" : "No"}`,
-    "Alerts now include: missing vehicles, ownership changes, and owner data cleared.",
+    "Alerts only post for vehicles that disappear from the live list and stay missing.",
+    "Owner flicker, owner changes, and temporary unknown owner data are ignored.",
   ].join("\n")).catch(() => {});
 }
 
@@ -1931,6 +1939,8 @@ async function handleVehicleLogScan(message, bot) {
     "🚗 **Vehicle Watch Manual Scan Complete**",
     `Tracked Vehicles: ${result.vehicleCount ?? "Unknown"}`,
     `Owned Vehicles Tracked: ${result.ownedTracked ?? "Unknown"}`,
+    `Pending Missing Confirmations: ${result.pendingMissing ?? 0}`,
+    `Confirm Missing After: ${result.confirmationScans ?? 2} scans`,
     `Alerts Found: ${result.alerts ?? 0}`,
     `Alerts Sent: ${result.sent ?? 0}`,
   ].join("\n")).catch(() => {});
