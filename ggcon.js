@@ -4,10 +4,13 @@ const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 
 const DEFAULT_GGCON_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const STATUS_FILE = path.join(__dirname, "data", "ggcon-status.json");
+const VEHICLE_WATCH_FILE = path.join(__dirname, "data", "ggcon-vehicle-watch.json");
+const VEHICLE_STATE_FILE = path.join(__dirname, "data", "ggcon-vehicle-state.json");
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10");
 
 let statusTimer = null;
+let vehicleWatchTimer = null;
 
 function getBaseUrl() {
   return (process.env.GGCON_BASE_URL || DEFAULT_GGCON_BASE_URL).replace(/\/+$/, "");
@@ -63,6 +66,13 @@ function isStaff(message) {
   return hasStaffRole(message.member);
 }
 
+function isOwner(message) {
+  if (!message.guild || !message.member) return false;
+  const roles = message.member.roles?.cache;
+  if (!roles) return false;
+  return roles.some((role) => role.name === "Owner" || role.name === "Owners");
+}
+
 function isStaffInteraction(interaction) {
   if (!interaction.guild || !interaction.member) return false;
   return hasStaffRole(interaction.member);
@@ -85,6 +95,44 @@ function loadStatusRef() {
 function saveStatusRef(ref) {
   ensureDataFolder();
   fs.writeFileSync(STATUS_FILE, JSON.stringify(ref, null, 2));
+}
+
+function loadVehicleWatchConfig() {
+  try {
+    if (!fs.existsSync(VEHICLE_WATCH_FILE)) return null;
+    return JSON.parse(fs.readFileSync(VEHICLE_WATCH_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveVehicleWatchConfig(config) {
+  ensureDataFolder();
+  fs.writeFileSync(VEHICLE_WATCH_FILE, JSON.stringify(config, null, 2));
+}
+
+function loadVehicleState() {
+  try {
+    if (!fs.existsSync(VEHICLE_STATE_FILE)) return null;
+    return JSON.parse(fs.readFileSync(VEHICLE_STATE_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveVehicleState(state) {
+  ensureDataFolder();
+  fs.writeFileSync(VEHICLE_STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+function clearVehicleWatchConfig() {
+  try {
+    if (fs.existsSync(VEHICLE_WATCH_FILE)) fs.unlinkSync(VEHICLE_WATCH_FILE);
+  } catch {}
+}
+
+function getVehicleLogChannelId() {
+  return process.env.GGCON_VEHICLE_LOG_CHANNEL_ID || loadVehicleWatchConfig()?.channelId || null;
 }
 
 function formatGameTime(timeOfDay) {
@@ -387,7 +435,7 @@ function buildPlayerLabel(player, index) {
 }
 
 function buildMatchButtons(matches, commandName) {
-  const action = commandName === "!vehicles" ? "vehicles" : "player";
+  const action = commandName === "!vehicle" || commandName === "!vehicles" ? "vehicle" : commandName === "!flag" || commandName === "!flags" ? "flag" : "player";
   const usable = matches.filter((player) => player.userId).slice(0, 10);
   const rows = [];
 
@@ -542,11 +590,98 @@ function buildVehicleLine(vehicle, index) {
   ].join("\n");
 }
 
+async function getSquadForSteamId(steamId) {
+  const target = String(steamId || "").trim();
+  if (!target) return null;
+
+  const squadData = await ggconGet("/squads.json").catch(() => null);
+  const squads = Array.isArray(squadData?.squads) ? squadData.squads : [];
+
+  return squads.find((squad) => {
+    const members = Array.isArray(squad.members) ? squad.members : [];
+    return members.some((member) => String(member.steamId || member.userId || "") === target);
+  }) || null;
+}
+
+function getSquadMemberSteamIds(squad) {
+  const members = Array.isArray(squad?.members) ? squad.members : [];
+  return new Set(
+    members
+      .map((member) => String(member.steamId || member.userId || "").trim())
+      .filter(Boolean)
+  );
+}
+
+async function buildVehicleReportForPlayer(player, fallbackLabel) {
+  const playerSteamId = String(player.userId || "").trim();
+  const vehicleData = await ggconGet("/vehicles.json");
+  const vehicles = Array.isArray(vehicleData.vehicles) ? vehicleData.vehicles : [];
+
+  const squad = await getSquadForSteamId(playerSteamId);
+  const squadMemberSteamIds = getSquadMemberSteamIds(squad);
+  const hasSquad = squad && squadMemberSteamIds.size > 0;
+
+  const matchingVehicles = hasSquad
+    ? vehicles.filter((vehicle) => squadMemberSteamIds.has(String(vehicle.ownerSteamId || "")))
+    : vehicles.filter((vehicle) => String(vehicle.ownerSteamId || "") === playerSteamId);
+
+  const targetName = player.characterName || player.steamName || fallbackLabel || "Unknown";
+  const ownershipNote = vehicleData.ownershipResolved === false
+    ? "\n\n⚠️ Vehicle ownership is not fully resolved right now. GGCON says ownership requires at least one player online."
+    : "";
+
+  if (matchingVehicles.length === 0) {
+    if (hasSquad) {
+      return [
+        `No vehicles found for squad **${squad.name || "Unknown Squad"}**.`,
+        `Searched because **${targetName}** is in that squad.`,
+        `Squad Members Checked: ${squadMemberSteamIds.size}`,
+        ownershipNote,
+      ].join("\n");
+    }
+
+    return `No vehicles found for **${targetName}** / \`${playerSteamId || "unknown Steam ID"}\`.${ownershipNote}`;
+  }
+
+  const sorted = matchingVehicles.sort((a, b) => {
+    const ownerA = String(a.owner || "").localeCompare(String(b.owner || ""));
+    if (ownerA !== 0) return ownerA;
+    return String(a.name || a.class || "").localeCompare(String(b.name || b.class || ""));
+  });
+
+  const rows = sorted.slice(0, 15).map(buildVehicleLine);
+  const extra = sorted.length > 15 ? `\n\nShowing 15 of ${sorted.length} vehicles.` : "";
+
+  if (hasSquad) {
+    return clampDiscord([
+      `🚗 **Squad Vehicles: ${squad.name || "Unknown Squad"}**`,
+      `Looked up from: **${targetName}**`,
+      `Squad Members Checked: ${squadMemberSteamIds.size}`,
+      `Total Vehicles Found: ${sorted.length}`,
+      "",
+      rows.join("\n\n"),
+      extra,
+      ownershipNote,
+    ].join("\n"));
+  }
+
+  return clampDiscord([
+    `🚗 **Vehicles for ${targetName}**`,
+    `Steam ID: \`${playerSteamId || "Unknown"}\``,
+    "Squad: None found, showing only this player's vehicles.",
+    `Total: ${sorted.length}`,
+    "",
+    rows.join("\n\n"),
+    extra,
+    ownershipNote,
+  ].join("\n"));
+}
+
 async function handleVehiclesLookup(message, args) {
   const query = args.join(" ").trim();
 
   if (!query) {
-    await message.reply("Use: `!vehicles <player name or Steam ID>`").catch(() => {});
+    await message.reply("Use: `!vehicle <player name or Steam ID>`").catch(() => {});
     return;
   }
 
@@ -559,45 +694,16 @@ async function handleVehiclesLookup(message, args) {
 
   if (playerResult.type === "multiple") {
     await message.reply({
-      content: buildMultipleMatchesReply(query, playerResult.matches, "!vehicles"),
-      components: buildMatchButtons(playerResult.matches, "!vehicles"),
+      content: buildMultipleMatchesReply(query, playerResult.matches, "!vehicle"),
+      components: buildMatchButtons(playerResult.matches, "!vehicle"),
     }).catch(() => {});
     return;
   }
 
-  const player = playerResult.player;
-  const steamId = String(player.userId || "");
-  const vehicleData = await ggconGet("/vehicles.json");
-  const vehicles = Array.isArray(vehicleData.vehicles) ? vehicleData.vehicles : [];
-  const owned = vehicles.filter((vehicle) => String(vehicle.ownerSteamId || "") === steamId);
-
-  if (owned.length === 0) {
-    const ownershipNote = vehicleData.ownershipResolved === false
-      ? "\n\n⚠️ Vehicle ownership is not fully resolved right now. GGCON says ownership requires at least one player online."
-      : "";
-
-    await message.reply(`No vehicles found for **${player.characterName || query}** / \`${steamId || "unknown Steam ID"}\`.${ownershipNote}`).catch(() => {});
-    return;
-  }
-
-  const rows = owned.slice(0, 12).map(buildVehicleLine);
-  const extra = owned.length > 12 ? `\n\nShowing 12 of ${owned.length} vehicles.` : "";
-  const ownershipNote = vehicleData.ownershipResolved === false
-    ? "\n\n⚠️ Vehicle ownership is not fully resolved right now."
-    : "";
-
-  const reply = [
-    `🚗 **Vehicles for ${player.characterName || query}**`,
-    `Steam ID: \`${steamId || "Unknown"}\``,
-    `Total: ${owned.length}`,
-    "",
-    rows.join("\n\n"),
-    extra,
-    ownershipNote,
-  ].join("\n");
-
-  await message.reply(clampDiscord(reply)).catch(() => {});
+  const reply = await buildVehicleReportForPlayer(playerResult.player, query);
+  await message.reply(reply).catch(() => {});
 }
+
 
 
 async function buildPlayerDetailsBySteamId(steamId) {
@@ -639,35 +745,253 @@ async function buildVehiclesBySteamId(steamId) {
   const playerResult = await getPlayerForLookup(String(steamId || ""));
   if (playerResult.type !== "single") return `No player found for \`${steamId}\`.`;
 
+  return buildVehicleReportForPlayer(playerResult.player, String(steamId || ""));
+}
+
+
+
+function buildFlagLine(flag, index) {
+  return [
+    `**${index + 1}. ${flag.baseName || `Base #${flag.baseId || flag.flagId || "?"}`}**`,
+    `Flag ID: \`${flag.flagId ?? "Unknown"}\` | Base ID: \`${flag.baseId ?? "Unknown"}\``,
+    `Owner: ${flag.owner || "Unknown"}`,
+    `Owner Steam ID: ${flag.ownerSteamId ? `\`${flag.ownerSteamId}\`` : "Unknown"}`,
+    `Location: ${formatLocation(flag.location)}`,
+    `Elements: ${flag.elementCount ?? "?"}/${flag.maxElements ?? "?"}`,
+    `Expanded Elements: ${flag.expandedElements ?? "?"}`,
+  ].join("\n");
+}
+
+function buildFlagRulesSummary(flagData) {
+  const bits = [];
+  if (flagData.maxElementsPerFlag !== undefined) bits.push(`Max elements/flag: ${flagData.maxElementsPerFlag}`);
+  if (flagData.maxExpandedPerFlag !== undefined) bits.push(`Max expanded: ${flagData.maxExpandedPerFlag}`);
+  if (flagData.extraElementsPerSquadMember !== undefined) bits.push(`Extra per squad member: ${flagData.extraElementsPerSquadMember}`);
+  if (flagData.flagInfluenceRadius !== undefined) bits.push(`Radius: ${flagData.flagInfluenceRadius}`);
+  if (flagData.allowMultipleFlagsPerPlayer !== undefined) bits.push(`Multiple flags/player: ${flagData.allowMultipleFlagsPerPlayer ? "Yes" : "No"}`);
+  return bits.length ? bits.join(" | ") : "Flag rule details unavailable.";
+}
+
+async function buildFlagsBySteamId(steamId) {
+  const playerResult = await getPlayerForLookup(String(steamId || ""));
+  if (playerResult.type !== "single") return `No player found for \`${steamId}\`.`;
+
   const player = playerResult.player;
   const playerSteamId = String(player.userId || steamId || "");
-  const vehicleData = await ggconGet("/vehicles.json");
-  const vehicles = Array.isArray(vehicleData.vehicles) ? vehicleData.vehicles : [];
-  const owned = vehicles.filter((vehicle) => String(vehicle.ownerSteamId || "") === playerSteamId);
+  const flagData = await ggconGet("/flags.json");
+  const flags = Array.isArray(flagData.flags) ? flagData.flags : [];
+  const owned = flags.filter((flag) => String(flag.ownerSteamId || "") === playerSteamId);
 
   if (owned.length === 0) {
-    const ownershipNote = vehicleData.ownershipResolved === false
-      ? "\n\n⚠️ Vehicle ownership is not fully resolved right now. GGCON says ownership requires at least one player online."
-      : "";
-
-    return `No vehicles found for **${player.characterName || player.steamName || "Unknown"}** / \`${playerSteamId || "unknown Steam ID"}\`.${ownershipNote}`;
+    return `No flags found for **${player.characterName || player.steamName || "Unknown"}** / \`${playerSteamId || "unknown Steam ID"}\`.`;
   }
 
-  const rows = owned.slice(0, 12).map(buildVehicleLine);
-  const extra = owned.length > 12 ? `\n\nShowing 12 of ${owned.length} vehicles.` : "";
-  const ownershipNote = vehicleData.ownershipResolved === false
-    ? "\n\n⚠️ Vehicle ownership is not fully resolved right now."
-    : "";
+  const rows = owned.slice(0, 12).map(buildFlagLine);
+  const extra = owned.length > 12 ? `\n\nShowing 12 of ${owned.length} flags.` : "";
 
   return clampDiscord([
-    `🚗 **Vehicles for ${player.characterName || player.steamName || "Unknown"}**`,
+    `🚩 **Flags for ${player.characterName || player.steamName || "Unknown"}**`,
     `Steam ID: \`${playerSteamId || "Unknown"}\``,
     `Total: ${owned.length}`,
     "",
     rows.join("\n\n"),
     extra,
-    ownershipNote,
   ].join("\n"));
+}
+
+async function handleFlagsLookup(message, args) {
+  const query = args.join(" ").trim();
+
+  if (!query) {
+    await message.reply("Use: `!flag <player name or Steam ID>` or `!flag all`").catch(() => {});
+    return;
+  }
+
+  if (query.toLowerCase() === "all") {
+    const flagData = await ggconGet("/flags.json");
+    const flags = Array.isArray(flagData.flags) ? flagData.flags : [];
+    const rows = flags.slice(0, 15).map(buildFlagLine);
+    const extra = flags.length > 15 ? `\n\nShowing 15 of ${flags.length} flags.` : "";
+
+    const reply = [
+      "🚩 **All Server Flags**",
+      `Total Flags: ${flagData.count ?? flags.length}`,
+      buildFlagRulesSummary(flagData),
+      "",
+      rows.length ? rows.join("\n\n") : "No flags found.",
+      extra,
+    ].join("\n");
+
+    await message.reply(clampDiscord(reply)).catch(() => {});
+    return;
+  }
+
+  const playerResult = await getPlayerForLookup(query);
+
+  if (playerResult.type === "none") {
+    await message.reply(`No player found for **${query}**.`).catch(() => {});
+    return;
+  }
+
+  if (playerResult.type === "multiple") {
+    await message.reply({
+      content: buildMultipleMatchesReply(query, playerResult.matches, "!flag"),
+      components: buildMatchButtons(playerResult.matches, "!flag"),
+    }).catch(() => {});
+    return;
+  }
+
+  const content = await buildFlagsBySteamId(playerResult.player.userId);
+  await message.reply(content).catch(() => {});
+}
+
+function buildVehicleSnapshot(vehicles) {
+  const map = {};
+
+  for (const vehicle of vehicles || []) {
+    if (vehicle.id === null || vehicle.id === undefined) continue;
+    map[String(vehicle.id)] = {
+      id: vehicle.id,
+      class: vehicle.class || "Unknown",
+      name: vehicle.name || vehicle.class || "Vehicle",
+      location: vehicle.location || null,
+      rendered: !!vehicle.rendered,
+      owner: vehicle.owner || null,
+      ownerSteamId: vehicle.ownerSteamId || null,
+      spawnDate: vehicle.spawnDate || null,
+      seenAt: Date.now(),
+    };
+  }
+
+  return map;
+}
+
+function buildMissingVehicleAlert(vehicle) {
+  return clampDiscord([
+    "🚗 **Vehicle No Longer Listed**",
+    "",
+    `**Vehicle:** ${vehicle.name || vehicle.class || "Vehicle"}`,
+    `**ID:** \`${vehicle.id}\``,
+    `**Class:** ${vehicle.class || "Unknown"}`,
+    `**Last Known Owner:** ${vehicle.owner || "Unknown"}`,
+    `**Owner Steam ID:** ${vehicle.ownerSteamId ? `\`${vehicle.ownerSteamId}\`` : "Unknown"}`,
+    `**Last Known Location:** ${formatLocation(vehicle.location)}`,
+    `**Spawned:** ${formatDate(vehicle.spawnDate)}`,
+    "",
+    "**Reason:** Unknown. GGCON does not expose a structured vehicle-destroy reason for removals outside Watcher.",
+    "This means the vehicle disappeared from `/vehicles.json` since the last scan. It may have been destroyed, deleted, cleaned up, or otherwise removed.",
+  ].join("\n"));
+}
+
+async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
+  const channelId = getVehicleLogChannelId();
+  if (!channelId) return;
+
+  const data = await ggconGet("/vehicles.json");
+  const vehicles = Array.isArray(data.vehicles) ? data.vehicles : [];
+  const current = buildVehicleSnapshot(vehicles);
+  const previousState = loadVehicleState();
+  const previous = previousState?.vehicles || null;
+
+  saveVehicleState({
+    updatedAt: Date.now(),
+    count: vehicles.length,
+    ownershipResolved: data.ownershipResolved,
+    vehicles: current,
+  });
+
+  if (baselineOnly || !previous) return;
+
+  const removed = Object.values(previous).filter((vehicle) => {
+    if (current[String(vehicle.id)]) return false;
+    // Only alert for vehicles that had player ownership or a last known owner name.
+    return !!(vehicle.ownerSteamId || vehicle.owner);
+  });
+
+  if (removed.length === 0) return;
+
+  const channel = await bot.channels.fetch(channelId).catch(() => null);
+  if (!channel?.send) return;
+
+  for (const vehicle of removed.slice(0, 10)) {
+    await channel.send(buildMissingVehicleAlert(vehicle)).catch((err) => {
+      console.error("❌ Vehicle watch alert failed:", err.message);
+    });
+  }
+
+  if (removed.length > 10) {
+    await channel.send(`⚠️ ${removed.length - 10} more player-owned vehicles disappeared in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
+  }
+}
+
+function ensureVehicleWatchLoop(bot) {
+  const channelId = getVehicleLogChannelId();
+  if (!channelId) return;
+  if (vehicleWatchTimer) return;
+
+  const seconds = Number(process.env.GGCON_VEHICLE_WATCH_INTERVAL_SECONDS || "180");
+  const intervalMs = Math.max(60, Number.isFinite(seconds) ? seconds : 180) * 1000;
+
+  vehicleWatchTimer = setInterval(() => {
+    scanVehiclesAndAlert(bot).catch((err) => {
+      console.error("❌ GGCON vehicle watch failed:", err.message);
+    });
+  }, intervalMs);
+}
+
+async function handleVehicleLogSetup(message, bot) {
+  saveVehicleWatchConfig({
+    channelId: message.channel.id,
+    setBy: message.author.id,
+    setAt: Date.now(),
+  });
+
+  await scanVehiclesAndAlert(bot, { baselineOnly: true });
+  ensureVehicleWatchLoop(bot);
+
+  await message.reply([
+    "Vehicle watch is now active in this channel.",
+    "I saved the current vehicle list as the baseline, so I will only alert for vehicles that disappear after this point.",
+    "Reason will show as unknown unless a future Watcher destroy command is added, because GGCON does not expose a structured destroy reason for normal removals.",
+  ].join("\n")).catch(() => {});
+}
+
+async function handleVehicleLogOff(message) {
+  clearVehicleWatchConfig();
+  if (vehicleWatchTimer) {
+    clearInterval(vehicleWatchTimer);
+    vehicleWatchTimer = null;
+  }
+  await message.reply("Vehicle watch is now disabled.").catch(() => {});
+}
+
+async function handleVehicleLogStatus(message) {
+  const channelId = getVehicleLogChannelId();
+  const state = loadVehicleState();
+
+  if (!channelId) {
+    await message.reply("Vehicle watch is not set up. Run `!vehiclelogsetup` in the channel where alerts should post.").catch(() => {});
+    return;
+  }
+
+  await message.reply([
+    "🚗 **Vehicle Watch Status**",
+    `Alert Channel: <#${channelId}>`,
+    `Last Baseline Count: ${state?.count ?? "No baseline yet"}`,
+    `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
+    `Ownership Resolved Last Scan: ${state?.ownershipResolved === undefined ? "Unknown" : state.ownershipResolved ? "Yes" : "No"}`,
+  ].join("\n")).catch(() => {});
+}
+
+function startVehicleWatchOnBoot(bot) {
+  if (!hasPasswordConfigured()) return;
+  const channelId = getVehicleLogChannelId();
+  if (!channelId) return;
+
+  ensureVehicleWatchLoop(bot);
+  scanVehiclesAndAlert(bot, { baselineOnly: !loadVehicleState() }).catch((err) => {
+    console.error("❌ GGCON boot vehicle watch failed:", err.message);
+  });
 }
 
 async function handleGgconInteraction(interaction) {
@@ -682,9 +1006,10 @@ async function handleGgconInteraction(interaction) {
   const [, action, steamId] = interaction.customId.split(":");
 
   try {
-    const content = action === "vehicles"
-      ? await buildVehiclesBySteamId(steamId)
-      : await buildPlayerDetailsBySteamId(steamId);
+    let content;
+    if (action === "vehicle" || action === "vehicles") content = await buildVehiclesBySteamId(steamId);
+    else if (action === "flag" || action === "flags") content = await buildFlagsBySteamId(steamId);
+    else content = await buildPlayerDetailsBySteamId(steamId);
 
     await interaction.reply({ content, ephemeral: true }).catch(() => {});
   } catch (err) {
@@ -703,7 +1028,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!player", "!vehicles"].includes(command)) return false;
+  if (!["!poststatus", "!player", "!vehicle", "!flag", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -721,8 +1046,28 @@ async function handleGgconCommand(message, bot) {
       return true;
     }
 
-    if (command === "!vehicles") {
+    if (command === "!vehicle") {
       await handleVehiclesLookup(message, args);
+      return true;
+    }
+
+    if (command === "!flag") {
+      await handleFlagsLookup(message, args);
+      return true;
+    }
+
+    if (command === "!vehiclelogsetup") {
+      await handleVehicleLogSetup(message, bot);
+      return true;
+    }
+
+    if (command === "!vehiclelogoff") {
+      await handleVehicleLogOff(message);
+      return true;
+    }
+
+    if (command === "!vehiclelogstatus") {
+      await handleVehicleLogStatus(message);
       return true;
     }
   } catch (err) {
@@ -735,13 +1080,17 @@ async function handleGgconCommand(message, bot) {
 }
 
 function startGgconStatusOnBoot(bot) {
-  const ref = loadStatusRef();
-  if (!ref?.channelId || !ref?.messageId) return;
-
   if (!hasPasswordConfigured()) {
-    console.warn("⚠️ Saved GGCON status post found, but GGCON_PASSWORD is not configured.");
+    if (loadStatusRef() || getVehicleLogChannelId()) {
+      console.warn("⚠️ GGCON startup skipped because GGCON_PASSWORD is not configured.");
+    }
     return;
   }
+
+  startVehicleWatchOnBoot(bot);
+
+  const ref = loadStatusRef();
+  if (!ref?.channelId || !ref?.messageId) return;
 
   ensureStatusLoop(bot);
   updateStatusMessage(bot).catch((err) => {
