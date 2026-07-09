@@ -17,35 +17,49 @@ const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10"
 const DEFAULT_FLAG_PAGE_SIZE = 5;
 const CARGO_FRENZY_COUNT = Number(process.env.GGCON_CARGO_FRENZY_COUNT || "10");
 const CARGO_FRENZY_Z = Number(process.env.GGCON_CARGO_FRENZY_Z || "25000");
-const CARGO_FRENZY_POINTS = [
-  { x: -520000, y: -650000 },
-  { x: -360000, y: -610000 },
-  { x: -180000, y: -650000 },
-  { x: 50000, y: -620000 },
-  { x: 260000, y: -580000 },
-  { x: 470000, y: -520000 },
-  { x: -560000, y: -380000 },
-  { x: -330000, y: -340000 },
-  { x: -90000, y: -360000 },
-  { x: 160000, y: -340000 },
-  { x: 390000, y: -310000 },
-  { x: -510000, y: -120000 },
-  { x: -250000, y: -90000 },
-  { x: 0, y: -120000 },
-  { x: 250000, y: -85000 },
-  { x: 500000, y: -60000 },
-  { x: -470000, y: 120000 },
-  { x: -230000, y: 130000 },
-  { x: 20000, y: 110000 },
-  { x: 270000, y: 150000 },
-  { x: 520000, y: 180000 },
-  { x: -420000, y: 360000 },
-  { x: -160000, y: 390000 },
-  { x: 120000, y: 360000 },
-  { x: 370000, y: 410000 },
-  { x: -300000, y: 610000 },
-  { x: 0, y: 640000 },
-  { x: 320000, y: 630000 },
+const CARGO_FRENZY_SAFE_DISTANCE_UNITS = Number(process.env.GGCON_CARGO_SAFE_DISTANCE_UNITS || "30000");
+const CARGO_FRENZY_FLAG_BUFFER_UNITS = Number(process.env.GGCON_CARGO_FLAG_BUFFER_UNITS || "25000");
+const CARGO_FRENZY_DROP_SPACING_UNITS = Number(process.env.GGCON_CARGO_DROP_SPACING_UNITS || "75000");
+const CARGO_FRENZY_GRID_STEP_UNITS = Number(process.env.GGCON_CARGO_GRID_STEP_UNITS || "80000");
+const CARGO_FRENZY_HAND_PICKED_POINTS = [
+  { x: -560000, y: -660000 }, { x: -480000, y: -650000 }, { x: -400000, y: -640000 }, { x: -320000, y: -630000 },
+  { x: -240000, y: -650000 }, { x: -160000, y: -640000 }, { x: -80000, y: -625000 }, { x: 0, y: -645000 },
+  { x: 80000, y: -625000 }, { x: 160000, y: -650000 }, { x: 240000, y: -620000 }, { x: 320000, y: -600000 },
+  { x: 400000, y: -570000 }, { x: 500000, y: -530000 }, { x: 560000, y: -460000 },
+
+  { x: -570000, y: -520000 }, { x: -490000, y: -500000 }, { x: -410000, y: -485000 }, { x: -330000, y: -470000 },
+  { x: -250000, y: -500000 }, { x: -170000, y: -470000 }, { x: -90000, y: -500000 }, { x: -10000, y: -465000 },
+  { x: 70000, y: -500000 }, { x: 150000, y: -470000 }, { x: 230000, y: -500000 }, { x: 310000, y: -460000 },
+  { x: 390000, y: -430000 }, { x: 470000, y: -400000 }, { x: 550000, y: -360000 },
+
+  { x: -580000, y: -360000 }, { x: -500000, y: -340000 }, { x: -420000, y: -320000 }, { x: -340000, y: -350000 },
+  { x: -260000, y: -320000 }, { x: -180000, y: -350000 }, { x: -100000, y: -320000 }, { x: -20000, y: -350000 },
+  { x: 60000, y: -320000 }, { x: 140000, y: -350000 }, { x: 220000, y: -320000 }, { x: 300000, y: -350000 },
+  { x: 380000, y: -315000 }, { x: 460000, y: -285000 }, { x: 540000, y: -250000 },
+
+  { x: -560000, y: -180000 }, { x: -480000, y: -150000 }, { x: -400000, y: -190000 }, { x: -320000, y: -140000 },
+  { x: -240000, y: -180000 }, { x: -160000, y: -140000 }, { x: -80000, y: -180000 }, { x: 0, y: -130000 },
+  { x: 80000, y: -180000 }, { x: 160000, y: -140000 }, { x: 240000, y: -180000 }, { x: 320000, y: -130000 },
+  { x: 400000, y: -170000 }, { x: 480000, y: -120000 }, { x: 560000, y: -90000 },
+
+  { x: -540000, y: 20000 }, { x: -460000, y: 50000 }, { x: -380000, y: 10000 }, { x: -300000, y: 60000 },
+  { x: -220000, y: 20000 }, { x: -140000, y: 65000 }, { x: -60000, y: 20000 }, { x: 20000, y: 70000 },
+  { x: 100000, y: 20000 }, { x: 180000, y: 70000 }, { x: 260000, y: 25000 }, { x: 340000, y: 75000 },
+  { x: 420000, y: 35000 }, { x: 500000, y: 90000 }, { x: 580000, y: 130000 },
+
+  { x: -520000, y: 210000 }, { x: -440000, y: 240000 }, { x: -360000, y: 200000 }, { x: -280000, y: 250000 },
+  { x: -200000, y: 210000 }, { x: -120000, y: 260000 }, { x: -40000, y: 220000 }, { x: 40000, y: 270000 },
+  { x: 120000, y: 230000 }, { x: 200000, y: 280000 }, { x: 280000, y: 240000 }, { x: 360000, y: 290000 },
+  { x: 440000, y: 250000 }, { x: 520000, y: 300000 },
+
+  { x: -500000, y: 410000 }, { x: -420000, y: 440000 }, { x: -340000, y: 400000 }, { x: -260000, y: 450000 },
+  { x: -180000, y: 410000 }, { x: -100000, y: 460000 }, { x: -20000, y: 420000 }, { x: 60000, y: 470000 },
+  { x: 140000, y: 430000 }, { x: 220000, y: 480000 }, { x: 300000, y: 440000 }, { x: 380000, y: 490000 },
+  { x: 460000, y: 450000 }, { x: 540000, y: 500000 },
+
+  { x: -420000, y: 620000 }, { x: -320000, y: 650000 }, { x: -220000, y: 610000 }, { x: -120000, y: 660000 },
+  { x: -20000, y: 620000 }, { x: 80000, y: 670000 }, { x: 180000, y: 630000 }, { x: 280000, y: 660000 },
+  { x: 380000, y: 620000 }, { x: 480000, y: 650000 },
 ];
 
 const SIMPLE_VEHICLE_ALIASES = {
@@ -461,6 +475,20 @@ function distanceUnrealUnits(a, b) {
   const dy = ay - by;
   const dz = az - bz;
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+function distance2DUnrealUnits(a, b) {
+  if (!a || !b) return null;
+  const ax = Number(a.x);
+  const ay = Number(a.y);
+  const bx = Number(b.x);
+  const by = Number(b.y);
+
+  if (![ax, ay, bx, by].every(Number.isFinite)) return null;
+
+  const dx = ax - bx;
+  const dy = ay - by;
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
 function formatApproxDistance(unrealUnits) {
@@ -2719,18 +2747,174 @@ function shuffleArray(values) {
   return copy;
 }
 
-function getCargoFrenzyPoints() {
+function dedupeCargoPoints(points) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const point of points || []) {
+    const x = Math.round(Number(point.x));
+    const y = Math.round(Number(point.y));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+    const key = `${x}:${y}`;
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    deduped.push({ x, y });
+  }
+
+  return deduped;
+}
+
+function buildCargoGridPoints() {
+  const step = Math.max(40000, Number.isFinite(CARGO_FRENZY_GRID_STEP_UNITS) ? Math.round(CARGO_FRENZY_GRID_STEP_UNITS) : 80000);
+  const points = [];
+  let row = 0;
+
+  for (let y = -660000; y <= 660000; y += step) {
+    const stagger = row % 2 === 0 ? 0 : Math.round(step / 2);
+    for (let x = -560000 + stagger; x <= 560000; x += step) {
+      points.push({ x, y });
+    }
+    row += 1;
+  }
+
+  return points;
+}
+
+function getCargoCandidatePoints() {
+  return dedupeCargoPoints([
+    ...CARGO_FRENZY_HAND_PICKED_POINTS,
+    ...buildCargoGridPoints(),
+  ]);
+}
+
+function getCargoSafeDistance(flagData) {
+  const configured = Number.isFinite(CARGO_FRENZY_SAFE_DISTANCE_UNITS) ? CARGO_FRENZY_SAFE_DISTANCE_UNITS : 30000;
+  const flagRadius = Number(flagData?.flagInfluenceRadius);
+  const buffer = Number.isFinite(CARGO_FRENZY_FLAG_BUFFER_UNITS) ? CARGO_FRENZY_FLAG_BUFFER_UNITS : 25000;
+
+  if (Number.isFinite(flagRadius) && flagRadius > 0) {
+    return Math.max(configured, flagRadius + buffer);
+  }
+
+  return configured;
+}
+
+function findNearestFlagForPoint(point, flags) {
+  let nearest = null;
+
+  for (const flag of flags || []) {
+    if (!flag?.location) continue;
+    const distance = distance2DUnrealUnits(point, flag.location);
+    if (distance === null) continue;
+
+    if (!nearest || distance < nearest.distance) {
+      nearest = { flag, distance };
+    }
+  }
+
+  return nearest;
+}
+
+function isFarEnoughFromSelectedCargo(point, selected, minimumSpacing) {
+  if (!selected.length) return true;
+  if (!Number.isFinite(minimumSpacing) || minimumSpacing <= 0) return true;
+
+  return selected.every((existing) => {
+    const distance = distance2DUnrealUnits(point, existing);
+    return distance === null || distance >= minimumSpacing;
+  });
+}
+
+function selectSafeCargoFrenzyPoints(flagData) {
   const count = Math.max(1, Math.min(25, Number.isFinite(CARGO_FRENZY_COUNT) ? Math.floor(CARGO_FRENZY_COUNT) : 10));
-  const shuffled = shuffleArray(CARGO_FRENZY_POINTS);
-  return shuffled.slice(0, Math.min(count, shuffled.length)).map((point) => ({
-    x: Math.round(point.x),
-    y: Math.round(point.y),
-    z: Math.round(Number.isFinite(CARGO_FRENZY_Z) ? CARGO_FRENZY_Z : 25000),
-  }));
+  const z = Math.round(Number.isFinite(CARGO_FRENZY_Z) ? CARGO_FRENZY_Z : 25000);
+  const flags = Array.isArray(flagData?.flags) ? flagData.flags.filter((flag) => flag?.location) : [];
+  const safeDistance = getCargoSafeDistance(flagData);
+  const spacing = Number.isFinite(CARGO_FRENZY_DROP_SPACING_UNITS) ? CARGO_FRENZY_DROP_SPACING_UNITS : 75000;
+  const candidates = shuffleArray(getCargoCandidatePoints());
+
+  const safeCandidates = [];
+  const blocked = [];
+
+  for (const candidate of candidates) {
+    const nearest = findNearestFlagForPoint(candidate, flags);
+    if (nearest && nearest.distance < safeDistance) {
+      blocked.push({ point: candidate, nearest });
+      continue;
+    }
+
+    safeCandidates.push({
+      ...candidate,
+      z,
+      nearestFlagDistance: nearest?.distance ?? null,
+      nearestFlag: nearest?.flag ?? null,
+    });
+  }
+
+  const selected = [];
+
+  for (const candidate of safeCandidates) {
+    if (selected.length >= count) break;
+    if (!isFarEnoughFromSelectedCargo(candidate, selected, spacing)) continue;
+    selected.push(candidate);
+  }
+
+  // If the spacing rule is the only thing preventing a full frenzy, fill the rest with safe points.
+  for (const candidate of safeCandidates) {
+    if (selected.length >= count) break;
+    if (selected.some((existing) => existing.x === candidate.x && existing.y === candidate.y)) continue;
+    selected.push(candidate);
+  }
+
+  return {
+    requestedCount: count,
+    selected,
+    safeDistance,
+    spacing,
+    totalCandidates: candidates.length,
+    safeCandidateCount: safeCandidates.length,
+    blockedCount: blocked.length,
+    flagsChecked: flags.length,
+    closestBlocked: blocked.sort((a, b) => a.nearest.distance - b.nearest.distance).slice(0, 3),
+  };
 }
 
 async function handleCargoFrenzyCommand(message) {
-  const points = getCargoFrenzyPoints();
+  let flagData;
+
+  try {
+    flagData = await ggconGet("/flags.json");
+  } catch (err) {
+    await message.reply(`Cargo Frenzy cancelled. I could not read flags to verify base safety: ${err.message}`).catch(() => {});
+    return;
+  }
+
+  const plan = selectSafeCargoFrenzyPoints(flagData);
+  const points = plan.selected;
+
+  if (points.length < plan.requestedCount) {
+    const closestBlocked = plan.closestBlocked.length
+      ? [
+          "Closest blocked preset(s):",
+          ...plan.closestBlocked.map((entry, index) => `${index + 1}. X: ${entry.point.x} | Y: ${entry.point.y} — ${formatApproxDistance(entry.nearest.distance)} from ${entry.nearest.flag?.baseName || `Flag ${entry.nearest.flag?.flagId || "?"}`} (${entry.nearest.flag?.owner || "Unknown"})`),
+        ].join("\n")
+      : "";
+
+    await message.reply(clampDiscord([
+      "📦 **Cargo Frenzy cancelled.**",
+      `Needed ${plan.requestedCount} safe locations, but only found ${points.length}.`,
+      `Flags checked: ${plan.flagsChecked}`,
+      `Safe distance from flags: ${formatApproxDistance(plan.safeDistance)}`,
+      `Candidate locations checked: ${plan.totalCandidates}`,
+      `Blocked for being too close to flags: ${plan.blockedCount}`,
+      closestBlocked,
+      "",
+      "No cargo drops were launched. Add more known-safe presets or lower the safety distance with `GGCON_CARGO_SAFE_DISTANCE_UNITS` if you are sure it is safe.",
+    ].filter(Boolean).join("\n"))).catch(() => {});
+    return;
+  }
 
   await ggconPost("/message", {
     text: `Cargo Frenzy! ${points.length} cargo drops have been scattered across the island. Move fast, Exiles.`,
@@ -2751,22 +2935,40 @@ async function handleCargoFrenzyCommand(message) {
   const successCount = results.filter((entry) => entry.ok).length;
   const failed = results.filter((entry) => !entry.ok);
 
+  const safetyLines = [
+    `Flags checked: ${plan.flagsChecked}`,
+    `Safe distance from flags: ${formatApproxDistance(plan.safeDistance)}`,
+    `Candidate locations checked: ${plan.totalCandidates}`,
+    `Safe candidates found: ${plan.safeCandidateCount}`,
+    `Blocked near flags: ${plan.blockedCount}`,
+  ];
+
   const log = buildAdminActionLog("📦 **Cargo Frenzy Triggered**", [
     `Triggered by: ${message.member?.displayName || message.author?.tag || "Unknown"}`,
     `Drops requested: ${points.length}`,
     `Commands sent: ${successCount}/${points.length}`,
+    ...safetyLines,
     failed.length ? `Failures: ${failed.length}` : null,
     "Locations:",
-    ...results.slice(0, 10).map((entry, index) => `${index + 1}. ${entry.ok ? "✅" : "❌"} X: ${entry.point.x} | Y: ${entry.point.y} | Z: ${entry.point.z}`),
+    ...results.slice(0, 10).map((entry, index) => {
+      const nearest = entry.point.nearestFlagDistance !== null ? ` | nearest flag: ${formatApproxDistance(entry.point.nearestFlagDistance)}` : " | nearest flag: none found";
+      return `${index + 1}. ${entry.ok ? "✅" : "❌"} X: ${entry.point.x} | Y: ${entry.point.y} | Z: ${entry.point.z}${nearest}`;
+    }),
   ]);
 
   await sendGgconActionLog(message.client, message.channel, log).catch(() => {});
 
   await message.reply(clampDiscord([
-    `📦 **Cargo Frenzy started.**`,
-    `In-game announcement sent: **Cargo Frenzy!**`,
-    `Cargo drops scheduled: **${successCount}/${points.length}**`,
-    failed.length ? "Some drops failed. Check the admin/vehicle log for details." : null,
+    `📦 **Cargo Frenzy launched.**`,
+    `Cargo drops sent: ${successCount}/${points.length}`,
+    ...safetyLines,
+    failed.length ? `Failures: ${failed.length}` : null,
+    "",
+    "Locations:",
+    ...results.slice(0, 10).map((entry, index) => {
+      const nearest = entry.point.nearestFlagDistance !== null ? ` | nearest flag: ${formatApproxDistance(entry.point.nearestFlagDistance)}` : " | nearest flag: none found";
+      return `${index + 1}. ${entry.ok ? "✅" : "❌"} X: ${entry.point.x} | Y: ${entry.point.y} | Z: ${entry.point.z}${nearest}`;
+    }),
   ].filter(Boolean).join("\n"))).catch(() => {});
 }
 
