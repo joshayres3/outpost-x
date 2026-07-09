@@ -60,6 +60,7 @@ const {
 } = require("./watcherDm");
 const {
   handleGgconCommand,
+  handleGgconInteraction,
   startGgconStatusOnBoot,
 } = require("./ggcon");
 
@@ -196,6 +197,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleGgconInteraction(interaction)) return;
+
     if (await handleRuleUpdateInteraction(interaction, getWatcherContext())) return;
 
     if (await handleWatcherDmInteraction(interaction, getWatcherContext())) return;
