@@ -8,6 +8,7 @@ const VEHICLE_WATCH_FILE = path.join(__dirname, "data", "ggcon-vehicle-watch.jso
 const VEHICLE_STATE_FILE = path.join(__dirname, "data", "ggcon-vehicle-state.json");
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10");
+const DEFAULT_FLAG_PAGE_SIZE = 5;
 
 let statusTimer = null;
 let vehicleWatchTimer = null;
@@ -169,6 +170,30 @@ function formatLocation(location) {
   return `X: ${Math.round(Number(location.x || 0))} | Y: ${Math.round(Number(location.y || 0))} | Z: ${Math.round(Number(location.z || 0))}`;
 }
 
+function distanceUnrealUnits(a, b) {
+  if (!a || !b) return null;
+  const ax = Number(a.x);
+  const ay = Number(a.y);
+  const az = Number(a.z || 0);
+  const bx = Number(b.x);
+  const by = Number(b.y);
+  const bz = Number(b.z || 0);
+
+  if (![ax, ay, az, bx, by, bz].every(Number.isFinite)) return null;
+
+  const dx = ax - bx;
+  const dy = ay - by;
+  const dz = az - bz;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+function formatApproxDistance(unrealUnits) {
+  if (unrealUnits === null || unrealUnits === undefined || !Number.isFinite(Number(unrealUnits))) return "Unknown";
+  const metres = Number(unrealUnits) / 100;
+  if (metres >= 1000) return `${(metres / 1000).toFixed(2)} km approx`;
+  return `${Math.round(metres)} m approx`;
+}
+
 function formatHealth(health) {
   if (health === null || health === undefined) return "Offline / Unknown";
   return `${Math.round(Number(health) * 100)}%`;
@@ -292,6 +317,26 @@ async function handlePostStatus(message, bot) {
   ensureStatusLoop(bot);
 
   await message.reply("Status post created. I will keep editing that one message.").catch(() => {});
+}
+
+async function handleServerStatus(message) {
+  const server = await ggconGet("/server.json");
+  const fpsParts = [];
+  if (server.fps !== null && server.fps !== undefined) fpsParts.push(`Current: ${Number(server.fps).toFixed(1)}`);
+  if (server.avgFps !== null && server.avgFps !== undefined) fpsParts.push(`Avg: ${Number(server.avgFps).toFixed(1)}`);
+  if (server.minFps !== null && server.minFps !== undefined) fpsParts.push(`Min: ${Number(server.minFps).toFixed(1)}`);
+
+  const reply = [
+    "🛰️ **Outpost X Server**",
+    "",
+    `**Status:** ${server.online ? "Online" : "Offline"}`,
+    `**Players Online:** ${server.onlinePlayers ?? "Unknown"}`,
+    `**SCUM Version:** ${server.scumVersion || "Unknown"}`,
+    `**In-Game Time:** ${formatGameTime(server.timeOfDay)}`,
+    `**Server FPS:** ${fpsParts.length ? fpsParts.join(" | ") : "Unknown"}`,
+  ].join("\n");
+
+  await message.reply(reply).catch(() => {});
 }
 
 function isSteamId(value) {
@@ -435,7 +480,7 @@ function buildPlayerLabel(player, index) {
 }
 
 function buildMatchButtons(matches, commandName) {
-  const action = commandName === "!vehicle" || commandName === "!vehicles" ? "vehicle" : commandName === "!flag" || commandName === "!flags" ? "flag" : "player";
+  const action = commandName === "!vehicle" || commandName === "!vehicles" ? "vehicle" : commandName === "!flag" || commandName === "!flags" ? "flag" : commandName === "!squad" ? "squad" : "player";
   const usable = matches.filter((player) => player.userId).slice(0, 10);
   const rows = [];
 
@@ -612,6 +657,89 @@ function getSquadMemberSteamIds(squad) {
   );
 }
 
+function buildSquadMemberLine(member, index) {
+  const statusBits = [];
+  statusBits.push(member.online ? "Online" : "Offline");
+  if (member.online && member.isAlive !== undefined) statusBits.push(member.isAlive ? "Alive" : "Dead");
+  if (member.online && member.inDanger) statusBits.push("⚠️ In danger");
+
+  return [
+    `**${index + 1}. ${member.characterName || "Unknown"}**`,
+    `Steam ID: ${member.steamId ? `\`${member.steamId}\`` : "Unknown"}`,
+    `Rank: ${member.rankName || (member.rank ?? "Unknown")}`,
+    `Status: ${statusBits.join(" | ")}`,
+  ].join("\n");
+}
+
+function buildSquadReport(squad, lookedUpName = "Unknown") {
+  const members = Array.isArray(squad?.members) ? squad.members : [];
+  const onlineCount = members.filter((member) => member.online).length;
+  const pending = squad.pendingCount ?? 0;
+
+  const rows = members
+    .slice()
+    .sort((a, b) => {
+      const rankDiff = Number(b.rank || 0) - Number(a.rank || 0);
+      if (rankDiff !== 0) return rankDiff;
+      if (a.online !== b.online) return a.online ? -1 : 1;
+      return String(a.characterName || "").localeCompare(String(b.characterName || ""));
+    })
+    .slice(0, 20)
+    .map(buildSquadMemberLine);
+
+  const extra = members.length > 20 ? `\n\nShowing 20 of ${members.length} members.` : "";
+
+  return clampDiscord([
+    `👥 **Squad: ${squad.name || "Unknown Squad"}**`,
+    `Looked up from: **${lookedUpName}**`,
+    "",
+    `**Members:** ${members.length}/${squad.memberLimit ?? "?"}`,
+    `**Online:** ${onlineCount}`,
+    `**Pending Requests:** ${pending}`,
+    `**Score:** ${squad.score ?? "Unknown"}`,
+    squad.message ? `**Message:** ${squad.message}` : null,
+    squad.information ? `**Info:** ${squad.information}` : null,
+    "",
+    rows.length ? rows.join("\n\n") : "No members listed.",
+    extra,
+  ].filter(Boolean).join("\n"));
+}
+
+async function handleSquadLookup(message, args) {
+  const query = args.join(" ").trim();
+
+  if (!query) {
+    await message.reply("Use: `!squad <player name or Steam ID>`").catch(() => {});
+    return;
+  }
+
+  const playerResult = await getPlayerForLookup(query);
+
+  if (playerResult.type === "none") {
+    await message.reply(`No player found for **${query}**.`).catch(() => {});
+    return;
+  }
+
+  if (playerResult.type === "multiple") {
+    await message.reply({
+      content: buildMultipleMatchesReply(query, playerResult.matches, "!squad"),
+      components: buildMatchButtons(playerResult.matches, "!squad"),
+    }).catch(() => {});
+    return;
+  }
+
+  const player = playerResult.player;
+  const steamId = String(player.userId || "").trim();
+  const squad = await getSquadForSteamId(steamId);
+
+  if (!squad) {
+    await message.reply(`No squad found for **${player.characterName || player.steamName || query}** / \`${steamId || "unknown Steam ID"}\`.`).catch(() => {});
+    return;
+  }
+
+  await message.reply(buildSquadReport(squad, player.characterName || player.steamName || query)).catch(() => {});
+}
+
 async function buildVehicleReportForPlayer(player, fallbackLabel) {
   const playerSteamId = String(player.userId || "").trim();
   const vehicleData = await ggconGet("/vehicles.json");
@@ -748,16 +876,37 @@ async function buildVehiclesBySteamId(steamId) {
   return buildVehicleReportForPlayer(playerResult.player, String(steamId || ""));
 }
 
+async function buildSquadBySteamId(steamId) {
+  const playerResult = await getPlayerForLookup(String(steamId || ""));
+  if (playerResult.type !== "single") return `No player found for \`${steamId}\`.`;
 
+  const player = playerResult.player;
+  const squad = await getSquadForSteamId(player.userId || steamId);
+  if (!squad) return `No squad found for **${player.characterName || player.steamName || "Unknown"}** / \`${player.userId || steamId}\`.`;
+
+  return buildSquadReport(squad, player.characterName || player.steamName || String(steamId || ""));
+}
+
+
+
+function isFlagOverLimit(flag) {
+  const elementCount = Number(flag.elementCount);
+  const maxElements = Number(flag.maxElements);
+  return Number.isFinite(elementCount) && Number.isFinite(maxElements) && elementCount > maxElements;
+}
 
 function buildFlagLine(flag, index) {
+  const overLimit = isFlagOverLimit(flag);
+  const overBy = overLimit ? Number(flag.elementCount) - Number(flag.maxElements) : 0;
+  const baseLabel = flag.baseName || `Base #${flag.baseId || flag.flagId || "?"}`;
+
   return [
-    `**${index + 1}. ${flag.baseName || `Base #${flag.baseId || flag.flagId || "?"}`}**`,
+    `**${index + 1}. ${overLimit ? "⚠️ " : ""}${baseLabel}**`,
     `Flag ID: \`${flag.flagId ?? "Unknown"}\` | Base ID: \`${flag.baseId ?? "Unknown"}\``,
     `Owner: ${flag.owner || "Unknown"}`,
     `Owner Steam ID: ${flag.ownerSteamId ? `\`${flag.ownerSteamId}\`` : "Unknown"}`,
     `Location: ${formatLocation(flag.location)}`,
-    `Elements: ${flag.elementCount ?? "?"}/${flag.maxElements ?? "?"}`,
+    `Elements: ${flag.elementCount ?? "?"}/${flag.maxElements ?? "?"}${overLimit ? ` — ⚠️ OVER CAP by ${overBy}` : ""}`,
     `Expanded Elements: ${flag.expandedElements ?? "?"}`,
   ].join("\n");
 }
@@ -772,6 +921,83 @@ function buildFlagRulesSummary(flagData) {
   return bits.length ? bits.join(" | ") : "Flag rule details unavailable.";
 }
 
+function getFlagPageSize() {
+  const configured = Number(process.env.GGCON_FLAG_PAGE_SIZE || DEFAULT_FLAG_PAGE_SIZE);
+  if (!Number.isFinite(configured)) return DEFAULT_FLAG_PAGE_SIZE;
+  return Math.min(8, Math.max(3, Math.floor(configured)));
+}
+
+function sortFlags(flags) {
+  return [...(flags || [])].sort((a, b) => {
+    const baseA = Number(a.baseId ?? 0);
+    const baseB = Number(b.baseId ?? 0);
+    if (baseA !== baseB) return baseA - baseB;
+    return Number(a.flagId ?? 0) - Number(b.flagId ?? 0);
+  });
+}
+
+function buildFlagOverLimitSummary(flags) {
+  const overLimit = (flags || []).filter(isFlagOverLimit);
+  if (overLimit.length === 0) return "Over-limit flags: None";
+
+  const rows = overLimit.slice(0, 5).map((flag) => {
+    const baseLabel = flag.baseName || `Base #${flag.baseId || flag.flagId || "?"}`;
+    const overBy = Number(flag.elementCount) - Number(flag.maxElements);
+    return `• ${baseLabel} — ${flag.owner || "Unknown"}: ${flag.elementCount}/${flag.maxElements} (${overBy} over)`;
+  });
+
+  if (overLimit.length > 5) rows.push(`• +${overLimit.length - 5} more over-limit flag(s)`);
+
+  return [`⚠️ Over-limit flags: ${overLimit.length}`, ...rows].join("\n");
+}
+
+function buildFlagAllComponents(page, totalPages) {
+  if (totalPages <= 1) return [];
+
+  const previousPage = Math.max(1, page - 1);
+  const nextPage = Math.min(totalPages, page + 1);
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`ggcon:flagall:${previousPage}`)
+        .setLabel("Previous")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page <= 1),
+      new ButtonBuilder()
+        .setCustomId(`ggcon:flagall:${nextPage}`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(page >= totalPages)
+    ),
+  ];
+}
+
+function buildAllFlagsPage(flagData, requestedPage = 1) {
+  const allFlags = sortFlags(Array.isArray(flagData.flags) ? flagData.flags : []);
+  const pageSize = getFlagPageSize();
+  const totalPages = Math.max(1, Math.ceil(allFlags.length / pageSize));
+  const page = Math.min(totalPages, Math.max(1, Number(requestedPage) || 1));
+  const start = (page - 1) * pageSize;
+  const pageFlags = allFlags.slice(start, start + pageSize);
+
+  const content = clampDiscord([
+    "🚩 **All Server Flags**",
+    `Page ${page}/${totalPages} | Total Flags: ${flagData.count ?? allFlags.length}`,
+    buildFlagRulesSummary(flagData),
+    "",
+    buildFlagOverLimitSummary(allFlags),
+    "",
+    pageFlags.length ? pageFlags.map((flag, index) => buildFlagLine(flag, start + index)).join("\n\n") : "No flags found.",
+    totalPages > 1 ? "\nUse the buttons below to change pages." : "",
+  ].filter(Boolean).join("\n"));
+
+  return {
+    content,
+    components: buildFlagAllComponents(page, totalPages),
+  };
+}
+
 async function buildFlagsBySteamId(steamId) {
   const playerResult = await getPlayerForLookup(String(steamId || ""));
   if (playerResult.type !== "single") return `No player found for \`${steamId}\`.`;
@@ -779,11 +1005,30 @@ async function buildFlagsBySteamId(steamId) {
   const player = playerResult.player;
   const playerSteamId = String(player.userId || steamId || "");
   const flagData = await ggconGet("/flags.json");
-  const flags = Array.isArray(flagData.flags) ? flagData.flags : [];
+  const flags = sortFlags(Array.isArray(flagData.flags) ? flagData.flags : []);
   const owned = flags.filter((flag) => String(flag.ownerSteamId || "") === playerSteamId);
 
   if (owned.length === 0) {
     return `No flags found for **${player.characterName || player.steamName || "Unknown"}** / \`${playerSteamId || "unknown Steam ID"}\`.`;
+  }
+
+  const overLimit = owned.filter(isFlagOverLimit);
+  const duplicateBaseGroups = Object.values(owned.reduce((groups, flag) => {
+    const key = String(flag.baseId ?? flag.baseName ?? "unknown");
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(flag);
+    return groups;
+  }, {})).filter((group) => group.length > 1);
+
+  const distanceRows = [];
+  for (const group of duplicateBaseGroups.slice(0, 5)) {
+    for (let i = 0; i < group.length; i += 1) {
+      for (let j = i + 1; j < group.length; j += 1) {
+        const distance = distanceUnrealUnits(group[i].location, group[j].location);
+        const baseLabel = group[i].baseName || `Base #${group[i].baseId || "?"}`;
+        distanceRows.push(`• ${baseLabel}: Flag ${group[i].flagId ?? "?"} ↔ ${group[j].flagId ?? "?"}: ${formatApproxDistance(distance)}`);
+      }
+    }
   }
 
   const rows = owned.slice(0, 12).map(buildFlagLine);
@@ -792,12 +1037,73 @@ async function buildFlagsBySteamId(steamId) {
   return clampDiscord([
     `🚩 **Flags for ${player.characterName || player.steamName || "Unknown"}**`,
     `Steam ID: \`${playerSteamId || "Unknown"}\``,
-    `Total: ${owned.length}`,
+    `Total Flags: ${owned.length}`,
+    `Over Cap: ${overLimit.length}`,
+    duplicateBaseGroups.length ? `Duplicate Base IDs: ${duplicateBaseGroups.length}` : "Duplicate Base IDs: None",
+    distanceRows.length ? ["", "**Duplicate Flag Distances:**", distanceRows.slice(0, 8).join("\n")].join("\n") : null,
     "",
     rows.join("\n\n"),
     extra,
-  ].join("\n"));
+  ].filter(Boolean).join("\n"));
 }
+
+function buildOvercapComponents(page, totalPages) {
+  if (totalPages <= 1) return [];
+
+  const previousPage = Math.max(1, page - 1);
+  const nextPage = Math.min(totalPages, page + 1);
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`ggcon:overcap:${previousPage}`)
+        .setLabel("Previous")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page <= 1),
+      new ButtonBuilder()
+        .setCustomId(`ggcon:overcap:${nextPage}`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(page >= totalPages)
+    ),
+  ];
+}
+
+function buildOvercapPage(flagData, requestedPage = 1) {
+  const overLimit = sortFlags(Array.isArray(flagData.flags) ? flagData.flags : []).filter(isFlagOverLimit);
+  const pageSize = getFlagPageSize();
+  const totalPages = Math.max(1, Math.ceil(overLimit.length / pageSize));
+  const page = Math.min(totalPages, Math.max(1, Number(requestedPage) || 1));
+  const start = (page - 1) * pageSize;
+  const pageFlags = overLimit.slice(start, start + pageSize);
+
+  const content = clampDiscord([
+    "⚠️ **Bases / Flags Over Element Cap**",
+    `Page ${page}/${totalPages} | Over-cap flags: ${overLimit.length}`,
+    "",
+    pageFlags.length
+      ? pageFlags.map((flag, index) => buildFlagLine(flag, start + index)).join("\n\n")
+      : "No flags are currently over their displayed element cap.",
+    totalPages > 1 ? "\nUse the buttons below to change pages." : "",
+  ].filter(Boolean).join("\n"));
+
+  return {
+    content,
+    components: buildOvercapComponents(page, totalPages),
+  };
+}
+
+async function handleOvercapLookup(message, args) {
+  const requestedPage = Number(args[0] || 1);
+  const flagData = await ggconGet("/flags.json");
+  const page = buildOvercapPage(flagData, requestedPage);
+
+  await message.reply({
+    content: page.content,
+    components: page.components,
+  }).catch(() => {});
+}
+
 
 async function handleFlagsLookup(message, args) {
   const query = args.join(" ").trim();
@@ -807,22 +1113,16 @@ async function handleFlagsLookup(message, args) {
     return;
   }
 
-  if (query.toLowerCase() === "all") {
+  if (query.toLowerCase().startsWith("all")) {
+    const parts = query.split(/\s+/);
+    const requestedPage = Number(parts[1] || 1);
     const flagData = await ggconGet("/flags.json");
-    const flags = Array.isArray(flagData.flags) ? flagData.flags : [];
-    const rows = flags.slice(0, 15).map(buildFlagLine);
-    const extra = flags.length > 15 ? `\n\nShowing 15 of ${flags.length} flags.` : "";
+    const page = buildAllFlagsPage(flagData, requestedPage);
 
-    const reply = [
-      "🚩 **All Server Flags**",
-      `Total Flags: ${flagData.count ?? flags.length}`,
-      buildFlagRulesSummary(flagData),
-      "",
-      rows.length ? rows.join("\n\n") : "No flags found.",
-      extra,
-    ].join("\n");
-
-    await message.reply(clampDiscord(reply)).catch(() => {});
+    await message.reply({
+      content: page.content,
+      components: page.components,
+    }).catch(() => {});
     return;
   }
 
@@ -974,10 +1274,19 @@ async function handleVehicleLogStatus(message) {
     return;
   }
 
+  const vehicles = state?.vehicles ? Object.values(state.vehicles) : [];
+  const ownedTracked = vehicles.filter((vehicle) => vehicle.ownerSteamId || vehicle.owner).length;
+  const unownedTracked = vehicles.length - ownedTracked;
+  const seconds = Number(process.env.GGCON_VEHICLE_WATCH_INTERVAL_SECONDS || "180");
+
   await message.reply([
     "🚗 **Vehicle Watch Status**",
     `Alert Channel: <#${channelId}>`,
-    `Last Baseline Count: ${state?.count ?? "No baseline yet"}`,
+    `Tracking Active: ${vehicleWatchTimer ? "Yes" : "Will start on next bot boot/setup"}`,
+    `Scan Interval: ${Math.max(60, Number.isFinite(seconds) ? seconds : 180)} seconds`,
+    `Tracked Vehicles: ${vehicles.length}`,
+    `Owned Vehicles Tracked: ${ownedTracked}`,
+    `Unowned Vehicles Ignored for Alerts: ${unownedTracked}`,
     `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
     `Ownership Resolved Last Scan: ${state?.ownershipResolved === undefined ? "Unknown" : state.ownershipResolved ? "Yes" : "No"}`,
   ].join("\n")).catch(() => {});
@@ -1003,18 +1312,42 @@ async function handleGgconInteraction(interaction) {
     return true;
   }
 
-  const [, action, steamId] = interaction.customId.split(":");
+  const [, action, value] = interaction.customId.split(":");
 
   try {
+    if (action === "flagall") {
+      const flagData = await ggconGet("/flags.json");
+      const page = buildAllFlagsPage(flagData, Number(value || 1));
+      await interaction.update({ content: page.content, components: page.components }).catch(async () => {
+        await interaction.reply({ content: page.content, components: page.components, ephemeral: true }).catch(() => {});
+      });
+      return true;
+    }
+
+    if (action === "overcap") {
+      const flagData = await ggconGet("/flags.json");
+      const page = buildOvercapPage(flagData, Number(value || 1));
+      await interaction.update({ content: page.content, components: page.components }).catch(async () => {
+        await interaction.reply({ content: page.content, components: page.components, ephemeral: true }).catch(() => {});
+      });
+      return true;
+    }
+
     let content;
-    if (action === "vehicle" || action === "vehicles") content = await buildVehiclesBySteamId(steamId);
-    else if (action === "flag" || action === "flags") content = await buildFlagsBySteamId(steamId);
-    else content = await buildPlayerDetailsBySteamId(steamId);
+    if (action === "vehicle" || action === "vehicles") content = await buildVehiclesBySteamId(value);
+    else if (action === "flag" || action === "flags") content = await buildFlagsBySteamId(value);
+    else if (action === "squad") content = await buildSquadBySteamId(value);
+    else content = await buildPlayerDetailsBySteamId(value);
 
     await interaction.reply({ content, ephemeral: true }).catch(() => {});
   } catch (err) {
     console.error("❌ GGCON button failed:", err);
-    await interaction.reply({ content: `GGCON error: ${err.message}`, ephemeral: true }).catch(() => {});
+    const errorContent = `GGCON error: ${err.message}`;
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp({ content: errorContent, ephemeral: true }).catch(() => {});
+    } else {
+      await interaction.reply({ content: errorContent, ephemeral: true }).catch(() => {});
+    }
   }
 
   return true;
@@ -1028,7 +1361,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!player", "!vehicle", "!flag", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -1038,6 +1371,11 @@ async function handleGgconCommand(message, bot) {
   try {
     if (command === "!poststatus") {
       await handlePostStatus(message, bot);
+      return true;
+    }
+
+    if (command === "!server") {
+      await handleServerStatus(message);
       return true;
     }
 
@@ -1053,6 +1391,16 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!flag") {
       await handleFlagsLookup(message, args);
+      return true;
+    }
+
+    if (command === "!squad") {
+      await handleSquadLookup(message, args);
+      return true;
+    }
+
+    if (command === "!overcap") {
+      await handleOvercapLookup(message, args);
       return true;
     }
 
