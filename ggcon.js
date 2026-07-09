@@ -1535,62 +1535,168 @@ function buildVehicleSnapshot(vehicles) {
   return map;
 }
 
+function vehicleOwnerKey(vehicle) {
+  const steamId = String(vehicle?.ownerSteamId || "").trim();
+  if (steamId) return `steam:${steamId}`;
+  const owner = String(vehicle?.owner || "").trim().toLowerCase();
+  if (owner) return `name:${owner}`;
+  return "";
+}
+
+function hasVehicleOwner(vehicle) {
+  return !!vehicleOwnerKey(vehicle);
+}
+
+function formatVehicleOwner(vehicle) {
+  const owner = vehicle?.owner || "Unknown";
+  const steamId = vehicle?.ownerSteamId ? ` (\`${vehicle.ownerSteamId}\`)` : "";
+  return `${owner}${steamId}`;
+}
+
 function buildMissingVehicleAlert(vehicle) {
   return clampDiscord([
-    "🚗 **Vehicle No Longer Listed**",
+    "🚨 **Vehicle Loss Detected**",
+    "",
+    "The Watcher no longer sees this tracked player-owned vehicle in GGCON.",
     "",
     `**Vehicle:** ${vehicle.name || vehicle.class || "Vehicle"}`,
     `**ID:** \`${vehicle.id}\``,
     `**Class:** ${vehicle.class || "Unknown"}`,
-    `**Last Known Owner:** ${vehicle.owner || "Unknown"}`,
-    `**Owner Steam ID:** ${vehicle.ownerSteamId ? `\`${vehicle.ownerSteamId}\`` : "Unknown"}`,
+    `**Last Known Owner:** ${formatVehicleOwner(vehicle)}`,
     `**Last Known Location:** ${formatLocation(vehicle.location)}`,
     `**Spawned:** ${formatDate(vehicle.spawnDate)}`,
     "",
-    "**Reason:** Unknown. GGCON does not expose a structured vehicle-destroy reason for removals outside Watcher.",
-    "This means the vehicle disappeared from `/vehicles.json` since the last scan. It may have been destroyed, deleted, cleaned up, or otherwise removed.",
+    "**Possible causes:** destroyed, deleted, cleaned up, or removed outside Watcher.",
   ].join("\n"));
+}
+
+function buildOwnerChangedVehicleAlert(previous, current) {
+  return clampDiscord([
+    "🚗 **Vehicle Ownership Changed**",
+    "",
+    `**Vehicle:** ${current.name || previous.name || current.class || previous.class || "Vehicle"}`,
+    `**ID:** \`${current.id || previous.id}\``,
+    `**Class:** ${current.class || previous.class || "Unknown"}`,
+    `**Previous Owner:** ${formatVehicleOwner(previous)}`,
+    `**Current Owner:** ${formatVehicleOwner(current)}`,
+    `**Current Location:** ${formatLocation(current.location)}`,
+    `**Last Known Location:** ${formatLocation(previous.location)}`,
+    "",
+    "This can mean the vehicle was claimed, transferred, or ownership data changed.",
+  ].join("\n"));
+}
+
+function buildOwnerClearedVehicleAlert(previous, current) {
+  return clampDiscord([
+    "⚠️ **Tracked Vehicle Lost Owner Data**",
+    "",
+    `**Vehicle:** ${current.name || previous.name || current.class || previous.class || "Vehicle"}`,
+    `**ID:** \`${current.id || previous.id}\``,
+    `**Class:** ${current.class || previous.class || "Unknown"}`,
+    `**Previous Owner:** ${formatVehicleOwner(previous)}`,
+    `**Current Owner:** Unknown / Unowned`,
+    `**Current Location:** ${formatLocation(current.location)}`,
+    `**Last Known Location:** ${formatLocation(previous.location)}`,
+    "",
+    "This may happen if the vehicle became unowned or GGCON ownership data changed.",
+  ].join("\n"));
+}
+
+async function sendVehicleWatchAlerts(bot, channelId, alerts) {
+  if (!alerts.length) return 0;
+
+  const channel = await bot.channels.fetch(channelId).catch(() => null);
+  if (!channel?.send) return 0;
+
+  let sent = 0;
+  for (const alert of alerts.slice(0, 10)) {
+    await channel.send(alert.content).then(() => {
+      sent += 1;
+    }).catch((err) => {
+      console.error("❌ Vehicle watch alert failed:", err.message);
+    });
+  }
+
+  if (alerts.length > 10) {
+    await channel.send(`⚠️ ${alerts.length - 10} more vehicle watch alerts happened in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
+  }
+
+  return sent;
 }
 
 async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
   const channelId = getVehicleLogChannelId();
-  if (!channelId) return;
+  if (!channelId) return { scanned: false, reason: "No vehicle log channel set." };
 
   const data = await ggconGet("/vehicles.json");
   const vehicles = Array.isArray(data.vehicles) ? data.vehicles : [];
   const current = buildVehicleSnapshot(vehicles);
   const previousState = loadVehicleState();
   const previous = previousState?.vehicles || null;
+  const now = Date.now();
+
+  if (baselineOnly || !previous) {
+    saveVehicleState({
+      updatedAt: now,
+      count: vehicles.length,
+      ownershipResolved: data.ownershipResolved,
+      vehicles: current,
+    });
+
+    return {
+      scanned: true,
+      baselineOnly: true,
+      vehicleCount: vehicles.length,
+      ownedTracked: Object.values(current).filter(hasVehicleOwner).length,
+      alerts: 0,
+    };
+  }
+
+  const alerts = [];
+  const ownershipResolved = !!data.ownershipResolved;
+
+  for (const previousVehicle of Object.values(previous)) {
+    const currentVehicle = current[String(previousVehicle.id)];
+    const previousOwned = hasVehicleOwner(previousVehicle);
+
+    if (!currentVehicle) {
+      if (previousOwned) {
+        alerts.push({ type: "missing", content: buildMissingVehicleAlert(previousVehicle) });
+      }
+      continue;
+    }
+
+    if (!ownershipResolved || !previousOwned) continue;
+
+    const previousOwnerKey = vehicleOwnerKey(previousVehicle);
+    const currentOwnerKey = vehicleOwnerKey(currentVehicle);
+
+    if (!currentOwnerKey) {
+      alerts.push({ type: "owner-cleared", content: buildOwnerClearedVehicleAlert(previousVehicle, currentVehicle) });
+      continue;
+    }
+
+    if (previousOwnerKey && currentOwnerKey && previousOwnerKey !== currentOwnerKey) {
+      alerts.push({ type: "owner-changed", content: buildOwnerChangedVehicleAlert(previousVehicle, currentVehicle) });
+    }
+  }
+
+  const sent = await sendVehicleWatchAlerts(bot, channelId, alerts);
 
   saveVehicleState({
-    updatedAt: Date.now(),
+    updatedAt: now,
     count: vehicles.length,
     ownershipResolved: data.ownershipResolved,
     vehicles: current,
   });
 
-  if (baselineOnly || !previous) return;
-
-  const removed = Object.values(previous).filter((vehicle) => {
-    if (current[String(vehicle.id)]) return false;
-    // Only alert for vehicles that had player ownership or a last known owner name.
-    return !!(vehicle.ownerSteamId || vehicle.owner);
-  });
-
-  if (removed.length === 0) return;
-
-  const channel = await bot.channels.fetch(channelId).catch(() => null);
-  if (!channel?.send) return;
-
-  for (const vehicle of removed.slice(0, 10)) {
-    await channel.send(buildMissingVehicleAlert(vehicle)).catch((err) => {
-      console.error("❌ Vehicle watch alert failed:", err.message);
-    });
-  }
-
-  if (removed.length > 10) {
-    await channel.send(`⚠️ ${removed.length - 10} more player-owned vehicles disappeared in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
-  }
+  return {
+    scanned: true,
+    vehicleCount: vehicles.length,
+    ownedTracked: Object.values(current).filter(hasVehicleOwner).length,
+    alerts: alerts.length,
+    sent,
+  };
 }
 
 function ensureVehicleWatchLoop(bot) {
@@ -1620,8 +1726,9 @@ async function handleVehicleLogSetup(message, bot) {
 
   await message.reply([
     "Vehicle watch is now active in this channel.",
-    "I saved the current vehicle list as the baseline, so I will only alert for vehicles that disappear after this point.",
-    "Reason will show as unknown unless a future Watcher destroy command is added, because GGCON does not expose a structured destroy reason for normal removals.",
+    "I saved the current vehicle list as the baseline.",
+    "Alerts will post for tracked owned vehicles that disappear, change owner, or lose owner data after this point.",
+    "Use `!vehiclelogscan` to force an immediate check instead of waiting for the timer.",
   ].join("\n")).catch(() => {});
 }
 
@@ -1644,7 +1751,7 @@ async function handleVehicleLogStatus(message) {
   }
 
   const vehicles = state?.vehicles ? Object.values(state.vehicles) : [];
-  const ownedTracked = vehicles.filter((vehicle) => vehicle.ownerSteamId || vehicle.owner).length;
+  const ownedTracked = vehicles.filter(hasVehicleOwner).length;
   const unownedTracked = vehicles.length - ownedTracked;
   const seconds = Number(process.env.GGCON_VEHICLE_WATCH_INTERVAL_SECONDS || "180");
 
@@ -1658,6 +1765,24 @@ async function handleVehicleLogStatus(message) {
     `Unowned Vehicles Ignored for Alerts: ${unownedTracked}`,
     `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
     `Ownership Resolved Last Scan: ${state?.ownershipResolved === undefined ? "Unknown" : state.ownershipResolved ? "Yes" : "No"}`,
+    "Alerts now include: missing vehicles, ownership changes, and owner data cleared.",
+  ].join("\n")).catch(() => {});
+}
+
+async function handleVehicleLogScan(message, bot) {
+  const result = await scanVehiclesAndAlert(bot);
+
+  if (!result?.scanned) {
+    await message.reply(result?.reason || "Vehicle watch scan could not run.").catch(() => {});
+    return;
+  }
+
+  await message.reply([
+    "🚗 **Vehicle Watch Manual Scan Complete**",
+    `Tracked Vehicles: ${result.vehicleCount ?? "Unknown"}`,
+    `Owned Vehicles Tracked: ${result.ownedTracked ?? "Unknown"}`,
+    `Alerts Found: ${result.alerts ?? 0}`,
+    `Alerts Sent: ${result.sent ?? 0}`,
   ].join("\n")).catch(() => {});
 }
 
@@ -3551,7 +3676,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -3696,6 +3821,11 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!vehiclelogstatus") {
       await handleVehicleLogStatus(message);
+      return true;
+    }
+
+    if (command === "!vehiclelogscan") {
+      await handleVehicleLogScan(message, bot);
       return true;
     }
   } catch (err) {

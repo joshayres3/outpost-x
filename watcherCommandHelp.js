@@ -112,6 +112,7 @@ const CATEGORIES = {
     lines: [
       ["!vehiclelogsetup", "Start vehicle disappearance log."],
       ["!vehiclelogstatus", "Vehicle log status."],
+      ["!vehiclelogscan", "Force an immediate vehicle scan."],
       ["!vehiclelogoff", "Stop vehicle log."],
       ["!killlogsetup", "Start death/PvP/NPC log."],
       ["!killlogstatus", "Kill log status."],
