@@ -11,6 +11,8 @@ const KILL_LOG_FILE = path.join(__dirname, "data", "ggcon-kill-log.json");
 const KILL_STATE_FILE = path.join(__dirname, "data", "ggcon-kill-state.json");
 const CARGO_SCHEDULE_FILE = path.join(__dirname, "data", "ggcon-cargo-schedule.json");
 const JAIL_STATE_FILE = path.join(__dirname, "data", "ggcon-jail-state.json");
+const LOGIN_LOG_FILE = path.join(__dirname, "data", "ggcon-login-log.json");
+const LOGIN_STATE_FILE = path.join(__dirname, "data", "ggcon-login-state.json");
 const JAIL_RETURNS_TABLE = process.env.GGCON_JAIL_RETURNS_TABLE || "watcher_jail_returns";
 const RUNTIME_STATE_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || "watcher_runtime_state";
 const JAIL_LOCATION = { x: 231926.016, y: -289455.094, z: 16877.357, pitch: 308.556671, yaw: 1.584615, roll: 0 };
@@ -92,6 +94,7 @@ let statusTimer = null;
 let vehicleWatchTimer = null;
 let killLogTimer = null;
 let cargoScheduleTimer = null;
+let loginWatchTimer = null;
 let cargoScheduleNextSlot = null;
 let cargoScheduleRunning = false;
 let supabaseForGgcon = null;
@@ -405,6 +408,40 @@ async function clearCargoScheduleConfigPersistent() {
   await clearRuntimeValue("cargo_schedule_config");
 }
 
+
+async function loadLoginLogConfigPersistent() {
+  const remote = await loadRuntimeValue("login_log_config");
+  if (remote) {
+    saveLoginLogConfig(remote);
+    return remote;
+  }
+  return loadLoginLogConfig();
+}
+
+async function saveLoginLogConfigPersistent(config) {
+  saveLoginLogConfig(config);
+  await saveRuntimeValue("login_log_config", config);
+}
+
+async function clearLoginLogConfigPersistent() {
+  clearLoginLogConfig();
+  await clearRuntimeValue("login_log_config");
+}
+
+async function loadLoginLogStatePersistent() {
+  const remote = await loadRuntimeValue("login_log_state");
+  if (remote) {
+    saveLoginLogState(remote);
+    return remote;
+  }
+  return loadLoginLogState();
+}
+
+async function saveLoginLogStatePersistent(state) {
+  saveLoginLogState(state);
+  await saveRuntimeValue("login_log_state", state);
+}
+
 function loadStatusRef() {
   try {
     if (!fs.existsSync(STATUS_FILE)) return null;
@@ -471,6 +508,41 @@ function clearKillLogConfig() {
   try {
     if (fs.existsSync(KILL_LOG_FILE)) fs.unlinkSync(KILL_LOG_FILE);
   } catch {}
+}
+
+
+function loadLoginLogConfig() {
+  try {
+    if (!fs.existsSync(LOGIN_LOG_FILE)) return null;
+    return JSON.parse(fs.readFileSync(LOGIN_LOG_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveLoginLogConfig(config) {
+  ensureDataFolder();
+  fs.writeFileSync(LOGIN_LOG_FILE, JSON.stringify(config || {}, null, 2));
+}
+
+function clearLoginLogConfig() {
+  try {
+    if (fs.existsSync(LOGIN_LOG_FILE)) fs.unlinkSync(LOGIN_LOG_FILE);
+  } catch {}
+}
+
+function loadLoginLogState() {
+  try {
+    if (!fs.existsSync(LOGIN_STATE_FILE)) return null;
+    return JSON.parse(fs.readFileSync(LOGIN_STATE_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveLoginLogState(state) {
+  ensureDataFolder();
+  fs.writeFileSync(LOGIN_STATE_FILE, JSON.stringify(state || {}, null, 2));
 }
 
 function loadKillState() {
@@ -644,6 +716,14 @@ function getVehicleLogChannelId() {
   return process.env.GGCON_VEHICLE_LOG_CHANNEL_ID || loadVehicleWatchConfig()?.channelId || null;
 }
 
+
+function getLoginLogChannelId() {
+  return process.env.WATCHER_LOGIN_LOG_CHANNEL_ID
+    || process.env.GGCON_LOGIN_LOG_CHANNEL_ID
+    || loadLoginLogConfig()?.channelId
+    || null;
+}
+
 async function getKillLogChannelIdAsync() {
   if (process.env.GGCON_KILL_LOG_CHANNEL_ID) return process.env.GGCON_KILL_LOG_CHANNEL_ID;
   return (await loadKillLogConfigPersistent())?.channelId || null;
@@ -652,6 +732,13 @@ async function getKillLogChannelIdAsync() {
 async function getVehicleLogChannelIdAsync() {
   if (process.env.GGCON_VEHICLE_LOG_CHANNEL_ID) return process.env.GGCON_VEHICLE_LOG_CHANNEL_ID;
   return (await loadVehicleWatchConfigPersistent())?.channelId || null;
+}
+
+
+async function getLoginLogChannelIdAsync() {
+  if (process.env.WATCHER_LOGIN_LOG_CHANNEL_ID) return process.env.WATCHER_LOGIN_LOG_CHANNEL_ID;
+  if (process.env.GGCON_LOGIN_LOG_CHANNEL_ID) return process.env.GGCON_LOGIN_LOG_CHANNEL_ID;
+  return (await loadLoginLogConfigPersistent())?.channelId || null;
 }
 
 function formatGameTime(timeOfDay) {
@@ -1098,6 +1185,128 @@ async function getPlayerForLookup(query) {
   return { type: "single", player: single };
 }
 
+
+function extractIpv4(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+
+  const match = text.match(/\b((?:\d{1,3}\.){3}\d{1,3})\b/);
+  if (!match) return null;
+
+  const parts = match[1].split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+
+  return match[1];
+}
+
+function findIpInObject(value, seen = new Set()) {
+  if (value === null || value === undefined) return null;
+
+  if (typeof value === "string" || typeof value === "number") {
+    return extractIpv4(value);
+  }
+
+  if (typeof value !== "object") return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+
+  const preferredKeys = [
+    "ip", "ipAddress", "ip_address", "lastIp", "lastIP", "lastIpAddress", "lastIPAddress",
+    "last_ip", "last_ip_address", "remoteAddress", "remote_address", "address", "endpoint",
+    "connectionIp", "connectionIP", "networkAddress", "clientIp", "clientIP",
+  ];
+
+  for (const key of preferredKeys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      const ip = findIpInObject(value[key], seen);
+      if (ip) return ip;
+    }
+  }
+
+  for (const [key, nested] of Object.entries(value)) {
+    const keyText = String(key || "").toLowerCase();
+    if (!(keyText.includes("ip") || keyText.includes("address") || keyText.includes("endpoint") || keyText.includes("connection"))) continue;
+    const ip = findIpInObject(nested, seen);
+    if (ip) return ip;
+  }
+
+  return null;
+}
+
+function extractPlayerIpFromLogLine(line, steamId) {
+  const text = String(line || "");
+  const target = String(steamId || "").trim();
+  if (!target || !text.includes(target)) return null;
+
+  const escapedSteamId = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`['\\"]?((?:\\d{1,3}\\.){3}\\d{1,3})\\s+${escapedSteamId}:`, "i"),
+    new RegExp(`\\b((?:\\d{1,3}\\.){3}\\d{1,3})\\b.*${escapedSteamId}`, "i"),
+    new RegExp(`${escapedSteamId}.*\\b((?:\\d{1,3}\\.){3}\\d{1,3})\\b`, "i"),
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const ip = extractIpv4(match?.[1]);
+    if (ip) return ip;
+  }
+
+  return null;
+}
+
+function classifyIpLogLine(line) {
+  const text = String(line || "").toLowerCase();
+  if (text.includes("logged out")) return "logout";
+  if (text.includes("logged in")) return "login";
+  if (text.includes("client connected")) return "connection";
+  return "server log";
+}
+
+async function getPlayerIpInfo(player) {
+  const directIp = findIpInObject(player);
+  if (directIp) {
+    return {
+      ip: directIp,
+      source: "server player record",
+      seenAt: null,
+      kind: "player record",
+    };
+  }
+
+  const steamId = String(player?.userId || player?.steamId || player?.steamID || "").trim();
+  if (!steamId) return null;
+
+  const hours = Math.max(1, Number(process.env.WATCHER_PLAYER_IP_LOOKBACK_HOURS || "24") || 24);
+  const range = {
+    since: Math.max(0, Date.now() - (hours * 60 * 60 * 1000)),
+    label: `${hours}h`,
+  };
+
+  const data = await fetchRawServerLogs(range, "SCUM,login").catch(() => null);
+  const lines = Array.isArray(data?.lines) ? data.lines : [];
+  const sorted = lines.slice().sort((a, b) => Number(b?.t || 0) - Number(a?.t || 0));
+
+  for (const entry of sorted) {
+    const ip = extractPlayerIpFromLogLine(entry?.line, steamId);
+    if (!ip) continue;
+    return {
+      ip,
+      source: entry?.src || "server logs",
+      seenAt: entry?.t || null,
+      kind: classifyIpLogLine(entry?.line),
+    };
+  }
+
+  return null;
+}
+
+function formatPlayerIpInfo(info) {
+  if (!info?.ip) return "Unknown / not in recent server logs";
+  const when = info.seenAt ? ` — ${formatDate(info.seenAt)}` : "";
+  const kind = info.kind ? ` (${info.kind}${when})` : when;
+  return `\`${info.ip}\`${kind}`;
+}
+
 async function handlePlayerLookup(message, args) {
   const query = args.join(" ").trim();
 
@@ -1122,6 +1331,7 @@ async function handlePlayerLookup(message, args) {
   }
 
   const player = result.player;
+  const ipInfo = await getPlayerIpInfo(player).catch(() => null);
   const online = player.online === true || player.ping !== undefined || player.health !== undefined;
   const squad = player.squad?.name
     ? `${player.squad.name}${player.squad.members !== undefined ? ` (${player.squad.members} members)` : ""}`
@@ -1133,6 +1343,7 @@ async function handlePlayerLookup(message, args) {
     `**Status:** ${online ? "Online" : "Offline"}`,
     `**Steam ID:** \`${player.userId || "Unknown"}\``,
     `**Steam Name:** ${player.steamName || "Unknown"}`,
+    `**Last IP:** ${formatPlayerIpInfo(ipInfo)}`,
     `**Fame:** ${formatMoney(player.fame)}`,
     `**Cash:** ${formatMoney(player.accountBalance)}`,
     `**Gold:** ${formatMoney(player.goldBalance)}`,
@@ -1371,6 +1582,7 @@ async function buildPlayerDetailsBySteamId(steamId) {
   if (result.type !== "single") return `No player found for \`${steamId}\`.`;
 
   const player = result.player;
+  const ipInfo = await getPlayerIpInfo(player).catch(() => null);
   const online = player.online === true || player.ping !== undefined || player.health !== undefined;
   const squad = player.squad?.name
     ? `${player.squad.name}${player.squad.members !== undefined ? ` (${player.squad.members} members)` : ""}`
@@ -1382,6 +1594,7 @@ async function buildPlayerDetailsBySteamId(steamId) {
     `**Status:** ${online ? "Online" : "Offline"}`,
     `**Steam ID:** \`${player.userId || steamId || "Unknown"}\``,
     `**Steam Name:** ${player.steamName || "Unknown"}`,
+    `**Last IP:** ${formatPlayerIpInfo(ipInfo)}`,
     `**Fame:** ${formatMoney(player.fame)}`,
     `**Cash:** ${formatMoney(player.accountBalance)}`,
     `**Gold:** ${formatMoney(player.goldBalance)}`,
@@ -2034,6 +2247,307 @@ function startVehicleWatchOnBoot(bot) {
   });
 }
 
+
+
+function getLoginWatchIntervalSeconds() {
+  const raw = Number(process.env.WATCHER_LOGIN_LOG_INTERVAL_SECONDS || process.env.GGCON_LOGIN_LOG_INTERVAL_SECONDS || "30");
+  return Math.max(30, Number.isFinite(raw) ? raw : 30);
+}
+
+function getPlayerSteamId(player) {
+  return String(player?.userId || player?.steamId || player?.steamID || "").trim();
+}
+
+function getPlayerProfileId(player) {
+  const value = player?.profileId ?? player?.userProfileId ?? player?.profile_id ?? player?.id ?? null;
+  if (value === null || value === undefined || value === "") return null;
+  return String(value);
+}
+
+function parseLoginLogPlayerLine(entry) {
+  const line = String(entry?.line || "");
+  const match = line.match(/'((?:\d{1,3}\.){3}\d{1,3})\s+([0-9]{15,20}):([^(']+)\((\d+)\)'\s+logged\s+(in|out)(?:\s+at:\s*X=([-\d.]+)\s+Y=([-\d.]+)\s+Z=([-\d.]+))?/i);
+  if (!match) return null;
+  return {
+    key: `${entry?.t || ""}:${match[2]}:${match[5].toLowerCase()}:${line.slice(0, 80)}`,
+    time: Number(entry?.t || Date.now()),
+    ip: extractIpv4(match[1]) || match[1],
+    steamId: match[2],
+    name: match[3].trim(),
+    profileId: match[4],
+    action: match[5].toLowerCase(),
+    location: match[6] !== undefined ? { x: Number(match[6]), y: Number(match[7]), z: Number(match[8]) } : null,
+    source: entry?.src || "server logs",
+  };
+}
+
+function buildLoginRawLookups(lines) {
+  const bySteamId = new Map();
+  const events = [];
+
+  for (const entry of lines || []) {
+    const parsed = parseLoginLogPlayerLine(entry);
+    if (!parsed?.steamId) continue;
+    events.push(parsed);
+    bySteamId.set(parsed.steamId, parsed);
+  }
+
+  return { bySteamId, events };
+}
+
+function makeOnlinePlayerSnapshot(player, previous, rawRecord) {
+  const steamId = getPlayerSteamId(player);
+  if (!steamId) return null;
+
+  const directIp = findIpInObject(player);
+  const profileId = getPlayerProfileId(player) || rawRecord?.profileId || previous?.profileId || null;
+  const location = cloneLocation(player?.location) || cloneLocation(previous?.location) || null;
+
+  return {
+    steamId,
+    name: getPlayerDisplayName(player, rawRecord?.name || previous?.name || "Unknown"),
+    steamName: player?.steamName || previous?.steamName || null,
+    profileId,
+    ip: directIp || rawRecord?.ip || previous?.ip || null,
+    location,
+    ping: player?.ping ?? null,
+    lastSeenAt: Date.now(),
+  };
+}
+
+function buildOnlinePlayerSnapshotMap(onlinePlayers, previousOnline, rawLookups) {
+  const map = {};
+  for (const player of onlinePlayers || []) {
+    const steamId = getPlayerSteamId(player);
+    if (!steamId) continue;
+    const snapshot = makeOnlinePlayerSnapshot(player, previousOnline?.[steamId], rawLookups?.bySteamId?.get(steamId));
+    if (snapshot) map[steamId] = snapshot;
+  }
+  return map;
+}
+
+function buildPlayerConnectionAlert(kind, record, options = {}) {
+  const isLogin = kind === "login";
+  const title = isLogin ? "🟢 **Player Login**" : "🟠 **Player Logout**";
+  const ip = record?.ip ? `\`${record.ip}\`` : "Unknown";
+  const location = formatLocation(record?.location);
+  const lines = [
+    title,
+    "",
+    `**Player:** ${record?.name || "Unknown"}`,
+    `**Steam ID:** \`${record?.steamId || "Unknown"}\``,
+    `**IP:** ${ip}`,
+    `**Location:** ${location}`,
+    `**Time:** ${formatDate(options.time || Date.now())}`,
+  ].filter(Boolean);
+
+  return clampDiscord(lines.join("\n"));
+}
+
+function mergeLogoutRecord(previous, rawEvent) {
+  if (!previous && !rawEvent) return null;
+  return {
+    steamId: rawEvent?.steamId || previous?.steamId || "Unknown",
+    name: rawEvent?.name || previous?.name || "Unknown",
+    steamName: previous?.steamName || null,
+    profileId: rawEvent?.profileId || previous?.profileId || null,
+    ip: rawEvent?.ip || previous?.ip || null,
+    location: cloneLocation(rawEvent?.location) || cloneLocation(previous?.location) || null,
+  };
+}
+
+async function scanLoginLogAndAlert(bot, { baselineOnly = false } = {}) {
+  const channelId = await getLoginLogChannelIdAsync();
+  if (!channelId) return { scanned: false, reason: "No login log channel set." };
+
+  const previousState = await loadLoginLogStatePersistent() || {};
+  const previousOnline = previousState.online || {};
+  const now = Date.now();
+  const since = previousState.cursor || Math.max(0, now - (5 * 60 * 1000));
+
+  const [onlinePlayers, logData] = await Promise.all([
+    getOnlinePlayers(),
+    fetchRawServerLogs({ since, label: "login-watch" }, "SCUM,login").catch(() => null),
+  ]);
+
+  const logLines = Array.isArray(logData?.lines) ? logData.lines : [];
+  const rawLookups = buildLoginRawLookups(logLines);
+  const currentOnline = buildOnlinePlayerSnapshotMap(onlinePlayers, previousOnline, rawLookups);
+  const cursor = logData?.next || now;
+
+  if (baselineOnly || !previousState.online) {
+    await saveLoginLogStatePersistent({
+      updatedAt: now,
+      cursor,
+      online: currentOnline,
+      seenRawEvents: previousState.seenRawEvents || [],
+      lastLoginCount: 0,
+      lastLogoutCount: 0,
+    });
+    return {
+      scanned: true,
+      baselineOnly: true,
+      onlineCount: Object.keys(currentOnline).length,
+      loginCount: 0,
+      logoutCount: 0,
+      sent: 0,
+    };
+  }
+
+  const alerts = [];
+
+  for (const [steamId, record] of Object.entries(currentOnline)) {
+    if (!previousOnline[steamId]) {
+      alerts.push({ type: "login", steamId, record, time: now });
+    }
+  }
+
+  for (const [steamId, previous] of Object.entries(previousOnline)) {
+    if (!currentOnline[steamId]) {
+      const rawLogout = rawLookups.events
+        .filter((event) => event.steamId === steamId && event.action === "out")
+        .sort((a, b) => Number(b.time || 0) - Number(a.time || 0))[0];
+      const record = mergeLogoutRecord(previous, rawLogout);
+      if (record) alerts.push({ type: "logout", steamId, record, time: rawLogout?.time || now });
+    }
+  }
+
+  const channel = await bot.channels.fetch(channelId).catch(() => null);
+  let sent = 0;
+  if (channel?.send) {
+    for (const alert of alerts.slice(0, 12)) {
+      await channel.send(buildPlayerConnectionAlert(alert.type, alert.record, { time: alert.time })).then(() => {
+        sent += 1;
+      }).catch((err) => {
+        console.error("❌ Login log alert failed:", err.message);
+      });
+    }
+    if (alerts.length > 12) {
+      await channel.send(`⚠️ ${alerts.length - 12} more login/logout event(s) happened in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
+    }
+  }
+
+  const loginCount = alerts.filter((alert) => alert.type === "login").length;
+  const logoutCount = alerts.filter((alert) => alert.type === "logout").length;
+
+  await saveLoginLogStatePersistent({
+    updatedAt: now,
+    cursor,
+    online: currentOnline,
+    lastLoginCount: loginCount,
+    lastLogoutCount: logoutCount,
+    lastSentCount: sent,
+  });
+
+  return {
+    scanned: true,
+    onlineCount: Object.keys(currentOnline).length,
+    loginCount,
+    logoutCount,
+    alerts: alerts.length,
+    sent,
+  };
+}
+
+function ensureLoginLogLoop(bot) {
+  const channelId = getLoginLogChannelId();
+  if (!channelId) {
+    getLoginLogChannelIdAsync().then((resolvedChannelId) => {
+      if (resolvedChannelId && !loginWatchTimer) ensureLoginLogLoop(bot);
+    }).catch(() => {});
+    return;
+  }
+  if (loginWatchTimer) return;
+
+  const intervalMs = getLoginWatchIntervalSeconds() * 1000;
+  loginWatchTimer = setInterval(() => {
+    scanLoginLogAndAlert(bot).catch((err) => {
+      console.error("❌ Login log watch failed:", err.message);
+    });
+  }, intervalMs);
+}
+
+async function handleLoginLogSetup(message, bot) {
+  await saveLoginLogConfigPersistent({
+    channelId: message.channel.id,
+    setBy: message.author.id,
+    setAt: Date.now(),
+  });
+
+  await scanLoginLogAndAlert(bot, { baselineOnly: true });
+  ensureLoginLogLoop(bot);
+
+  await message.reply([
+    "Login log is now active in this channel.",
+    "I saved the current online players as the baseline, so I will only post future logins/logouts.",
+    "Each alert shows player name, Steam ID, IP when available, and location.",
+    `Scan interval: ${getLoginWatchIntervalSeconds()} seconds`,
+  ].join("\n")).catch(() => {});
+}
+
+async function handleLoginLogOff(message) {
+  await clearLoginLogConfigPersistent();
+  if (loginWatchTimer) {
+    clearInterval(loginWatchTimer);
+    loginWatchTimer = null;
+  }
+  await message.reply("Login log is now disabled.").catch(() => {});
+}
+
+async function handleLoginLogStatus(message) {
+  const channelId = await getLoginLogChannelIdAsync();
+  const state = await loadLoginLogStatePersistent();
+
+  if (!channelId) {
+    await message.reply("Login log is not set up. Run `!loginlogsetup` in the channel where login/logout alerts should post.").catch(() => {});
+    return;
+  }
+
+  await message.reply([
+    "🟢 **Login Log Status**",
+    `Alert Channel: <#${channelId}>`,
+    `Tracking Active: ${loginWatchTimer ? "Yes" : "Will start on next bot boot/setup"}`,
+    `Scan Interval: ${getLoginWatchIntervalSeconds()} seconds`,
+    `Online Players Tracked: ${state?.online ? Object.keys(state.online).length : 0}`,
+    `Last Logins Found: ${state?.lastLoginCount ?? 0}`,
+    `Last Logouts Found: ${state?.lastLogoutCount ?? 0}`,
+    `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
+    "Persistence: saved across bot restarts/redeploys when Supabase table is installed.",
+  ].join("\n")).catch(() => {});
+}
+
+async function handleLoginLogScan(message, bot) {
+  const result = await scanLoginLogAndAlert(bot);
+  if (!result?.scanned) {
+    await message.reply(result?.reason || "Login log scan could not run.").catch(() => {});
+    return;
+  }
+
+  await message.reply([
+    "🟢 **Login Log Manual Scan Complete**",
+    `Online Players Tracked: ${result.onlineCount ?? "Unknown"}`,
+    `Logins Found: ${result.loginCount ?? 0}`,
+    `Logouts Found: ${result.logoutCount ?? 0}`,
+    `Alerts Sent: ${result.sent ?? 0}`,
+  ].join("\n")).catch(() => {});
+}
+
+function startLoginLogOnBoot(bot) {
+  if (!hasPasswordConfigured()) return;
+
+  loadLoginLogConfigPersistent().then(async (config) => {
+    const channelId = process.env.WATCHER_LOGIN_LOG_CHANNEL_ID || process.env.GGCON_LOGIN_LOG_CHANNEL_ID || config?.channelId || null;
+    if (!channelId) return;
+
+    ensureLoginLogLoop(bot);
+    const state = await loadLoginLogStatePersistent();
+    scanLoginLogAndAlert(bot, { baselineOnly: !state }).catch((err) => {
+      console.error("❌ Boot login log failed:", err.message);
+    });
+  }).catch((err) => {
+    console.error("❌ Boot login log failed:", err.message);
+  });
+}
 
 function parsePlayerActionAmountArgs(args, commandName) {
   const actionIndex = args.findIndex((part) => ["add", "remove", "set"].includes(String(part || "").toLowerCase()));
@@ -4576,7 +5090,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!rawlogdump", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!loginlogsetup", "!loginlogoff", "!loginlogstatus", "!loginlogscan", "!rawlogdump", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -4714,6 +5228,26 @@ async function handleGgconCommand(message, bot) {
       return true;
     }
 
+    if (command === "!loginlogsetup") {
+      await handleLoginLogSetup(message, bot);
+      return true;
+    }
+
+    if (command === "!loginlogoff") {
+      await handleLoginLogOff(message);
+      return true;
+    }
+
+    if (command === "!loginlogstatus") {
+      await handleLoginLogStatus(message);
+      return true;
+    }
+
+    if (command === "!loginlogscan") {
+      await handleLoginLogScan(message, bot);
+      return true;
+    }
+
     if (command === "!rawlogdump") {
       await handleRawLogDump(message, args);
       return true;
@@ -4749,7 +5283,7 @@ async function handleGgconCommand(message, bot) {
 
 function startGgconStatusOnBoot(bot) {
   if (!hasPasswordConfigured()) {
-    if (loadStatusRef() || getVehicleLogChannelId()) {
+    if (loadStatusRef() || getVehicleLogChannelId() || getLoginLogChannelId()) {
       console.warn("⚠️ Server tool startup skipped because the API password is not configured.");
     }
     return;
@@ -4757,6 +5291,7 @@ function startGgconStatusOnBoot(bot) {
 
   startVehicleWatchOnBoot(bot);
   startKillLogOnBoot(bot);
+  startLoginLogOnBoot(bot);
   startCargoScheduleOnBoot(bot).catch((err) => console.error("❌ Cargo schedule startup failed:", err.message));
 
   const ref = loadStatusRef();

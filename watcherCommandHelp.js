@@ -62,7 +62,7 @@ const CATEGORIES = {
     title: "👥 PLAYERS + SQUADS + ECONOMY",
     aliases: ["players", "player", "squad", "cash", "fame", "money", "economy", "econ"],
     lines: [
-      ["!player <name/SteamID>", "Full player lookup."],
+      ["!player <name/SteamID>", "Full lookup + recent IP."],
       ["!squad <player>", "Squad info."],
       ["!cash <player> add/remove/set <amount>", "Change cash."],
       ["!fame <player> add/remove/set <amount>", "Change fame."],
@@ -108,9 +108,9 @@ const CATEGORIES = {
     emoji: "👁️",
     label: "Logs",
     title: "👁️ LOGS + WATCHERS",
-    aliases: ["logs", "log", "vehiclelog", "killlog", "watchers"],
+    aliases: ["logs", "log", "vehiclelog", "killlog", "loginlog", "watchers"],
     lines: [
-      ["!vehiclelogsetup", "Start vehicle destruction/missing log."],
+      ["!vehiclelogsetup", "Start vehicle destruction log."],
       ["!vehiclelogstatus", "Vehicle log status."],
       ["!vehiclelogscan", "Force an immediate vehicle scan."],
       ["!vehiclelogoff", "Stop vehicle log."],
@@ -118,6 +118,10 @@ const CATEGORIES = {
       ["!killlogstatus", "Kill log status."],
       ["!killlogscan", "Force an immediate kill scan."],
       ["!killlogoff", "Stop kill log."],
+      ["!loginlogsetup", "Start player login/logout log."],
+      ["!loginlogstatus", "Login log status."],
+      ["!loginlogscan", "Force an immediate login scan."],
+      ["!loginlogoff", "Stop login log."],
     ],
   },
   cargo: {
