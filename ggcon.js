@@ -13,6 +13,21 @@ const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10");
 const DEFAULT_FLAG_PAGE_SIZE = 5;
 
+const SIMPLE_VEHICLE_ALIASES = {
+  duster: ["BPC_Duster", "Duster"],
+  tractor: ["BPC_Tractor", "Tractor"],
+  laika: ["BPC_Laika", "Laika"],
+  mariner: ["BPC_Mariner", "Mariner"],
+  rager: ["BPC_Rager", "Rager"],
+  ww: ["BPC_WolfsWagen", "BPC_Wolfswagen", "BPC_WolfsWagon", "BPC_Wolfswagon", "WolfsWagen", "Wolfswagen", "Wolfswagon"],
+  wolfswagon: ["BPC_WolfsWagen", "BPC_Wolfswagen", "BPC_WolfsWagon", "BPC_Wolfswagon", "WolfsWagen", "Wolfswagon"],
+  wolfswagen: ["BPC_WolfsWagen", "BPC_Wolfswagen", "WolfsWagen", "Wolfswagen"],
+  volkswagen: ["BPC_WolfsWagen", "BPC_Wolfswagen", "BPC_WolfsWagon", "BPC_Wolfswagon", "WolfsWagen", "Wolfswagen", "Wolfswagon"],
+  wolf: ["BPC_WolfsWagen", "BPC_Wolfswagen", "WolfsWagen", "Wolfswagen"],
+};
+
+const SIMPLE_VEHICLE_NAMES = "duster, tractor, laika, mariner, rager, ww/wolfswagon";
+
 let statusTimer = null;
 let vehicleWatchTimer = null;
 let killLogTimer = null;
@@ -1890,21 +1905,41 @@ function normalizeVehicleText(value) {
     .trim();
 }
 
+function compactVehicleText(value) {
+  return normalizeVehicleText(value).replace(/\s+/g, "");
+}
+
+function getSimpleVehicleAliasTargets(query) {
+  const compact = compactVehicleText(query);
+  return SIMPLE_VEHICLE_ALIASES[compact] || null;
+}
+
 function vehicleTypeScore(vehicleType, query) {
   const rawQuery = String(query || "").trim();
   const q = normalizeVehicleText(rawQuery);
+  const compactQ = compactVehicleText(rawQuery);
   if (!q) return 0;
 
   const rawClass = String(vehicleType.i || vehicleType.class || "").trim();
   const normalizedClass = normalizeVehicleText(rawClass);
   const normalizedNoPrefix = normalizeVehicleText(rawClass.replace(/^BPC[_-]?/i, ""));
+  const compactClass = compactVehicleText(rawClass);
+  const compactNoPrefix = compactVehicleText(rawClass.replace(/^BPC[_-]?/i, ""));
+  const aliasTargets = getSimpleVehicleAliasTargets(rawQuery) || [];
 
   let best = 0;
-  for (const field of [rawClass.toLowerCase(), normalizedClass, normalizedNoPrefix]) {
+  for (const alias of aliasTargets) {
+    const compactAlias = compactVehicleText(alias);
+    if (!compactAlias) continue;
+    if (compactClass === compactAlias || compactNoPrefix === compactAlias) best = Math.max(best, 2000);
+    else if (compactClass.includes(compactAlias) || compactNoPrefix.includes(compactAlias)) best = Math.max(best, 1700);
+  }
+
+  for (const field of [rawClass.toLowerCase(), normalizedClass, normalizedNoPrefix, compactClass, compactNoPrefix]) {
     if (!field) continue;
-    if (field === rawQuery.toLowerCase() || field === q) best = Math.max(best, 1000);
-    else if (field.startsWith(q)) best = Math.max(best, 850);
-    else if (field.includes(q)) best = Math.max(best, 650);
+    if (field === rawQuery.toLowerCase() || field === q || field === compactQ) best = Math.max(best, 1000);
+    else if (field.startsWith(q) || field.startsWith(compactQ)) best = Math.max(best, 850);
+    else if (field.includes(q) || field.includes(compactQ)) best = Math.max(best, 650);
   }
 
   return best;
@@ -2018,9 +2053,15 @@ async function giveVehicleToSteamId(messageOrInteraction, steamId, vehicleClass)
 async function resolveGiveVehicleTarget(messageOrInteraction, steamId, vehicleQuery) {
   const matches = await searchVehicleTypes(vehicleQuery);
   if (matches.length === 0) {
-    const content = `No vehicle type found for **${vehicleQuery}**. Try \`!vehicletype ${vehicleQuery}\` to search.`;
+    const content = `No vehicle found for **${vehicleQuery}**. Use one of: ${SIMPLE_VEHICLE_NAMES}.`;
     if (messageOrInteraction.update) await messageOrInteraction.update({ content, components: [] }).catch(() => {});
     else await messageOrInteraction.reply(content).catch(() => {});
+    return;
+  }
+
+  const aliasTargets = getSimpleVehicleAliasTargets(vehicleQuery);
+  if (aliasTargets && matches[0]?.i) {
+    await giveVehicleToSteamId(messageOrInteraction, steamId, matches[0].i);
     return;
   }
 
@@ -2057,7 +2098,7 @@ async function handleVehicleTypeCommand(message, args) {
 
 async function handleGiveVehicleCommand(message, args) {
   if (args.length < 2) {
-    await message.reply("Use: `!givevehicle <player name or Steam ID> <vehicle name or class>`").catch(() => {});
+    await message.reply(`Use: \`!givevehicle <player name or Steam ID> <vehicle>\`\nVehicle options: ${SIMPLE_VEHICLE_NAMES}`).catch(() => {});
     return;
   }
 
@@ -2085,7 +2126,7 @@ async function handleGiveVehicleCommand(message, args) {
   }
 
   if (!playerQuery || !vehicleQuery) {
-    await message.reply("I could not split the player and vehicle. Use: `!givevehicle <player> <vehicle>` or `!givevehicle <Steam ID> <vehicle>`").catch(() => {});
+    await message.reply(`I could not split the player and vehicle. Use: \`!givevehicle <player> <vehicle>\`\nVehicle options: ${SIMPLE_VEHICLE_NAMES}`).catch(() => {});
     return;
   }
 
@@ -2389,7 +2430,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!vehicletype", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -2471,12 +2512,6 @@ async function handleGgconCommand(message, bot) {
       await handleJailCommand(message, args);
       return true;
     }
-
-    if (command === "!vehicletype") {
-      await handleVehicleTypeCommand(message, args);
-      return true;
-    }
-
     if (command === "!givevehicle") {
       await handleGiveVehicleCommand(message, args);
       return true;
