@@ -63,6 +63,10 @@ const {
   handleGgconInteraction,
   startGgconStatusOnBoot,
 } = require("./ggcon");
+const {
+  handleCommandHelpMessage,
+  handleCommandHelpInteraction,
+} = require("./watcherCommandHelp");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -199,6 +203,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await handleGgconInteraction(interaction)) return;
 
+    if (await handleCommandHelpInteraction(interaction)) return;
+
     if (await handleRuleUpdateInteraction(interaction, getWatcherContext())) return;
 
     if (await handleWatcherDmInteraction(interaction, getWatcherContext())) return;
@@ -272,6 +278,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot) return;
 
     if (await handleGgconCommand(msg, bot)) return;
+
+    if (await handleCommandHelpMessage(msg)) return;
 
     if (await handleWatcherCommand(msg, getWatcherContext())) return;
 
