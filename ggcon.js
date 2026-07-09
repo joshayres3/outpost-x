@@ -2075,8 +2075,8 @@ async function sendGgconActionLog(bot, fallbackChannel, content) {
   }
 
   const blockedLogChannels = new Set([
-    String(getVehicleLogChannelId() || ""),
-    String(getKillLogChannelId() || ""),
+    String(await getVehicleLogChannelIdAsync().catch(() => getVehicleLogChannelId() || "")),
+    String(await getKillLogChannelIdAsync().catch(() => getKillLogChannelId() || "")),
   ].filter(Boolean));
 
   if (fallbackChannel?.send && !blockedLogChannels.has(String(fallbackChannel.id || ""))) {
@@ -3791,7 +3791,7 @@ function formatDelay(ms) {
 }
 
 async function runScheduledCargoFrenzy(bot, slot) {
-  const config = loadCargoScheduleConfig();
+  const config = await loadCargoScheduleConfigPersistent();
   if (!config?.enabled || !config.channelId) return;
   if (config.lastRunKey === slot.key) return;
   if (cargoScheduleRunning) return;
@@ -3811,7 +3811,7 @@ async function runScheduledCargoFrenzy(bot, slot) {
     await channel.send(`📦 **Scheduled Cargo Frenzy starting.**\nSlot: ${slot.label}\nTiming: 30 minutes after scheduled restart.`).catch(() => {});
     await runCargoFrenzy(pseudoMessage, { count: CARGO_FRENZY_COUNT, isTest: false, scheduled: true });
 
-    saveCargoScheduleConfig({
+    await saveCargoScheduleConfigPersistent({
       ...config,
       lastRunKey: slot.key,
       lastRunAt: Date.now(),
@@ -3826,7 +3826,7 @@ async function runScheduledCargoFrenzy(bot, slot) {
 
 async function checkCargoSchedule(bot) {
   if (!hasPasswordConfigured()) return false;
-  const config = loadCargoScheduleConfig();
+  const config = await loadCargoScheduleConfigPersistent();
   if (!config?.enabled || !config.channelId) return false;
 
   const slot = getCargoScheduleSlot();
@@ -3845,11 +3845,11 @@ function clearCargoScheduleTimer() {
   }
 }
 
-function ensureCargoScheduleLoop(bot) {
+async function ensureCargoScheduleLoop(bot) {
   clearCargoScheduleTimer();
 
   if (!hasPasswordConfigured()) return;
-  const config = loadCargoScheduleConfig();
+  const config = await loadCargoScheduleConfigPersistent();
   if (!config?.enabled || !config.channelId) return;
 
   const currentSlot = getCargoScheduleSlot();
@@ -3871,25 +3871,28 @@ function ensureCargoScheduleLoop(bot) {
     } catch (err) {
       console.error("❌ Scheduled cargo run failed:", err.message);
     } finally {
-      ensureCargoScheduleLoop(bot);
+      await ensureCargoScheduleLoop(bot).catch((err) => {
+        console.error("❌ Scheduled cargo timer restart failed:", err.message);
+      });
     }
   }, Math.max(1000, nextSlot.delayMs));
 }
 
 async function handleCargoScheduleSetup(message, bot) {
+  const existing = await loadCargoScheduleConfigPersistent();
   const config = {
     enabled: true,
     channelId: message.channel.id,
     guildId: message.guild?.id || "default",
     setBy: message.author.id,
     setAt: Date.now(),
-    lastRunKey: loadCargoScheduleConfig()?.lastRunKey || null,
-    lastRunAt: loadCargoScheduleConfig()?.lastRunAt || null,
-    lastRunLabel: loadCargoScheduleConfig()?.lastRunLabel || null,
+    lastRunKey: existing?.lastRunKey || null,
+    lastRunAt: existing?.lastRunAt || null,
+    lastRunLabel: existing?.lastRunLabel || null,
   };
 
-  saveCargoScheduleConfig(config);
-  ensureCargoScheduleLoop(bot);
+  await saveCargoScheduleConfigPersistent(config);
+  await ensureCargoScheduleLoop(bot);
 
   await message.reply([
     "📦 **Automatic Cargo Frenzy is now enabled in this channel.**",
@@ -3897,18 +3900,19 @@ async function handleCargoScheduleSetup(message, bot) {
     `Schedule: ${getCargoScheduleLabel()}`,
     `Drops per run: ${CARGO_FRENZY_COUNT}`,
     `Cargo event: ${CARGO_FRENZY_EVENT_NAME}`,
+    "The setup is saved to persistent runtime state so redeploys/restarts do not wipe it.",
     "It still checks flags/bases first and cancels if it cannot find safe locations.",
   ].join("\n")).catch(() => {});
 }
 
 async function handleCargoScheduleOff(message) {
-  clearCargoScheduleConfig();
+  await clearCargoScheduleConfigPersistent();
   clearCargoScheduleTimer();
   await message.reply("📦 Automatic Cargo Frenzy is now disabled.").catch(() => {});
 }
 
 async function handleCargoScheduleStatus(message) {
-  const config = loadCargoScheduleConfig();
+  const config = await loadCargoScheduleConfigPersistent();
 
   if (!config?.enabled || !config.channelId) {
     await message.reply("📦 Automatic Cargo Frenzy is not set up. Run `!cargoschedulesetup` in the channel where scheduled cargo reports should post.").catch(() => {});
@@ -3927,6 +3931,7 @@ async function handleCargoScheduleStatus(message) {
     `Active window right now: ${slot ? "Yes" : "No"}`,
     `Next Run: ${nextSlot.label} (about ${formatDelay(nextSlot.delayMs)} from now)`,
     "Timer Mode: exact sleep-until-next-run, not once-per-minute polling.",
+    "Storage: persistent runtime state, survives redeploys/restarts.",
     `Last Run: ${config.lastRunAt ? formatDate(config.lastRunAt) : "Never"}`,
     `Last Slot: ${config.lastRunLabel || "None"}`,
     `Drops per run: ${CARGO_FRENZY_COUNT}`,
@@ -3936,12 +3941,12 @@ async function handleCargoScheduleStatus(message) {
   await message.reply(lines.join("\n")).catch(() => {});
 }
 
-function startCargoScheduleOnBoot(bot) {
+async function startCargoScheduleOnBoot(bot) {
   if (!hasPasswordConfigured()) return;
-  const config = loadCargoScheduleConfig();
+  const config = await loadCargoScheduleConfigPersistent();
   if (!config?.enabled || !config.channelId) return;
 
-  ensureCargoScheduleLoop(bot);
+  await ensureCargoScheduleLoop(bot);
   checkCargoSchedule(bot).catch((err) => {
     console.error("❌ Boot cargo schedule catch-up failed:", err.message);
   });
@@ -4734,7 +4739,7 @@ function startGgconStatusOnBoot(bot) {
 
   startVehicleWatchOnBoot(bot);
   startKillLogOnBoot(bot);
-  startCargoScheduleOnBoot(bot);
+  startCargoScheduleOnBoot(bot).catch((err) => console.error("❌ Cargo schedule startup failed:", err.message));
 
   const ref = loadStatusRef();
   if (!ref?.channelId || !ref?.messageId) return;
