@@ -386,6 +386,24 @@ async function saveKillStatePersistent(state) {
   await saveRuntimeValue("kill_log_state", state);
 }
 
+async function loadCargoScheduleConfigPersistent() {
+  const remote = await loadRuntimeValue("cargo_schedule_config");
+  if (remote) {
+    saveCargoScheduleConfig(remote);
+    return remote;
+  }
+  return loadCargoScheduleConfig();
+}
+
+async function saveCargoScheduleConfigPersistent(config) {
+  saveCargoScheduleConfig(config);
+  await saveRuntimeValue("cargo_schedule_config", config);
+}
+
+async function clearCargoScheduleConfigPersistent() {
+  clearCargoScheduleConfig();
+  await clearRuntimeValue("cargo_schedule_config");
+}
 
 function loadStatusRef() {
   try {
