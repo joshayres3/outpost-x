@@ -3884,6 +3884,171 @@ async function handleVehicleLogPull(message, args) {
   ].filter(Boolean).join("\n"))).catch(() => {});
 }
 
+
+function parseRawLogRangeToken(value) {
+  const token = String(value || "").trim().toLowerCase();
+  if (!token) return null;
+  if (token === "all" || token === "session") {
+    return { label: token, since: 0, ms: null };
+  }
+
+  const match = token.match(/^(\d+)(m|h|d)$/);
+  if (!match) return null;
+
+  const amount = Math.max(1, Number(match[1]));
+  const unit = match[2];
+  const ms = unit === "m" ? amount * 60 * 1000
+    : unit === "h" ? amount * 60 * 60 * 1000
+    : amount * 24 * 60 * 60 * 1000;
+
+  return {
+    label: `${amount}${unit}`,
+    since: Math.max(0, Date.now() - ms),
+    ms,
+  };
+}
+
+function parseRawLogPullArgs(args) {
+  const values = [...(args || [])].map((v) => String(v || "").trim()).filter(Boolean);
+  let range = { label: "2h", since: Date.now() - (2 * 60 * 60 * 1000), ms: 2 * 60 * 60 * 1000 };
+  let sources = "";
+
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    const raw = values[i];
+    const lower = raw.toLowerCase();
+    if (lower.startsWith("sources:")) {
+      sources = raw.slice(raw.indexOf(":") + 1).trim();
+      values.splice(i, 1);
+      continue;
+    }
+    if (lower.startsWith("source:")) {
+      sources = raw.slice(raw.indexOf(":") + 1).trim();
+      values.splice(i, 1);
+      continue;
+    }
+  }
+
+  if (values.length) {
+    const maybeRange = parseRawLogRangeToken(values[values.length - 1]);
+    if (maybeRange) {
+      range = maybeRange;
+      values.pop();
+    }
+  }
+
+  const query = values.join(" ").trim();
+  return { query, range, sources };
+}
+
+function normalizeLogSearchText(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9:_\-\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function getRawLogNeedles(query) {
+  const q = normalizeLogSearchText(query);
+  if (!q) return [];
+
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const needles = new Set(tokens);
+
+  if (tokens.includes("death") || tokens.includes("dead") || tokens.includes("died")) {
+    ["death", "dead", "died", "kill", "killed", "suicide", "victim", "cause"].forEach((term) => needles.add(term));
+  }
+
+  if (tokens.includes("destroy") || tokens.includes("destroyed") || tokens.includes("despawn") || tokens.includes("despawned")) {
+    ["destroy", "destroyed", "despawn", "despawned", "vehicle_destruction", "wreck", "exploded"].forEach((term) => needles.add(term));
+  }
+
+  if (tokens.includes("crash") || tokens.includes("crashed")) {
+    ["crash", "crashed", "collision", "impact", "vehicle", "destroyed", "death"].forEach((term) => needles.add(term));
+  }
+
+  if (tokens.includes("duster") || tokens.includes("plane")) {
+    ["duster", "kinglet", "plane", "airplane", "vehicle"].forEach((term) => needles.add(term));
+  }
+
+  return Array.from(needles).filter(Boolean);
+}
+
+function rawLogLineMatches(entry, query) {
+  const q = normalizeLogSearchText(query);
+  if (!q) return true;
+
+  const haystack = normalizeLogSearchText(`${entry?.src || ""} ${entry?.line || ""}`);
+  if (!haystack) return false;
+  if (haystack.includes(q)) return true;
+
+  const needles = getRawLogNeedles(query);
+  if (!needles.length) return true;
+
+  // For names / IDs, prefer all original tokens. For generic incident words, any expanded match is useful.
+  const originalTokens = normalizeLogSearchText(query).split(/\s+/).filter(Boolean);
+  if (originalTokens.length > 1 && originalTokens.every((term) => haystack.includes(term))) return true;
+
+  return needles.some((term) => haystack.includes(term));
+}
+
+function buildRawLogSourceSummary(lines) {
+  const counts = new Map();
+  for (const entry of lines || []) {
+    const src = String(entry?.src || "Unknown");
+    counts.set(src, (counts.get(src) || 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 12)
+    .map(([src, count]) => `${src}: ${count}`)
+    .join(" | ");
+}
+
+function formatRawLogLine(entry, index) {
+  const src = entry?.src || "Unknown";
+  const t = entry?.t ? formatDate(entry.t) : "Unknown time";
+  const rawLine = String(entry?.line || "").trim() || "(empty line)";
+  const cleanLine = rawLine.replace(/`/g, "'").replace(/\s+/g, " ");
+  const shortLine = cleanLine.length > 360 ? `${cleanLine.slice(0, 357)}...` : cleanLine;
+  return `**${index + 1}. [${src}]** ${t}\n\`${shortLine}\``;
+}
+
+async function fetchRawServerLogs(range, sources) {
+  const params = new URLSearchParams();
+  params.set("since", String(range?.since ?? 0));
+  if (sources) params.set("sources", sources);
+  return ggconGet(`/logs?${params.toString()}`);
+}
+
+async function handleRawLogPull(message, args) {
+  const { query, range, sources } = parseRawLogPullArgs(args);
+  const data = await fetchRawServerLogs(range, sources);
+  const lines = Array.isArray(data.lines) ? data.lines : [];
+  const sorted = lines.slice().sort((a, b) => Number(b.t || 0) - Number(a.t || 0));
+  const matches = sorted.filter((entry) => rawLogLineMatches(entry, query));
+  const shown = matches.slice(0, 10);
+  const sourceSummary = buildRawLogSourceSummary(lines);
+  const matchSourceSummary = buildRawLogSourceSummary(matches);
+
+  const output = [
+    "🧾 **Raw Server Log Pull**",
+    `Range: ${range.label}`,
+    `Filter: ${query || "None"}`,
+    sources ? `Source Filter: ${sources}` : "Source Filter: All visible log sources",
+    `Raw Lines Returned: ${lines.length}`,
+    `Matches Found: ${matches.length}`,
+    data.next ? `Next Cursor: ${data.next}` : null,
+    sourceSummary ? `Sources Seen: ${sourceSummary}` : "Sources Seen: None",
+    matchSourceSummary && query ? `Match Sources: ${matchSourceSummary}` : null,
+    "",
+    shown.length ? shown.map(formatRawLogLine).join("\n\n") : "No matching raw log lines were found in the visible server log buffer.",
+    matches.length > shown.length ? `\nShowing ${shown.length} of ${matches.length} matches.` : null,
+    "",
+    "Tips: try `!rawlogpull death 2h`, `!rawlogpull destroyed 2h`, `!rawlogpull duster 2h`, or `!rawlogpull 3046182 2h` right after a missed incident.",
+    "Optional source filter example: `!rawlogpull death 2h sources:kill,vehicle_destruction,gameplay`",
+  ].filter(Boolean).join("\n");
+
+  await message.reply(clampDiscord(output)).catch(() => {});
+}
+
 async function handleKillLogSetup(message, bot) {
   await saveKillLogConfigPersistent({
     channelId: message.channel.id,
@@ -4079,7 +4244,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!killlogpull", "!vehiclelogpull", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!killlogpull", "!vehiclelogpull", "!rawlogpull", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -4224,6 +4389,11 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!vehiclelogpull") {
       await handleVehicleLogPull(message, args);
+      return true;
+    }
+
+    if (command === "!rawlogpull") {
+      await handleRawLogPull(message, args);
       return true;
     }
 

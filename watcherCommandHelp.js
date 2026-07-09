@@ -119,6 +119,7 @@ const CATEGORIES = {
       ["!killlogstatus", "Kill log status."],
       ["!killlogscan", "Force an immediate kill scan."],
       ["!killlogpull <player> [24h]", "Show recent death events Watcher sees."],
+      ["!rawlogpull <filter> [2h]", "Pull raw server log lines for debugging."],
       ["!killlogoff", "Stop kill log."],
     ],
   },
