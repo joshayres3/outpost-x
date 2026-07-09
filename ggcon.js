@@ -3133,9 +3133,166 @@ function buildKillAlert(event, vehicleData = null) {
   ].filter(Boolean).join("\n"));
 }
 
+
+function parseScumIdentityFromLine(line) {
+  const text = String(line || "");
+  const matches = [...text.matchAll(/(\d{15,20}):([^()'\n]+)\((\d+)\)/g)];
+  if (!matches.length) return [];
+
+  return matches.map((match) => ({
+    steamId: match[1],
+    name: String(match[2] || "Unknown").trim(),
+    profileId: String(match[3] || "").trim(),
+  })).filter((entry) => entry.profileId);
+}
+
+function trimProfileIdMap(map) {
+  const entries = Object.entries(map || {})
+    .sort((a, b) => Number(b[1]?.lastSeenAt || 0) - Number(a[1]?.lastSeenAt || 0))
+    .slice(0, 500);
+  return Object.fromEntries(entries);
+}
+
+function buildProfileIdMapFromRawLines(lines, previousMap = {}) {
+  const map = { ...(previousMap || {}) };
+
+  for (const entry of lines || []) {
+    const identities = parseScumIdentityFromLine(entry?.line);
+    for (const identity of identities) {
+      map[String(identity.profileId)] = {
+        profileId: String(identity.profileId),
+        steamId: identity.steamId,
+        name: identity.name,
+        lastSeenAt: Number(entry?.t || Date.now()),
+      };
+    }
+  }
+
+  return trimProfileIdMap(map);
+}
+
+function parsePrisonerDeathEventsFromRawLines(lines, profileIdMap = {}) {
+  const sorted = (lines || []).slice().sort((a, b) => Number(a?.t || 0) - Number(b?.t || 0));
+  const events = [];
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    const entry = sorted[i];
+    const line = String(entry?.line || "");
+    if (!/Updating profile deletion because prisoner died\./i.test(line)) continue;
+
+    let profileId = "";
+    for (let j = i + 1; j < Math.min(sorted.length, i + 6); j += 1) {
+      const nextLine = String(sorted[j]?.line || "");
+      const match = nextLine.match(/Update profile deletion\s*-\s*userProfileId:\s*(\d+)/i);
+      if (match) {
+        profileId = match[1];
+        break;
+      }
+    }
+
+    const identity = profileId ? profileIdMap[String(profileId)] : null;
+    events.push({
+      key: `rawdeath:${entry?.t || ""}:${profileId || "unknown"}`,
+      t: Number(entry?.t || Date.now()),
+      profileId: profileId || "Unknown",
+      steamId: identity?.steamId || "",
+      name: identity?.name || "Unknown",
+      rawLine: line,
+    });
+  }
+
+  return events;
+}
+
+async function probePlayerLocationForDeath(event) {
+  if (!event?.steamId) {
+    return { location: null, status: "No Steam ID mapping was available for this profile ID." };
+  }
+
+  try {
+    const data = await ggconGet(`/players/${encodeURIComponent(event.steamId)}.json`);
+    const player = data?.player || data;
+    const location = player?.location || null;
+
+    if (location && [location.x, location.y, location.z].some((value) => value !== undefined && value !== null)) {
+      return { location, status: "Captured from live player data immediately after the death signal.", player };
+    }
+
+    return { location: null, status: "Live player data was available, but no usable location was returned.", player };
+  } catch (err) {
+    return { location: null, status: `Live player location probe failed: ${err?.message || "Unknown error"}` };
+  }
+}
+
+function buildRawPrisonerDeathAlert(event) {
+  const locationProbe = event.locationProbe || {};
+  const playerName = event.name && event.name !== "Unknown" ? event.name : `Profile ID ${event.profileId}`;
+
+  return clampDiscord([
+    "☠️ **Player Death Detected**",
+    "",
+    `**Player:** ${playerName}`,
+    event.steamId ? `**Steam ID:** \`${event.steamId}\`` : null,
+    `**Profile ID:** \`${event.profileId || "Unknown"}\``,
+    "**Cause:** Not reported by the server",
+    `**Time:** ${formatDate(event.t)}`,
+    `**Location Probe:** ${formatLocation(locationProbe.location)}`,
+    locationProbe.status ? `**Probe Note:** ${locationProbe.status}` : null,
+    "",
+    "_Testing note: this uses the server's prisoner-died signal. Location is only shown if the live player lookup still exposes it before respawn._",
+  ].filter(Boolean).join("\n"));
+}
+
+async function scanRawPrisonerDeaths(previous, { baselineOnly = false } = {}) {
+  const now = Date.now();
+  const since = Number(previous?.rawDeathCursor || 0) || Math.max(0, now - (5 * 60 * 1000));
+  let data = null;
+
+  try {
+    data = await fetchRawServerLogs({ since, label: "raw death scan" }, "SCUM");
+  } catch (err) {
+    console.error("❌ Raw prisoner death scan failed:", err.message);
+    return {
+      events: [],
+      state: {
+        rawDeathCursor: previous?.rawDeathCursor || now,
+        rawDeathError: err?.message || String(err),
+      },
+    };
+  }
+
+  const lines = Array.isArray(data?.lines) ? data.lines : [];
+  const profileIdMap = buildProfileIdMapFromRawLines(lines, previous?.profileIdMap || {});
+  const detected = parsePrisonerDeathEventsFromRawLines(lines, profileIdMap);
+  const seen = new Set(previous?.rawDeathSeen || []);
+  const unique = [];
+
+  for (const event of detected) {
+    if (seen.has(event.key)) continue;
+    seen.add(event.key);
+    if (!baselineOnly) {
+      event.locationProbe = await probePlayerLocationForDeath(event);
+      unique.push(event);
+    }
+  }
+
+  return {
+    events: unique,
+    state: {
+      rawDeathCursor: data?.next || lines.reduce((max, entry) => Math.max(max, Number(entry?.t || 0)), Number(since || 0)) || now,
+      rawDeathSeen: Array.from(seen).slice(-1000),
+      rawDeathError: null,
+      profileIdMap,
+      lastRawDeathLineCount: lines.length,
+      lastRawDeathEventCount: detected.length,
+      lastRawDeathPostedCount: baselineOnly ? 0 : unique.length,
+    },
+  };
+}
+
 function getKillLogIntervalSeconds() {
-  const seconds = Number(process.env.GGCON_KILL_LOG_INTERVAL_SECONDS || "30");
-  return Math.max(15, Number.isFinite(seconds) ? seconds : 30);
+  const seconds = Number(process.env.GGCON_KILL_LOG_INTERVAL_SECONDS || "5");
+  return Math.max(5, Number.isFinite(seconds) ? seconds : 5);
 }
 
 async function fetchKillEventsSince(cursor) {
@@ -3149,21 +3306,33 @@ async function scanKillsAndAlert(bot, { baselineOnly = false } = {}) {
 
   const previous = (await loadKillStatePersistent()) || {};
   const cursor = previous.cursor || 0;
+  const rawDeathScan = await scanRawPrisonerDeaths(previous, { baselineOnly });
   const data = await fetchKillEventsSince(cursor);
   const events = Array.isArray(data.events) ? data.events : [];
   const nextCursor = data.next || events.reduce((max, event) => Math.max(max, Number(event.t || 0)), Number(cursor || 0));
 
-  await saveKillStatePersistent({
+  const baseState = {
+    ...previous,
+    ...rawDeathScan.state,
     updatedAt: Date.now(),
     cursor: nextCursor,
     total: data.total,
     lastEventCount: events.length,
-  });
+  };
 
-  if (baselineOnly || events.length === 0) return;
+  if (baselineOnly || (events.length === 0 && rawDeathScan.events.length === 0)) {
+    await saveKillStatePersistent({
+      ...baseState,
+      lastPostedCount: 0,
+    });
+    return;
+  }
 
   const channel = await bot.channels.fetch(channelId).catch(() => null);
-  if (!channel?.send) return;
+  if (!channel?.send) {
+    await saveKillStatePersistent(baseState);
+    return;
+  }
 
   const unique = [];
   const seen = new Set(previous.seen || []);
@@ -3175,11 +3344,8 @@ async function scanKillsAndAlert(bot, { baselineOnly = false } = {}) {
   }
 
   await saveKillStatePersistent({
-    updatedAt: Date.now(),
-    cursor: nextCursor,
-    total: data.total,
-    lastEventCount: events.length,
-    lastPostedCount: unique.length,
+    ...baseState,
+    lastPostedCount: unique.length + rawDeathScan.events.length,
     seen: Array.from(seen).slice(-1000),
   });
 
@@ -3191,14 +3357,26 @@ async function scanKillsAndAlert(bot, { baselineOnly = false } = {}) {
       })
     : null;
 
+  let sent = 0;
   for (const event of unique.slice(0, 10)) {
-    await channel.send(buildKillAlert(event, vehicleData)).catch((err) => {
+    await channel.send(buildKillAlert(event, vehicleData)).then(() => {
+      sent += 1;
+    }).catch((err) => {
       console.error("❌ Kill log alert failed:", err.message);
     });
   }
 
-  if (unique.length > 10) {
-    await channel.send(`⚠️ ${unique.length - 10} more kill/death event(s) occurred in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
+  for (const event of rawDeathScan.events.slice(0, 10)) {
+    await channel.send(buildRawPrisonerDeathAlert(event)).then(() => {
+      sent += 1;
+    }).catch((err) => {
+      console.error("❌ Raw prisoner death alert failed:", err.message);
+    });
+  }
+
+  const overflow = Math.max(0, unique.length - 10) + Math.max(0, rawDeathScan.events.length - 10);
+  if (overflow > 0) {
+    await channel.send(`⚠️ ${overflow} more death event(s) occurred in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
   }
 }
 
@@ -4226,7 +4404,7 @@ async function handleKillLogSetup(message, bot) {
   await message.reply([
     "Kill log is now active in this channel.",
     "I saved the current death-feed cursor as the baseline, so I will only alert for new deaths after this point.",
-    "Mode: all player death types are logged, including suicide puppets, traps, vehicles, animals, and unknown causes.",
+    "Mode: kill-feed deaths plus server prisoner-death signals are logged.",
     "Normal puppet/animal farming kills are still ignored.",
     "The channel and scan state are saved so redeploys/restarts do not reset the log.",
     `Scan interval: ${getKillLogIntervalSeconds()} seconds`,
@@ -4259,9 +4437,10 @@ async function handleKillLogStatus(message) {
     `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
     `Last Event Count: ${state?.lastEventCount ?? "Unknown"}`,
     `Last Posted Count: ${state?.lastPostedCount ?? "Unknown"}`,
-    "Mode: all player death types are logged.",
+    "Mode: kill-feed deaths plus server prisoner-death signals are logged.",
     "Persistence: saved across bot restarts/redeploys when Supabase table is installed.",
-    `Cursor: ${state?.cursor ?? "Unknown"}`,
+    `Kill Feed Cursor: ${state?.cursor ?? "Unknown"}`,
+    `Prisoner Death Cursor: ${state?.rawDeathCursor ?? "Unknown"}`,
   ].join("\n")).catch(() => {});
 }
 
@@ -4272,7 +4451,8 @@ async function handleKillLogScan(message, bot) {
 
   await message.reply([
     "☠️ **Kill Log Manual Scan Complete**",
-    `Events Found: ${after?.lastEventCount ?? "Unknown"}`,
+    `Kill Feed Events Found: ${after?.lastEventCount ?? "Unknown"}`,
+    `Prisoner Death Signals Found: ${after?.lastRawDeathEventCount ?? "Unknown"}`,
     `Events Posted: ${after?.lastPostedCount ?? 0}`,
     `Last Scan: ${after?.updatedAt ? formatDate(after.updatedAt) : "Unknown"}`,
     before?.cursor && after?.cursor && before.cursor === after.cursor ? "No new death events were found." : null,
