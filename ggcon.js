@@ -1858,25 +1858,14 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
       alerts.push({ type: "destroyed", content: buildVehicleDestroyedAlert(event) });
     }
   }
-  const confirmScansValue = Number(process.env.GGCON_VEHICLE_MISSING_CONFIRMATION_SCANS || "2");
-  const confirmScans = Math.max(1, Number.isFinite(confirmScansValue) ? Math.floor(confirmScansValue) : 2);
-  const priorPending = previousState?.pendingMissing && typeof previousState.pendingMissing === "object"
-    ? previousState.pendingMissing
-    : {};
-  const pendingMissing = { ...priorPending };
-
-  const trackedVehicles = {};
-  for (const previousVehicle of Object.values(previous || {})) {
-    if (previousVehicle?.id === null || previousVehicle?.id === undefined) continue;
-    trackedVehicles[String(previousVehicle.id)] = previousVehicle;
-  }
-  for (const [id, pending] of Object.entries(priorPending)) {
-    if (pending?.vehicle && !trackedVehicles[id]) trackedVehicles[id] = pending.vehicle;
-  }
+  // Do not alert from live-list disappearance alone. The live vehicle list can temporarily hide
+  // valid vehicles, which caused false "possible missing" alerts. Vehicle watch now only posts
+  // confirmed destruction events from the server destruction log.
+  const pendingMissing = {};
 
   const normalizedCurrent = {};
   for (const [id, currentVehicle] of Object.entries(current)) {
-    const previousVehicle = previous?.[id] || priorPending?.[id]?.vehicle || null;
+    const previousVehicle = previous?.[id] || null;
 
     if (!hasVehicleOwner(currentVehicle) && hasVehicleOwner(previousVehicle)) {
       normalizedCurrent[id] = {
@@ -1888,34 +1877,6 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
     } else {
       normalizedCurrent[id] = currentVehicle;
     }
-
-    if (pendingMissing[id]) delete pendingMissing[id];
-  }
-
-  for (const previousVehicle of Object.values(trackedVehicles)) {
-    const id = String(previousVehicle.id);
-    const currentVehicle = current[id];
-    const pendingVehicle = priorPending?.[id]?.vehicle || null;
-    const wasTrackedOwned = hasVehicleOwner(previousVehicle) || hasVehicleOwner(pendingVehicle);
-
-    if (currentVehicle || !wasTrackedOwned) continue;
-
-    const existing = priorPending[id] || {};
-    const missedScans = Number(existing.missedScans || 0) + 1;
-    const entry = {
-      vehicle: existing.vehicle || previousVehicle,
-      firstMissingAt: existing.firstMissingAt || now,
-      lastMissingAt: now,
-      missedScans,
-      alertedAt: existing.alertedAt || null,
-    };
-
-    if (missedScans >= confirmScans && !entry.alertedAt) {
-      alerts.push({ type: "missing", content: buildMissingVehicleAlert(entry.vehicle) });
-      entry.alertedAt = now;
-    }
-
-    pendingMissing[id] = entry;
   }
 
   const sent = await sendVehicleWatchAlerts(bot, channelId, alerts);
@@ -1926,7 +1887,7 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
     ownershipResolved: data.ownershipResolved,
     vehicles: normalizedCurrent,
     pendingMissing,
-    missingConfirmationScans: confirmScans,
+    missingConfirmationScans: null,
     vehicleDestructionCursor: destructionCursor,
     vehicleDestructionSeen: Array.from(destructionSeen).slice(-1000),
   });
@@ -1935,8 +1896,8 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
     scanned: true,
     vehicleCount: vehicles.length,
     ownedTracked: Object.values(normalizedCurrent).filter(hasVehicleOwner).length,
-    pendingMissing: Object.keys(pendingMissing).length,
-    confirmationScans: confirmScans,
+    pendingMissing: 0,
+    confirmationScans: null,
     destroyedEvents: destroyedEvents.length,
     alerts: alerts.length,
     sent,
@@ -1976,9 +1937,9 @@ async function handleVehicleLogSetup(message, bot) {
   await message.reply([
     "Vehicle watch is now active in this channel.",
     "I saved the current vehicle list and destruction-log position as the baseline.",
-    "Alerts post for confirmed player-owned vehicle destruction events.",
-    "It also alerts if a tracked player-owned vehicle disappears and stays missing for multiple scans.",
-    "Owner flicker, owner changes, and temporary unknown owner data are ignored.",
+    "Alerts post only for confirmed player-owned vehicle destruction events.",
+    "Vehicles missing only from the live vehicle list are ignored to avoid false alerts.",
+    "Owner flicker, owner changes, temporary unknown owner data, and possible-missing checks are ignored.",
     "Use `!vehiclelogscan` to force an immediate check instead of waiting for the timer.",
   ].join("\n")).catch(() => {});
 }
@@ -2014,12 +1975,10 @@ async function handleVehicleLogStatus(message) {
     `Tracked Vehicles: ${vehicles.length}`,
     `Owned Vehicles Tracked: ${ownedTracked}`,
     `Unowned Vehicles Ignored for Alerts: ${unownedTracked}`,
-    `Pending Missing Confirmations: ${state?.pendingMissing ? Object.keys(state.pendingMissing).length : 0}`,
-    `Confirm Missing After: ${state?.missingConfirmationScans || 2} scans`,
     `Last Destruction Log Cursor: ${state?.vehicleDestructionCursor || "Not saved yet"}`,
     `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
-    "Alerts post for confirmed vehicle destruction events and confirmed missing vehicles.",
-    "Owner flicker, owner changes, and temporary unknown owner data are ignored.",
+    "Alerts post only for confirmed vehicle destruction events.",
+    "Live-list missing vehicles, owner flicker, owner changes, and temporary unknown owner data are ignored.",
   ].join("\n")).catch(() => {});
 }
 
@@ -2035,8 +1994,6 @@ async function handleVehicleLogScan(message, bot) {
     "🚗 **Vehicle Watch Manual Scan Complete**",
     `Tracked Vehicles: ${result.vehicleCount ?? "Unknown"}`,
     `Owned Vehicles Tracked: ${result.ownedTracked ?? "Unknown"}`,
-    `Pending Missing Confirmations: ${result.pendingMissing ?? 0}`,
-    `Confirm Missing After: ${result.confirmationScans ?? 2} scans`,
     `Confirmed Destruction Events: ${result.destroyedEvents ?? 0}`,
     `Alerts Found: ${result.alerts ?? 0}`,
     `Alerts Sent: ${result.sent ?? 0}`,
