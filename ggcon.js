@@ -15,6 +15,38 @@ const JAIL_LOCATION = { x: 231926.016, y: -289455.094, z: 16877.357, pitch: 308.
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10");
 const DEFAULT_FLAG_PAGE_SIZE = 5;
+const CARGO_FRENZY_COUNT = Number(process.env.GGCON_CARGO_FRENZY_COUNT || "10");
+const CARGO_FRENZY_Z = Number(process.env.GGCON_CARGO_FRENZY_Z || "25000");
+const CARGO_FRENZY_POINTS = [
+  { x: -520000, y: -650000 },
+  { x: -360000, y: -610000 },
+  { x: -180000, y: -650000 },
+  { x: 50000, y: -620000 },
+  { x: 260000, y: -580000 },
+  { x: 470000, y: -520000 },
+  { x: -560000, y: -380000 },
+  { x: -330000, y: -340000 },
+  { x: -90000, y: -360000 },
+  { x: 160000, y: -340000 },
+  { x: 390000, y: -310000 },
+  { x: -510000, y: -120000 },
+  { x: -250000, y: -90000 },
+  { x: 0, y: -120000 },
+  { x: 250000, y: -85000 },
+  { x: 500000, y: -60000 },
+  { x: -470000, y: 120000 },
+  { x: -230000, y: 130000 },
+  { x: 20000, y: 110000 },
+  { x: 270000, y: 150000 },
+  { x: 520000, y: 180000 },
+  { x: -420000, y: 360000 },
+  { x: -160000, y: 390000 },
+  { x: 120000, y: 360000 },
+  { x: 370000, y: 410000 },
+  { x: -300000, y: 610000 },
+  { x: 0, y: 640000 },
+  { x: 320000, y: 630000 },
+];
 
 const SIMPLE_VEHICLE_ALIASES = {
   duster: ["BPC_Duster", "Duster"],
@@ -2495,23 +2527,104 @@ function formatKillPerson(person) {
   return `${name}${sid}`;
 }
 
-function buildKillAlert(event) {
+function eventPersonHasSteamId(person) {
+  return !!String(person?.sid || "").trim();
+}
+
+function isNpcCategoryAllowed(cat) {
+  const value = String(cat || "").toLowerCase();
+  if (!value) return false;
+  return ["guard", "drifter", "armednpc", "armed npc", "brenner", "razor", "sentry", "drone"].some((term) => value.includes(term));
+}
+
+function isHostileNpcName(value) {
+  const text = String(value || "").toLowerCase();
+  if (!text) return false;
+  return ["guard", "drifter", "armednpc", "armed npc", "brenner", "razor", "sentry", "drone"].some((term) => text.includes(term));
+}
+
+function shouldPostKillEvent(event) {
+  const type = String(event?.type || "").toLowerCase();
+  const killerIsPlayer = eventPersonHasSteamId(event?.killer);
+  const victimIsPlayer = eventPersonHasSteamId(event?.victim);
+
+  // Always post when a player dies: PvP, suicide, trap, vehicle/collision, NPC, etc.
+  if (victimIsPlayer) return true;
+
+  // Post player kills of armed/hostile NPCs, but not puppet/zombie or animal farming kills.
+  if (type === "npc" && killerIsPlayer && !victimIsPlayer) {
+    return isNpcCategoryAllowed(event?.cat) || isHostileNpcName(event?.victim?.name) || isHostileNpcName(event?.weaponRaw);
+  }
+
+  return false;
+}
+
+function isVehicleLikeDeath(event) {
+  const haystack = [
+    event?.weapon,
+    event?.weaponRaw,
+    event?.dmgType,
+    event?.killer?.name,
+    event?.victim?.name,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  return ["vehicle", "collision", "crash", "car", "truck", "rager", "laika", "duster", "tractor", "mariner", "wolfs"].some((term) => haystack.includes(term));
+}
+
+function findNearestVehicleToLocation(vehicles, location) {
+  if (!location || !Array.isArray(vehicles)) return null;
+
+  let best = null;
+  for (const vehicle of vehicles) {
+    if (!vehicle?.location) continue;
+    const distance = distanceUnrealUnits(location, vehicle.location);
+    if (distance === null) continue;
+    if (!best || distance < best.distance) best = { vehicle, distance };
+  }
+
+  return best;
+}
+
+function getKillAlertTitle(event) {
   const type = String(event.type || "unknown").toLowerCase();
-  const emoji = type === "pvp" ? "☠️" : type === "npc" ? "🐾" : type === "suicide" ? "💀" : type === "trap" ? "🪤" : "⚰️";
-  const title = type === "pvp" ? "PvP Kill" : type === "npc" ? "NPC / Animal Kill" : type === "suicide" ? "Suicide" : type === "trap" ? "Trap Death" : "Kill Event";
+  const victimIsPlayer = eventPersonHasSteamId(event?.victim);
+  const killerIsPlayer = eventPersonHasSteamId(event?.killer);
+
+  if (type === "pvp") return { emoji: "☠️", title: "Player Killed Player" };
+  if (victimIsPlayer && type === "trap") return { emoji: "🪤", title: "Player Trap Death" };
+  if (victimIsPlayer && type === "suicide") return { emoji: "💀", title: "Player Death / Suicide" };
+  if (victimIsPlayer && isVehicleLikeDeath(event)) return { emoji: "🚗", title: "Player Vehicle / Collision Death" };
+  if (victimIsPlayer) return { emoji: "⚰️", title: "Player Death" };
+  if (killerIsPlayer && type === "npc") return { emoji: "🛡️", title: "Hostile NPC Killed" };
+  return { emoji: "⚰️", title: "Kill Event" };
+}
+
+function buildKillAlert(event, vehicleData = null) {
+  const { emoji, title } = getKillAlertTitle(event);
   const location = getKillEventLocation(event);
+  const vehicleGuess = isVehicleLikeDeath(event)
+    ? findNearestVehicleToLocation(vehicleData?.vehicles || [], location)
+    : null;
 
   return clampDiscord([
     `${emoji} **${title}**`,
     "",
     `Type: ${event.type || "Unknown"}`,
-    event.killer ? `Killer: ${formatKillPerson(event.killer)}` : null,
+    event.killer ? `Killer / Cause: ${formatKillPerson(event.killer)}` : null,
     event.victim ? `Victim / Death: ${formatKillPerson(event.victim)}` : null,
-    event.weapon ? `Weapon: ${event.weapon}` : null,
+    event.weapon ? `Weapon / Cause: ${event.weapon}` : null,
+    event.weaponRaw ? `Raw Cause: ${event.weaponRaw}` : null,
     event.cat ? `Category: ${event.cat}` : null,
     event.dist !== undefined && event.dist !== null ? `Distance: ${Number(event.dist).toFixed(1)} m` : null,
     event.tod ? `In-Game Time: ${event.tod}` : null,
     `Death Location: ${formatLocation(location)}`,
+    vehicleGuess ? "" : null,
+    vehicleGuess ? `Possible Vehicle: **${vehicleGuess.vehicle.name || vehicleGuess.vehicle.class || "Vehicle"}**` : null,
+    vehicleGuess ? `Vehicle ID: \`${vehicleGuess.vehicle.id}\`` : null,
+    vehicleGuess ? `Possible Owner: ${vehicleGuess.vehicle.owner || "Unknown"}` : null,
+    vehicleGuess?.vehicle?.ownerSteamId ? `Owner Steam ID: \`${vehicleGuess.vehicle.ownerSteamId}\`` : null,
+    vehicleGuess ? `Vehicle Distance from Death: ${formatApproxDistance(vehicleGuess.distance)}` : null,
+    vehicleGuess ? "_Vehicle owner is a best guess from the nearest listed vehicle._" : null,
   ].filter(Boolean).join("\n"));
 }
 
@@ -2553,7 +2666,7 @@ async function scanKillsAndAlert(bot, { baselineOnly = false } = {}) {
     const key = getKillEventKey(event);
     if (seen.has(key)) continue;
     seen.add(key);
-    unique.push(event);
+    if (shouldPostKillEvent(event)) unique.push(event);
   }
 
   saveKillState({
@@ -2561,17 +2674,26 @@ async function scanKillsAndAlert(bot, { baselineOnly = false } = {}) {
     cursor: nextCursor,
     total: data.total,
     lastEventCount: events.length,
+    lastPostedCount: unique.length,
     seen: Array.from(seen).slice(-250),
   });
 
+  const needsVehicleData = unique.some(isVehicleLikeDeath);
+  const vehicleData = needsVehicleData
+    ? await ggconGet("/vehicles.json").catch((err) => {
+        console.error("❌ Failed to fetch vehicles for kill log context:", err.message);
+        return null;
+      })
+    : null;
+
   for (const event of unique.slice(0, 10)) {
-    await channel.send(buildKillAlert(event)).catch((err) => {
+    await channel.send(buildKillAlert(event, vehicleData)).catch((err) => {
       console.error("❌ Kill log alert failed:", err.message);
     });
   }
 
   if (unique.length > 10) {
-    await channel.send(`⚠️ ${unique.length - 10} more kill event(s) occurred in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
+    await channel.send(`⚠️ ${unique.length - 10} more important kill/death event(s) occurred in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
   }
 }
 
@@ -2586,6 +2708,66 @@ function ensureKillLogLoop(bot) {
       console.error("❌ GGCON kill log watch failed:", err.message);
     });
   }, intervalMs);
+}
+
+function shuffleArray(values) {
+  const copy = [...values];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function getCargoFrenzyPoints() {
+  const count = Math.max(1, Math.min(25, Number.isFinite(CARGO_FRENZY_COUNT) ? Math.floor(CARGO_FRENZY_COUNT) : 10));
+  const shuffled = shuffleArray(CARGO_FRENZY_POINTS);
+  return shuffled.slice(0, Math.min(count, shuffled.length)).map((point) => ({
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    z: Math.round(Number.isFinite(CARGO_FRENZY_Z) ? CARGO_FRENZY_Z : 25000),
+  }));
+}
+
+async function handleCargoFrenzyCommand(message) {
+  const points = getCargoFrenzyPoints();
+
+  await ggconPost("/message", {
+    text: `Cargo Frenzy! ${points.length} cargo drops have been scattered across the island. Move fast, Exiles.`,
+    type: "ServerMessage",
+  });
+
+  const results = [];
+  for (const point of points) {
+    const command = `#ScheduleWorldEvent CargoDrop ${point.x} ${point.y} ${point.z}`;
+    try {
+      const result = await ggconPost("/command", { command });
+      results.push({ point, command, ok: true, output: result?.lines?.join(" | ") || result?.message || "sent" });
+    } catch (err) {
+      results.push({ point, command, ok: false, output: err.message });
+    }
+  }
+
+  const successCount = results.filter((entry) => entry.ok).length;
+  const failed = results.filter((entry) => !entry.ok);
+
+  const log = buildAdminActionLog("📦 **Cargo Frenzy Triggered**", [
+    `Triggered by: ${message.member?.displayName || message.author?.tag || "Unknown"}`,
+    `Drops requested: ${points.length}`,
+    `Commands sent: ${successCount}/${points.length}`,
+    failed.length ? `Failures: ${failed.length}` : null,
+    "Locations:",
+    ...results.slice(0, 10).map((entry, index) => `${index + 1}. ${entry.ok ? "✅" : "❌"} X: ${entry.point.x} | Y: ${entry.point.y} | Z: ${entry.point.z}`),
+  ]);
+
+  await sendGgconActionLog(message.client, message.channel, log).catch(() => {});
+
+  await message.reply(clampDiscord([
+    `📦 **Cargo Frenzy started.**`,
+    `In-game announcement sent: **Cargo Frenzy!**`,
+    `Cargo drops scheduled: **${successCount}/${points.length}**`,
+    failed.length ? "Some drops failed. Check the admin/vehicle log for details." : null,
+  ].filter(Boolean).join("\n"))).catch(() => {});
 }
 
 async function handleKillLogSetup(message, bot) {
@@ -2606,7 +2788,8 @@ async function handleKillLogSetup(message, bot) {
 
   await message.reply([
     "Kill log is now active in this channel.",
-    "I saved the current kill-feed cursor as the baseline, so I will only alert for new kill events after this point.",
+    "I saved the current kill-feed cursor as the baseline, so I will only alert for new kill/death events after this point.",
+    "Filtered mode: player deaths, PvP kills, and hostile NPC kills only. Puppet and animal farming kills are ignored.",
     `Scan interval: ${getKillLogIntervalSeconds()} seconds`,
   ].join("\n")).catch(() => {});
 }
@@ -2757,7 +2940,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -2812,6 +2995,11 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!announce") {
       await handleAnnounceCommand(message, args);
+      return true;
+    }
+
+    if (command === "!cargofrenzy") {
+      await handleCargoFrenzyCommand(message);
       return true;
     }
 
