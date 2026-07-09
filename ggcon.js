@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const { createClient } = require("@supabase/supabase-js");
 
 const DEFAULT_GGCON_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const STATUS_FILE = path.join(__dirname, "data", "ggcon-status.json");
@@ -8,6 +9,8 @@ const VEHICLE_WATCH_FILE = path.join(__dirname, "data", "ggcon-vehicle-watch.jso
 const VEHICLE_STATE_FILE = path.join(__dirname, "data", "ggcon-vehicle-state.json");
 const KILL_LOG_FILE = path.join(__dirname, "data", "ggcon-kill-log.json");
 const KILL_STATE_FILE = path.join(__dirname, "data", "ggcon-kill-state.json");
+const JAIL_STATE_FILE = path.join(__dirname, "data", "ggcon-jail-state.json");
+const JAIL_RETURNS_TABLE = process.env.GGCON_JAIL_RETURNS_TABLE || "watcher_jail_returns";
 const JAIL_LOCATION = { x: 231926.016, y: -289455.094, z: 16877.357, pitch: 308.556671, yaw: 1.584615, roll: 0 };
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10");
@@ -31,6 +34,33 @@ const SIMPLE_VEHICLE_NAMES = "duster, tractor, laika, mariner, rager, ww/wolfswa
 let statusTimer = null;
 let vehicleWatchTimer = null;
 let killLogTimer = null;
+let supabaseForGgcon = null;
+
+function getSupabaseForGgcon() {
+  if (supabaseForGgcon) return supabaseForGgcon;
+
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_KEY;
+  if (!url || !key) return null;
+
+  supabaseForGgcon = createClient(url, key, {
+    auth: { persistSession: false },
+  });
+
+  return supabaseForGgcon;
+}
+
+function getGuildIdFromContext(context) {
+  return context?.guild?.id || context?.guildId || "default";
+}
+
+function getDiscordActorId(context) {
+  return context?.user?.id || context?.author?.id || context?.member?.user?.id || null;
+}
+
+function getDiscordActorName(context) {
+  return context?.member?.displayName || context?.user?.tag || context?.author?.tag || "Unknown";
+}
 
 function getBaseUrl() {
   return (process.env.GGCON_BASE_URL || DEFAULT_GGCON_BASE_URL).replace(/\/+$/, "");
@@ -211,6 +241,135 @@ function loadKillState() {
 function saveKillState(state) {
   ensureDataFolder();
   fs.writeFileSync(KILL_STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+function normalizeJailState(state) {
+  if (!state || typeof state !== "object") return { players: {}, guilds: {} };
+  if (!state.players || typeof state.players !== "object") state.players = {};
+  if (!state.guilds || typeof state.guilds !== "object") state.guilds = {};
+  return state;
+}
+
+function getLocalJailBucket(state, guildId) {
+  const normalized = normalizeJailState(state);
+  const key = String(guildId || "default");
+  if (!normalized.guilds[key]) normalized.guilds[key] = { players: {} };
+  if (!normalized.guilds[key].players || typeof normalized.guilds[key].players !== "object") {
+    normalized.guilds[key].players = {};
+  }
+  return normalized.guilds[key].players;
+}
+
+function loadJailStateLocal() {
+  try {
+    if (!fs.existsSync(JAIL_STATE_FILE)) return { players: {}, guilds: {} };
+    const parsed = JSON.parse(fs.readFileSync(JAIL_STATE_FILE, "utf8"));
+    return normalizeJailState(parsed);
+  } catch {
+    return { players: {}, guilds: {} };
+  }
+}
+
+function saveJailStateLocal(state) {
+  ensureDataFolder();
+  fs.writeFileSync(JAIL_STATE_FILE, JSON.stringify(normalizeJailState(state || { players: {}, guilds: {} }), null, 2));
+}
+
+function rowToJailEntry(row) {
+  if (!row) return null;
+  return {
+    steamId: row.steam_id,
+    displayName: row.player_name || row.steam_name || row.steam_id,
+    steamName: row.steam_name || null,
+    location: {
+      x: Number(row.return_x),
+      y: Number(row.return_y),
+      z: Number(row.return_z),
+    },
+    rotation: {
+      pitch: row.return_pitch === null || row.return_pitch === undefined ? null : Number(row.return_pitch),
+      yaw: row.return_yaw === null || row.return_yaw === undefined ? null : Number(row.return_yaw),
+      roll: row.return_roll === null || row.return_roll === undefined ? null : Number(row.return_roll),
+    },
+    jailedAt: row.created_at || null,
+    jailedBy: row.jailed_by_name || null,
+    jailedByDiscordId: row.jailed_by_discord_id || null,
+    source: "supabase",
+  };
+}
+
+async function getJailReturnFromSupabase(guildId, steamId) {
+  const db = getSupabaseForGgcon();
+  if (!db) return null;
+
+  const { data, error } = await db
+    .from(JAIL_RETURNS_TABLE)
+    .select("*")
+    .eq("guild_id", String(guildId || "default"))
+    .eq("steam_id", String(steamId || ""))
+    .maybeSingle();
+
+  if (error) throw error;
+  return rowToJailEntry(data);
+}
+
+async function saveJailReturnToSupabase(guildId, steamId, entry) {
+  const db = getSupabaseForGgcon();
+  if (!db) return false;
+
+  const location = cloneLocation(entry?.location);
+  if (!location) return false;
+
+  const { error } = await db
+    .from(JAIL_RETURNS_TABLE)
+    .upsert(
+      {
+        guild_id: String(guildId || "default"),
+        steam_id: String(steamId || ""),
+        player_name: entry.displayName || null,
+        steam_name: entry.steamName || null,
+        return_x: location.x,
+        return_y: location.y,
+        return_z: location.z,
+        return_pitch: entry.rotation?.pitch ?? null,
+        return_yaw: entry.rotation?.yaw ?? null,
+        return_roll: entry.rotation?.roll ?? null,
+        jailed_by_discord_id: entry.jailedByDiscordId || null,
+        jailed_by_name: entry.jailedBy || null,
+      },
+      { onConflict: "guild_id,steam_id" }
+    );
+
+  if (error) throw error;
+  return true;
+}
+
+async function deleteJailReturnFromSupabase(guildId, steamId) {
+  const db = getSupabaseForGgcon();
+  if (!db) return false;
+
+  const { error } = await db
+    .from(JAIL_RETURNS_TABLE)
+    .delete()
+    .eq("guild_id", String(guildId || "default"))
+    .eq("steam_id", String(steamId || ""));
+
+  if (error) throw error;
+  return true;
+}
+
+function isUsableLocation(location) {
+  if (!location) return false;
+  return [location.x, location.y, location.z].every((value) => Number.isFinite(Number(value)));
+}
+
+function cloneLocation(location) {
+  if (!isUsableLocation(location)) return null;
+  return {
+    x: Number(location.x),
+    y: Number(location.y),
+    z: Number(location.z),
+  };
 }
 
 function getKillLogChannelId() {
@@ -565,7 +724,7 @@ function buildPlayerLabel(player, index) {
 }
 
 function buildMatchButtons(matches, commandName) {
-  const action = commandName === "!vehicle" || commandName === "!vehicles" ? "vehicle" : commandName === "!flag" || commandName === "!flags" ? "flag" : commandName === "!squad" ? "squad" : commandName === "!nearvehicles" ? "nearvehicles" : commandName === "!jail" ? "jail" : "player";
+  const action = commandName === "!vehicle" || commandName === "!vehicles" ? "vehicle" : commandName === "!flag" || commandName === "!flags" ? "flag" : commandName === "!squad" ? "squad" : commandName === "!nearvehicles" ? "nearvehicles" : commandName === "!jail" ? "jail" : commandName === "!unjail" ? "unjail" : "player";
   const usable = matches.filter((player) => player.userId).slice(0, 10);
   const rows = [];
 
@@ -1824,6 +1983,59 @@ function getJailLocationText() {
   return `X: ${JAIL_LOCATION.x} | Y: ${JAIL_LOCATION.y} | Z: ${JAIL_LOCATION.z}`;
 }
 
+async function getSavedJailReturn(guildId, steamId) {
+  const guildKey = String(guildId || "default");
+  const steamKey = String(steamId || "");
+
+  try {
+    const supabaseEntry = await getJailReturnFromSupabase(guildKey, steamKey);
+    if (supabaseEntry) {
+      const localState = loadJailStateLocal();
+      getLocalJailBucket(localState, guildKey)[steamKey] = supabaseEntry;
+      saveJailStateLocal(localState);
+      return supabaseEntry;
+    }
+  } catch (err) {
+    console.error("❌ Failed to load jail return from Supabase. Using local fallback:", err.message);
+  }
+
+  const state = loadJailStateLocal();
+  const guildBucket = getLocalJailBucket(state, guildKey);
+  return guildBucket[steamKey] || state.players?.[steamKey] || null;
+}
+
+async function saveJailReturn(guildId, steamId, entry) {
+  const guildKey = String(guildId || "default");
+  const steamKey = String(steamId || "");
+  const state = loadJailStateLocal();
+  getLocalJailBucket(state, guildKey)[steamKey] = entry;
+  state.updatedAt = Date.now();
+  saveJailStateLocal(state);
+
+  try {
+    await saveJailReturnToSupabase(guildKey, steamKey, entry);
+  } catch (err) {
+    console.error("❌ Failed to save jail return to Supabase. Local backup saved:", err.message);
+  }
+}
+
+async function clearJailReturn(guildId, steamId) {
+  const guildKey = String(guildId || "default");
+  const steamKey = String(steamId || "");
+  const state = loadJailStateLocal();
+  const guildBucket = getLocalJailBucket(state, guildKey);
+  if (guildBucket[steamKey]) delete guildBucket[steamKey];
+  if (state.players?.[steamKey]) delete state.players[steamKey];
+  state.updatedAt = Date.now();
+  saveJailStateLocal(state);
+
+  try {
+    await deleteJailReturnFromSupabase(guildKey, steamKey);
+  } catch (err) {
+    console.error("❌ Failed to clear jail return from Supabase. Local backup cleared:", err.message);
+  }
+}
+
 async function jailPlayerBySteamId(messageOrInteraction, steamId) {
   const playerResult = await getPlayerForLookup(String(steamId || ""));
   if (playerResult.type !== "single") {
@@ -1840,25 +2052,110 @@ async function jailPlayerBySteamId(messageOrInteraction, steamId) {
     return;
   }
 
+  const returnLocation = cloneLocation(player.location);
+  const displayName = getPlayerDisplayName(player);
+  const guildId = getGuildIdFromContext(messageOrInteraction);
+  const jailedBy = getDiscordActorName(messageOrInteraction);
+  const jailedByDiscordId = getDiscordActorId(messageOrInteraction);
+
+  if (returnLocation) {
+    await saveJailReturn(guildId, realSteamId, {
+      steamId: realSteamId,
+      displayName,
+      steamName: player.steamName || null,
+      location: returnLocation,
+      jailedAt: Date.now(),
+      jailedBy,
+      jailedByDiscordId,
+    });
+  }
+
   await ggconPost(`/players/${encodeURIComponent(realSteamId)}/teleport`, {
     x: JAIL_LOCATION.x,
     y: JAIL_LOCATION.y,
     z: JAIL_LOCATION.z,
   });
 
-  const displayName = getPlayerDisplayName(player);
   const content = [
     `🚔 **${displayName}** was sent to jail.`,
     `Steam ID: \`${realSteamId}\``,
     `Jail Location: ${getJailLocationText()}`,
+    returnLocation ? `Return Point Saved: ${formatLocation(returnLocation)}` : "Return Point Saved: No usable player location was available.",
+    "Use `!unjail <player>` to send them back to the saved return point.",
     "Note: GGCON teleport uses X/Y/Z only. Pitch/yaw/roll from the saved point are ignored.",
   ].join("\n");
 
   const log = buildAdminActionLog("🚔 **Player Jailed**", [
     `Player: **${displayName}**`,
     `Steam ID: \`${realSteamId}\``,
-    `Location: ${getJailLocationText()}`,
-    `Jailed by: ${messageOrInteraction.member?.displayName || messageOrInteraction.user?.tag || messageOrInteraction.author?.tag || "Unknown"}`,
+    `Jail Location: ${getJailLocationText()}`,
+    returnLocation ? `Saved Return Point: ${formatLocation(returnLocation)}` : "Saved Return Point: None available",
+    `Jailed by: ${jailedBy}`,
+  ]);
+
+  await sendGgconActionLog(messageOrInteraction.client || messageOrInteraction.bot, messageOrInteraction.channel, log).catch(() => {});
+
+  if (messageOrInteraction.update) {
+    await messageOrInteraction.update({ content, components: [] }).catch(() => {});
+  } else {
+    await messageOrInteraction.reply(content).catch(() => {});
+  }
+}
+
+async function unjailPlayerBySteamId(messageOrInteraction, steamId) {
+  const playerResult = await getPlayerForLookup(String(steamId || ""));
+  if (playerResult.type !== "single") {
+    const content = `No player found for \`${steamId}\`.`;
+    if (messageOrInteraction.reply) await messageOrInteraction.reply({ content, ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const player = playerResult.player;
+  const realSteamId = String(player.userId || steamId || "").trim();
+  if (!realSteamId) {
+    const content = "That player does not have a usable Steam ID.";
+    if (messageOrInteraction.reply) await messageOrInteraction.reply({ content, ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const guildId = getGuildIdFromContext(messageOrInteraction);
+  const saved = await getSavedJailReturn(guildId, realSteamId);
+  const returnLocation = cloneLocation(saved?.location);
+  const displayName = getPlayerDisplayName(player, saved?.displayName || "Unknown");
+
+  if (!returnLocation) {
+    const content = [
+      `No saved jail return point found for **${displayName}**.`,
+      "They may not have been jailed with the updated Watcher version, or there is no saved return row in Supabase.",
+    ].join("\n");
+
+    if (messageOrInteraction.update) await messageOrInteraction.update({ content, components: [] }).catch(() => {});
+    else await messageOrInteraction.reply(content).catch(() => {});
+    return;
+  }
+
+  await ggconPost(`/players/${encodeURIComponent(realSteamId)}/teleport`, {
+    x: returnLocation.x,
+    y: returnLocation.y,
+    z: returnLocation.z,
+  });
+
+  await clearJailReturn(guildId, realSteamId);
+
+  const unjailedBy = getDiscordActorName(messageOrInteraction);
+  const content = [
+    `🔓 **${displayName}** was released from jail.`,
+    `Steam ID: \`${realSteamId}\``,
+    `Returned To: ${formatLocation(returnLocation)}`,
+  ].join("\n");
+
+  const log = buildAdminActionLog("🔓 **Player Unjailed**", [
+    `Player: **${displayName}**`,
+    `Steam ID: \`${realSteamId}\``,
+    `Returned To: ${formatLocation(returnLocation)}`,
+    saved?.jailedAt ? `Original Jail Time: ${formatDate(saved.jailedAt)}` : null,
+    saved?.jailedBy ? `Originally Jailed by: ${saved.jailedBy}` : null,
+    `Unjailed by: ${unjailedBy}`,
   ]);
 
   await sendGgconActionLog(messageOrInteraction.client || messageOrInteraction.bot, messageOrInteraction.channel, log).catch(() => {});
@@ -1893,6 +2190,31 @@ async function handleJailCommand(message, args) {
   }
 
   await jailPlayerBySteamId(message, playerResult.player.userId);
+}
+
+async function handleUnjailCommand(message, args) {
+  const query = args.join(" ").trim();
+  if (!query) {
+    await message.reply("Use: `!unjail <player name or Steam ID>`").catch(() => {});
+    return;
+  }
+
+  const playerResult = await getPlayerForLookup(query);
+
+  if (playerResult.type === "none") {
+    await message.reply(`No player found for **${query}**.`).catch(() => {});
+    return;
+  }
+
+  if (playerResult.type === "multiple") {
+    await message.reply({
+      content: buildMultipleMatchesReply(query, playerResult.matches, "!unjail"),
+      components: buildMatchButtons(playerResult.matches, "!unjail"),
+    }).catch(() => {});
+    return;
+  }
+
+  await unjailPlayerBySteamId(message, playerResult.player.userId);
 }
 
 function normalizeVehicleText(value) {
@@ -2359,6 +2681,11 @@ async function handleGgconInteraction(interaction) {
       return true;
     }
 
+    if (action === "unjail") {
+      await unjailPlayerBySteamId(interaction, value);
+      return true;
+    }
+
     if (action === "givevehicleplayer") {
       const parts = interaction.customId.split(":");
       const steamId = parts[2];
@@ -2430,7 +2757,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -2512,6 +2839,12 @@ async function handleGgconCommand(message, bot) {
       await handleJailCommand(message, args);
       return true;
     }
+
+    if (command === "!unjail") {
+      await handleUnjailCommand(message, args);
+      return true;
+    }
+
     if (command === "!givevehicle") {
       await handleGiveVehicleCommand(message, args);
       return true;
