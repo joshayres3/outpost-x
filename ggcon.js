@@ -12,6 +12,7 @@ const KILL_STATE_FILE = path.join(__dirname, "data", "ggcon-kill-state.json");
 const CARGO_SCHEDULE_FILE = path.join(__dirname, "data", "ggcon-cargo-schedule.json");
 const JAIL_STATE_FILE = path.join(__dirname, "data", "ggcon-jail-state.json");
 const JAIL_RETURNS_TABLE = process.env.GGCON_JAIL_RETURNS_TABLE || "watcher_jail_returns";
+const RUNTIME_STATE_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || "watcher_runtime_state";
 const JAIL_LOCATION = { x: 231926.016, y: -289455.094, z: 16877.357, pitch: 308.556671, yaw: 1.584615, roll: 0 };
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10");
@@ -252,6 +253,140 @@ function ensureDataFolder() {
   if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
 }
 
+function runtimeKey(name) {
+  return String(name || "").trim();
+}
+
+async function loadRuntimeValue(key) {
+  const db = getSupabaseForGgcon();
+  if (!db) return null;
+
+  const { data, error } = await db
+    .from(RUNTIME_STATE_TABLE)
+    .select("value")
+    .eq("key", runtimeKey(key))
+    .maybeSingle();
+
+  if (error) {
+    console.warn(`⚠️ Persistent state read failed for ${key}: ${error.message}`);
+    return null;
+  }
+
+  return data?.value ?? null;
+}
+
+async function saveRuntimeValue(key, value) {
+  const db = getSupabaseForGgcon();
+  if (!db) return false;
+
+  const { error } = await db
+    .from(RUNTIME_STATE_TABLE)
+    .upsert(
+      {
+        key: runtimeKey(key),
+        value: value || {},
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "key" }
+    );
+
+  if (error) {
+    console.warn(`⚠️ Persistent state write failed for ${key}: ${error.message}`);
+    return false;
+  }
+
+  return true;
+}
+
+async function clearRuntimeValue(key) {
+  const db = getSupabaseForGgcon();
+  if (!db) return false;
+
+  const { error } = await db
+    .from(RUNTIME_STATE_TABLE)
+    .delete()
+    .eq("key", runtimeKey(key));
+
+  if (error) {
+    console.warn(`⚠️ Persistent state clear failed for ${key}: ${error.message}`);
+    return false;
+  }
+
+  return true;
+}
+
+function writeJsonFile(file, value) {
+  ensureDataFolder();
+  fs.writeFileSync(file, JSON.stringify(value || {}, null, 2));
+}
+
+async function loadVehicleWatchConfigPersistent() {
+  const remote = await loadRuntimeValue("vehicle_watch_config");
+  if (remote) {
+    saveVehicleWatchConfig(remote);
+    return remote;
+  }
+  return loadVehicleWatchConfig();
+}
+
+async function saveVehicleWatchConfigPersistent(config) {
+  saveVehicleWatchConfig(config);
+  await saveRuntimeValue("vehicle_watch_config", config);
+}
+
+async function clearVehicleWatchConfigPersistent() {
+  clearVehicleWatchConfig();
+  await clearRuntimeValue("vehicle_watch_config");
+}
+
+async function loadVehicleStatePersistent() {
+  const remote = await loadRuntimeValue("vehicle_watch_state");
+  if (remote) {
+    saveVehicleState(remote);
+    return remote;
+  }
+  return loadVehicleState();
+}
+
+async function saveVehicleStatePersistent(state) {
+  saveVehicleState(state);
+  await saveRuntimeValue("vehicle_watch_state", state);
+}
+
+async function loadKillLogConfigPersistent() {
+  const remote = await loadRuntimeValue("kill_log_config");
+  if (remote) {
+    saveKillLogConfig(remote);
+    return remote;
+  }
+  return loadKillLogConfig();
+}
+
+async function saveKillLogConfigPersistent(config) {
+  saveKillLogConfig(config);
+  await saveRuntimeValue("kill_log_config", config);
+}
+
+async function clearKillLogConfigPersistent() {
+  clearKillLogConfig();
+  await clearRuntimeValue("kill_log_config");
+}
+
+async function loadKillStatePersistent() {
+  const remote = await loadRuntimeValue("kill_log_state");
+  if (remote) {
+    saveKillState(remote);
+    return remote;
+  }
+  return loadKillState();
+}
+
+async function saveKillStatePersistent(state) {
+  saveKillState(state);
+  await saveRuntimeValue("kill_log_state", state);
+}
+
+
 function loadStatusRef() {
   try {
     if (!fs.existsSync(STATUS_FILE)) return null;
@@ -489,6 +624,16 @@ function getKillLogChannelId() {
 
 function getVehicleLogChannelId() {
   return process.env.GGCON_VEHICLE_LOG_CHANNEL_ID || loadVehicleWatchConfig()?.channelId || null;
+}
+
+async function getKillLogChannelIdAsync() {
+  if (process.env.GGCON_KILL_LOG_CHANNEL_ID) return process.env.GGCON_KILL_LOG_CHANNEL_ID;
+  return (await loadKillLogConfigPersistent())?.channelId || null;
+}
+
+async function getVehicleLogChannelIdAsync() {
+  if (process.env.GGCON_VEHICLE_LOG_CHANNEL_ID) return process.env.GGCON_VEHICLE_LOG_CHANNEL_ID;
+  return (await loadVehicleWatchConfigPersistent())?.channelId || null;
 }
 
 function formatGameTime(timeOfDay) {
@@ -1625,18 +1770,18 @@ async function sendVehicleWatchAlerts(bot, channelId, alerts) {
 }
 
 async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
-  const channelId = getVehicleLogChannelId();
+  const channelId = await getVehicleLogChannelIdAsync();
   if (!channelId) return { scanned: false, reason: "No vehicle log channel set." };
 
   const data = await ggconGet("/vehicles.json");
   const vehicles = Array.isArray(data.vehicles) ? data.vehicles : [];
   const current = buildVehicleSnapshot(vehicles);
-  const previousState = loadVehicleState();
+  const previousState = await loadVehicleStatePersistent();
   const previous = previousState?.vehicles || null;
   const now = Date.now();
 
   if (baselineOnly || !previous) {
-    saveVehicleState({
+    await saveVehicleStatePersistent({
       updatedAt: now,
       count: vehicles.length,
       ownershipResolved: data.ownershipResolved,
@@ -1683,7 +1828,7 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
 
   const sent = await sendVehicleWatchAlerts(bot, channelId, alerts);
 
-  saveVehicleState({
+  await saveVehicleStatePersistent({
     updatedAt: now,
     count: vehicles.length,
     ownershipResolved: data.ownershipResolved,
@@ -1701,7 +1846,12 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
 
 function ensureVehicleWatchLoop(bot) {
   const channelId = getVehicleLogChannelId();
-  if (!channelId) return;
+  if (!channelId) {
+    getVehicleLogChannelIdAsync().then((resolvedChannelId) => {
+      if (resolvedChannelId && !vehicleWatchTimer) ensureVehicleWatchLoop(bot);
+    }).catch(() => {});
+    return;
+  }
   if (vehicleWatchTimer) return;
 
   const seconds = Number(process.env.GGCON_VEHICLE_WATCH_INTERVAL_SECONDS || "180");
@@ -1715,7 +1865,7 @@ function ensureVehicleWatchLoop(bot) {
 }
 
 async function handleVehicleLogSetup(message, bot) {
-  saveVehicleWatchConfig({
+  await saveVehicleWatchConfigPersistent({
     channelId: message.channel.id,
     setBy: message.author.id,
     setAt: Date.now(),
@@ -1733,7 +1883,7 @@ async function handleVehicleLogSetup(message, bot) {
 }
 
 async function handleVehicleLogOff(message) {
-  clearVehicleWatchConfig();
+  await clearVehicleWatchConfigPersistent();
   if (vehicleWatchTimer) {
     clearInterval(vehicleWatchTimer);
     vehicleWatchTimer = null;
@@ -1742,8 +1892,8 @@ async function handleVehicleLogOff(message) {
 }
 
 async function handleVehicleLogStatus(message) {
-  const channelId = getVehicleLogChannelId();
-  const state = loadVehicleState();
+  const channelId = await getVehicleLogChannelIdAsync();
+  const state = await loadVehicleStatePersistent();
 
   if (!channelId) {
     await message.reply("Vehicle watch is not set up. Run `!vehiclelogsetup` in the channel where alerts should post.").catch(() => {});
@@ -1788,11 +1938,16 @@ async function handleVehicleLogScan(message, bot) {
 
 function startVehicleWatchOnBoot(bot) {
   if (!hasPasswordConfigured()) return;
-  const channelId = getVehicleLogChannelId();
-  if (!channelId) return;
+  loadVehicleWatchConfigPersistent().then(async (config) => {
+    const channelId = process.env.GGCON_VEHICLE_LOG_CHANNEL_ID || config?.channelId || null;
+    if (!channelId) return;
 
-  ensureVehicleWatchLoop(bot);
-  scanVehiclesAndAlert(bot, { baselineOnly: !loadVehicleState() }).catch((err) => {
+    ensureVehicleWatchLoop(bot);
+    const state = await loadVehicleStatePersistent();
+    scanVehiclesAndAlert(bot, { baselineOnly: !state }).catch((err) => {
+      console.error("❌ Boot vehicle watch failed:", err.message);
+    });
+  }).catch((err) => {
     console.error("❌ Boot vehicle watch failed:", err.message);
   });
 }
@@ -2758,7 +2913,32 @@ function isNpcCategoryAllowed(cat) {
 function isHostileNpcName(value) {
   const text = String(value || "").toLowerCase();
   if (!text) return false;
-  return ["guard", "drifter", "armednpc", "armed npc", "brenner", "razor", "sentry", "drone"].some((term) => text.includes(term));
+  return ["guard", "drifter", "armednpc", "armed npc", "brenner", "razor", "sentry", "drone", "suicide"].some((term) => text.includes(term));
+}
+
+function isCreatureOrPuppetName(value) {
+  const text = String(value || "").toLowerCase();
+  if (!text) return false;
+  return [
+    "bp_", "puppet", "zombie", "animal", "bear", "boar", "goat", "chicken", "cow", "donkey", "deer",
+    "horse", "wolf", "crow", "seagull", "rabbit", "rat", "creature", "npc"
+  ].some((term) => text.includes(term));
+}
+
+function isLikelyPlayerDeathWithoutSteamId(event) {
+  const type = String(event?.type || "").toLowerCase();
+  const killerName = String(event?.killer?.name || "");
+  const victimName = String(event?.victim?.name || "");
+
+  if (["pvp", "suicide", "trap", "death"].includes(type)) return true;
+
+  // Some NPC-caused deaths can arrive with the player Steam ID missing from the event payload.
+  // If the killer/cause looks like a creature or hostile NPC and the victim does not look like a creature, treat it as a player death.
+  if (type === "npc" && !eventPersonHasSteamId(event?.killer) && victimName && !isCreatureOrPuppetName(victimName)) {
+    return isCreatureOrPuppetName(killerName) || isHostileNpcName(killerName) || isHostileNpcName(event?.weaponRaw) || isHostileNpcName(event?.weapon);
+  }
+
+  return false;
 }
 
 function shouldPostKillEvent(event) {
@@ -2766,10 +2946,10 @@ function shouldPostKillEvent(event) {
   const killerIsPlayer = eventPersonHasSteamId(event?.killer);
   const victimIsPlayer = eventPersonHasSteamId(event?.victim);
 
-  // Always post when a player dies: PvP, suicide, trap, vehicle/collision, NPC, etc.
-  if (victimIsPlayer) return true;
+  // Log every player death type: PvP, suicide, trap, puppet, suicide puppet, vehicle, animal, NPC, drowning, falling, and unknown deaths.
+  if (victimIsPlayer || isLikelyPlayerDeathWithoutSteamId(event)) return true;
 
-  // Post player kills of armed/hostile NPCs, but not puppet/zombie or animal farming kills.
+  // Keep important hostile NPC kills, but do not spam normal puppet/animal farming kills.
   if (type === "npc" && killerIsPlayer && !victimIsPlayer) {
     return isNpcCategoryAllowed(event?.cat) || isHostileNpcName(event?.victim?.name) || isHostileNpcName(event?.weaponRaw);
   }
@@ -2857,16 +3037,16 @@ async function fetchKillEventsSince(cursor) {
 }
 
 async function scanKillsAndAlert(bot, { baselineOnly = false } = {}) {
-  const channelId = getKillLogChannelId();
+  const channelId = await getKillLogChannelIdAsync();
   if (!channelId) return;
 
-  const previous = loadKillState() || {};
+  const previous = (await loadKillStatePersistent()) || {};
   const cursor = previous.cursor || 0;
   const data = await fetchKillEventsSince(cursor);
   const events = Array.isArray(data.events) ? data.events : [];
   const nextCursor = data.next || events.reduce((max, event) => Math.max(max, Number(event.t || 0)), Number(cursor || 0));
 
-  saveKillState({
+  await saveKillStatePersistent({
     updatedAt: Date.now(),
     cursor: nextCursor,
     total: data.total,
@@ -2887,13 +3067,13 @@ async function scanKillsAndAlert(bot, { baselineOnly = false } = {}) {
     if (shouldPostKillEvent(event)) unique.push(event);
   }
 
-  saveKillState({
+  await saveKillStatePersistent({
     updatedAt: Date.now(),
     cursor: nextCursor,
     total: data.total,
     lastEventCount: events.length,
     lastPostedCount: unique.length,
-    seen: Array.from(seen).slice(-250),
+    seen: Array.from(seen).slice(-1000),
   });
 
   const needsVehicleData = unique.some(isVehicleLikeDeath);
@@ -2911,13 +3091,18 @@ async function scanKillsAndAlert(bot, { baselineOnly = false } = {}) {
   }
 
   if (unique.length > 10) {
-    await channel.send(`⚠️ ${unique.length - 10} more important kill/death event(s) occurred in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
+    await channel.send(`⚠️ ${unique.length - 10} more kill/death event(s) occurred in the same scan. Output was trimmed to avoid spam.`).catch(() => {});
   }
 }
 
 function ensureKillLogLoop(bot) {
   const channelId = getKillLogChannelId();
-  if (!channelId) return;
+  if (!channelId) {
+    getKillLogChannelIdAsync().then((resolvedChannelId) => {
+      if (resolvedChannelId && !killLogTimer) ensureKillLogLoop(bot);
+    }).catch(() => {});
+    return;
+  }
   if (killLogTimer) return;
 
   const intervalMs = getKillLogIntervalSeconds() * 1000;
@@ -3507,7 +3692,7 @@ function startCargoScheduleOnBoot(bot) {
 }
 
 async function handleKillLogSetup(message, bot) {
-  saveKillLogConfig({
+  await saveKillLogConfigPersistent({
     channelId: message.channel.id,
     setBy: message.author.id,
     setAt: Date.now(),
@@ -3524,14 +3709,16 @@ async function handleKillLogSetup(message, bot) {
 
   await message.reply([
     "Kill log is now active in this channel.",
-    "I saved the current kill-feed cursor as the baseline, so I will only alert for new kill/death events after this point.",
-    "Filtered mode: player deaths, PvP kills, and hostile NPC kills only. Puppet and animal farming kills are ignored.",
+    "I saved the current death-feed cursor as the baseline, so I will only alert for new deaths after this point.",
+    "Mode: all player death types are logged, including suicide puppets, traps, vehicles, animals, and unknown causes.",
+    "Normal puppet/animal farming kills are still ignored.",
+    "The channel and scan state are saved so redeploys/restarts do not reset the log.",
     `Scan interval: ${getKillLogIntervalSeconds()} seconds`,
   ].join("\n")).catch(() => {});
 }
 
 async function handleKillLogOff(message) {
-  clearKillLogConfig();
+  await clearKillLogConfigPersistent();
   if (killLogTimer) {
     clearInterval(killLogTimer);
     killLogTimer = null;
@@ -3540,8 +3727,8 @@ async function handleKillLogOff(message) {
 }
 
 async function handleKillLogStatus(message) {
-  const channelId = getKillLogChannelId();
-  const state = loadKillState();
+  const channelId = await getKillLogChannelIdAsync();
+  const state = await loadKillStatePersistent();
 
   if (!channelId) {
     await message.reply("Kill log is not set up. Run `!killlogsetup` in the channel where kill alerts should post.").catch(() => {});
@@ -3555,17 +3742,40 @@ async function handleKillLogStatus(message) {
     `Scan Interval: ${getKillLogIntervalSeconds()} seconds`,
     `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
     `Last Event Count: ${state?.lastEventCount ?? "Unknown"}`,
+    `Last Posted Count: ${state?.lastPostedCount ?? "Unknown"}`,
+    "Mode: all player death types are logged.",
+    "Persistence: saved across bot restarts/redeploys when Supabase table is installed.",
     `Cursor: ${state?.cursor ?? "Unknown"}`,
   ].join("\n")).catch(() => {});
 }
 
+async function handleKillLogScan(message, bot) {
+  const before = await loadKillStatePersistent();
+  await scanKillsAndAlert(bot);
+  const after = await loadKillStatePersistent();
+
+  await message.reply([
+    "☠️ **Kill Log Manual Scan Complete**",
+    `Events Found: ${after?.lastEventCount ?? "Unknown"}`,
+    `Events Posted: ${after?.lastPostedCount ?? 0}`,
+    `Last Scan: ${after?.updatedAt ? formatDate(after.updatedAt) : "Unknown"}`,
+    before?.cursor && after?.cursor && before.cursor === after.cursor ? "No new death events were found." : null,
+  ].filter(Boolean).join("\n")).catch(() => {});
+}
+
 function startKillLogOnBoot(bot) {
   if (!hasPasswordConfigured()) return;
-  const channelId = getKillLogChannelId();
-  if (!channelId) return;
 
-  ensureKillLogLoop(bot);
-  scanKillsAndAlert(bot, { baselineOnly: !loadKillState() }).catch((err) => {
+  loadKillLogConfigPersistent().then(async (config) => {
+    const channelId = process.env.GGCON_KILL_LOG_CHANNEL_ID || config?.channelId || null;
+    if (!channelId) return;
+
+    ensureKillLogLoop(bot);
+    const state = await loadKillStatePersistent();
+    scanKillsAndAlert(bot, { baselineOnly: !state }).catch((err) => {
+      console.error("❌ Boot kill log failed:", err.message);
+    });
+  }).catch((err) => {
     console.error("❌ Boot kill log failed:", err.message);
   });
 }
@@ -3676,7 +3886,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -3806,6 +4016,11 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!killlogstatus") {
       await handleKillLogStatus(message);
+      return true;
+    }
+
+    if (command === "!killlogscan") {
+      await handleKillLogScan(message, bot);
       return true;
     }
 
