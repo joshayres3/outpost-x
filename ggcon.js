@@ -2054,18 +2054,32 @@ function buildAdminActionLog(title, rows) {
   ].join("\n"));
 }
 
-async function sendGgconActionLog(bot, fallbackChannel, content) {
-  const channelId = getVehicleLogChannelId();
-  const channel = channelId
-    ? await bot.channels.fetch(channelId).catch(() => null)
-    : null;
+function getAdminActionLogChannelId() {
+  return process.env.WATCHER_ADMIN_ACTION_LOG_CHANNEL_ID
+    || process.env.GGCON_ADMIN_ACTION_LOG_CHANNEL_ID
+    || null;
+}
 
-  if (channel?.send) {
-    await channel.send(content).catch(() => {});
-    return;
+async function sendGgconActionLog(bot, fallbackChannel, content) {
+  // Admin action logs are intentionally NOT sent to vehicle logs or kill logs.
+  // Vehicle logs are for confirmed vehicle-destruction events only.
+  // Kill logs are for death events only.
+  const adminChannelId = getAdminActionLogChannelId();
+
+  if (adminChannelId && bot?.channels?.fetch) {
+    const adminChannel = await bot.channels.fetch(adminChannelId).catch(() => null);
+    if (adminChannel?.send) {
+      await adminChannel.send(content).catch(() => {});
+      return;
+    }
   }
 
-  if (fallbackChannel?.send) {
+  const blockedLogChannels = new Set([
+    String(getVehicleLogChannelId() || ""),
+    String(getKillLogChannelId() || ""),
+  ].filter(Boolean));
+
+  if (fallbackChannel?.send && !blockedLogChannels.has(String(fallbackChannel.id || ""))) {
     await fallbackChannel.send(content).catch(() => {});
   }
 }
