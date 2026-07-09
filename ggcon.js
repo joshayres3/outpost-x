@@ -55,6 +55,34 @@ async function ggconGet(endpoint) {
   return data;
 }
 
+async function ggconPost(endpoint, body = {}) {
+  const url = `${getBaseUrl()}${endpoint}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Password": getPassword(),
+    },
+    body: JSON.stringify(body || {}),
+  });
+
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok) {
+    const reason = data?.reason || data?.message || data?.error || `HTTP ${res.status}`;
+    throw new Error(`GGCON request failed: ${reason}`);
+  }
+
+  if (data && data.ok === false) {
+    const reason = data.reason || data.message || data.error || "Unknown GGCON error";
+    throw new Error(`GGCON request failed: ${reason}`);
+  }
+
+  return data || { ok: true };
+}
+
 function hasStaffRole(member) {
   const roles = member?.roles?.cache;
   if (!roles) return false;
@@ -480,7 +508,7 @@ function buildPlayerLabel(player, index) {
 }
 
 function buildMatchButtons(matches, commandName) {
-  const action = commandName === "!vehicle" || commandName === "!vehicles" ? "vehicle" : commandName === "!flag" || commandName === "!flags" ? "flag" : commandName === "!squad" ? "squad" : "player";
+  const action = commandName === "!vehicle" || commandName === "!vehicles" ? "vehicle" : commandName === "!flag" || commandName === "!flags" ? "flag" : commandName === "!squad" ? "squad" : commandName === "!nearvehicles" ? "nearvehicles" : "player";
   const usable = matches.filter((player) => player.userId).slice(0, 10);
   const rows = [];
 
@@ -1303,6 +1331,437 @@ function startVehicleWatchOnBoot(bot) {
   });
 }
 
+
+function parsePlayerActionAmountArgs(args, commandName) {
+  const actionIndex = args.findIndex((part) => ["add", "remove", "set"].includes(String(part || "").toLowerCase()));
+
+  if (actionIndex <= 0 || actionIndex >= args.length - 1) {
+    return {
+      error: `Use: \`${commandName} <player name or Steam ID> add/remove/set <amount>\``,
+    };
+  }
+
+  const playerQuery = args.slice(0, actionIndex).join(" ").trim();
+  const action = String(args[actionIndex] || "").toLowerCase();
+  const amountText = String(args[actionIndex + 1] || "").replace(/,/g, "").trim();
+  const amount = Number(amountText);
+
+  if (!playerQuery) {
+    return { error: `Use: \`${commandName} <player name or Steam ID> add/remove/set <amount>\`` };
+  }
+
+  if (!Number.isFinite(amount) || amount < 0) {
+    return { error: "Amount must be a valid number." };
+  }
+
+  return { playerQuery, action, amount: Math.floor(amount) };
+}
+
+function getPlayerDisplayName(player, fallback = "Unknown") {
+  return player?.characterName || player?.steamName || player?.realName || fallback;
+}
+
+function buildAdminActionLog(title, rows) {
+  return clampDiscord([
+    title,
+    "",
+    ...rows.filter(Boolean),
+  ].join("\n"));
+}
+
+async function sendGgconActionLog(bot, fallbackChannel, content) {
+  const channelId = getVehicleLogChannelId();
+  const channel = channelId
+    ? await bot.channels.fetch(channelId).catch(() => null)
+    : null;
+
+  if (channel?.send) {
+    await channel.send(content).catch(() => {});
+    return;
+  }
+
+  if (fallbackChannel?.send) {
+    await fallbackChannel.send(content).catch(() => {});
+  }
+}
+
+function removeVehicleFromSavedState(vehicleId) {
+  const state = loadVehicleState();
+  if (!state?.vehicles) return;
+  const key = String(vehicleId);
+  if (!state.vehicles[key]) return;
+  delete state.vehicles[key];
+  state.updatedAt = Date.now();
+  saveVehicleState(state);
+}
+
+function findVehicleById(vehicleData, vehicleId) {
+  const vehicles = Array.isArray(vehicleData?.vehicles) ? vehicleData.vehicles : [];
+  return vehicles.find((vehicle) => String(vehicle.id) === String(vehicleId)) || null;
+}
+
+function findFlagById(flagData, flagId) {
+  const flags = Array.isArray(flagData?.flags) ? flagData.flags : [];
+  return flags.find((flag) => String(flag.flagId) === String(flagId)) || null;
+}
+
+function buildDestroyVehicleConfirm(vehicle) {
+  const content = clampDiscord([
+    "⚠️ **Confirm Vehicle Destroy**",
+    "",
+    `Vehicle: **${vehicle.name || vehicle.class || "Vehicle"}**`,
+    `ID: \`${vehicle.id}\``,
+    `Class: ${vehicle.class || "Unknown"}`,
+    `Owner: ${vehicle.owner || "Unknown"}`,
+    `Owner Steam ID: ${vehicle.ownerSteamId ? `\`${vehicle.ownerSteamId}\`` : "Unknown"}`,
+    `Location: ${formatLocation(vehicle.location)}`,
+    "",
+    "Click **Destroy Vehicle** to confirm.",
+  ].join("\n"));
+
+  return {
+    content,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ggcon:confirmDestroyVehicle:${vehicle.id}`)
+          .setLabel("Destroy Vehicle")
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId("ggcon:cancel:destroyvehicle")
+          .setLabel("Cancel")
+          .setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  };
+}
+
+function buildDestroyBaseConfirm(flag) {
+  const content = clampDiscord([
+    "⚠️ **Confirm Base Destroy by Flag**",
+    "",
+    `Base: **${flag.baseName || `Base #${flag.baseId || "?"}`}**`,
+    `Flag ID: \`${flag.flagId}\` | Base ID: \`${flag.baseId ?? "Unknown"}\``,
+    `Owner: ${flag.owner || "Unknown"}`,
+    `Owner Steam ID: ${flag.ownerSteamId ? `\`${flag.ownerSteamId}\`` : "Unknown"}`,
+    `Location: ${formatLocation(flag.location)}`,
+    `Elements: ${flag.elementCount ?? "?"}/${flag.maxElements ?? "?"}`,
+    "",
+    "Click **Destroy Base** to confirm.",
+  ].join("\n"));
+
+  return {
+    content,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ggcon:confirmDestroyBase:${flag.flagId}`)
+          .setLabel("Destroy Base")
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId("ggcon:cancel:destroybase")
+          .setLabel("Cancel")
+          .setStyle(ButtonStyle.Secondary)
+      ),
+    ],
+  };
+}
+
+async function handleDestroyVehicleCommand(message, args) {
+  const vehicleId = String(args[0] || "").trim();
+  if (!vehicleId) {
+    await message.reply("Use: `!destroyvehicle <vehicle ID>`").catch(() => {});
+    return;
+  }
+
+  const vehicleData = await ggconGet("/vehicles.json");
+  const vehicle = findVehicleById(vehicleData, vehicleId);
+
+  if (!vehicle) {
+    await message.reply(`No vehicle found with ID \`${vehicleId}\`.`).catch(() => {});
+    return;
+  }
+
+  const confirm = buildDestroyVehicleConfirm(vehicle);
+  await message.reply(confirm).catch(() => {});
+}
+
+async function handleDestroyBaseCommand(message, args) {
+  const flagId = String(args[0] || "").trim();
+  if (!flagId) {
+    await message.reply("Use: `!destroybase <flag ID>`").catch(() => {});
+    return;
+  }
+
+  const flagData = await ggconGet("/flags.json");
+  const flag = findFlagById(flagData, flagId);
+
+  if (!flag) {
+    await message.reply(`No flag found with ID \`${flagId}\`.`).catch(() => {});
+    return;
+  }
+
+  const confirm = buildDestroyBaseConfirm(flag);
+  await message.reply(confirm).catch(() => {});
+}
+
+async function confirmDestroyVehicle(interaction) {
+  const [, , vehicleId] = interaction.customId.split(":");
+  const vehicleData = await ggconGet("/vehicles.json");
+  const vehicle = findVehicleById(vehicleData, vehicleId);
+
+  if (!vehicle) {
+    await interaction.update({ content: `No vehicle found with ID \`${vehicleId}\`. It may already be gone.`, components: [] }).catch(() => {});
+    return true;
+  }
+
+  await ggconPost(`/vehicles/${encodeURIComponent(vehicleId)}/destroy`, {});
+  removeVehicleFromSavedState(vehicleId);
+
+  const log = buildAdminActionLog("🚗 **Vehicle Destroyed by Admin**", [
+    `Vehicle: **${vehicle.name || vehicle.class || "Vehicle"}**`,
+    `Vehicle ID: \`${vehicle.id}\``,
+    `Class: ${vehicle.class || "Unknown"}`,
+    `Owner: ${vehicle.owner || "Unknown"}`,
+    `Owner Steam ID: ${vehicle.ownerSteamId ? `\`${vehicle.ownerSteamId}\`` : "Unknown"}`,
+    `Last Location: ${formatLocation(vehicle.location)}`,
+    `Destroyed by: ${interaction.member?.displayName || interaction.user?.tag || "Unknown"}`,
+  ]);
+
+  await sendGgconActionLog(interaction.client, interaction.channel, log);
+  await interaction.update({ content: `Vehicle \`${vehicleId}\` destroyed and logged.`, components: [] }).catch(() => {});
+  return true;
+}
+
+async function confirmDestroyBase(interaction) {
+  const [, , flagId] = interaction.customId.split(":");
+  const flagData = await ggconGet("/flags.json");
+  const flag = findFlagById(flagData, flagId);
+
+  if (!flag) {
+    await interaction.update({ content: `No flag found with ID \`${flagId}\`. It may already be gone.`, components: [] }).catch(() => {});
+    return true;
+  }
+
+  const command = `#DestroyAllBaseBuildingElementsForFlag ${flagId} Please`;
+  const result = await ggconPost("/command", { command });
+
+  const log = buildAdminActionLog("🚩 **Base Destroyed by Flag**", [
+    `Flag ID: \`${flag.flagId}\``,
+    `Base ID: \`${flag.baseId ?? "Unknown"}\``,
+    `Base Name: ${flag.baseName || "Unknown"}`,
+    `Owner: ${flag.owner || "Unknown"}`,
+    `Owner Steam ID: ${flag.ownerSteamId ? `\`${flag.ownerSteamId}\`` : "Unknown"}`,
+    `Location: ${formatLocation(flag.location)}`,
+    `Elements: ${flag.elementCount ?? "?"}/${flag.maxElements ?? "?"}`,
+    `Destroyed by: ${interaction.member?.displayName || interaction.user?.tag || "Unknown"}`,
+    `Command: \`${command}\``,
+    result?.lines?.length ? `Output: ${result.lines.slice(0, 4).join(" | ")}` : result?.message ? `Output: ${result.message}` : null,
+  ]);
+
+  await sendGgconActionLog(interaction.client, interaction.channel, log);
+  await interaction.update({ content: `Base destroy command sent for flag \`${flagId}\` and logged.`, components: [] }).catch(() => {});
+  return true;
+}
+
+async function handleAnnounceCommand(message, args) {
+  const text = args.join(" ").trim();
+  if (!text) {
+    await message.reply("Use: `!announce <message>`").catch(() => {});
+    return;
+  }
+
+  await ggconPost("/message", { text, type: "ServerMessage" });
+  await message.reply(`Announcement sent in-game:\n> ${text}`).catch(() => {});
+}
+
+async function applyPlayerBalanceChange(message, player, kind, action, amount) {
+  const steamId = String(player.userId || "").trim();
+  const endpoint = kind === "cash" ? "currency" : "fame";
+  const label = kind === "cash" ? "Cash" : "Fame";
+
+  if (!steamId) {
+    await message.reply("That player does not have a usable Steam ID.").catch(() => {});
+    return;
+  }
+
+  await ggconPost(`/players/${encodeURIComponent(steamId)}/${endpoint}`, { action, amount });
+
+  await message.reply([
+    `${label} updated for **${getPlayerDisplayName(player)}**.`,
+    `Steam ID: \`${steamId}\``,
+    `Action: **${action}** ${amount.toLocaleString("en-CA")}`,
+  ].join("\n")).catch(() => {});
+}
+
+function buildPlayerOperationButtons(matches, commandName, action, amount) {
+  const op = commandName === "!cash" ? "cashop" : "fameop";
+  const usable = matches.filter((player) => player.userId).slice(0, 10);
+  const rows = [];
+
+  for (let i = 0; i < usable.length; i += 5) {
+    const row = new ActionRowBuilder();
+
+    usable.slice(i, i + 5).forEach((player, offset) => {
+      const index = i + offset;
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ggcon:${op}:${player.userId}:${action}:${amount}`)
+          .setLabel(String(index + 1))
+          .setStyle(ButtonStyle.Primary)
+      );
+    });
+
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+async function handleCashOrFameCommand(message, args, kind) {
+  const commandName = kind === "cash" ? "!cash" : "!fame";
+  const parsed = parsePlayerActionAmountArgs(args, commandName);
+  if (parsed.error) {
+    await message.reply(parsed.error).catch(() => {});
+    return;
+  }
+
+  const playerResult = await getPlayerForLookup(parsed.playerQuery);
+
+  if (playerResult.type === "none") {
+    await message.reply(`No player found for **${parsed.playerQuery}**.`).catch(() => {});
+    return;
+  }
+
+  if (playerResult.type === "multiple") {
+    await message.reply({
+      content: buildMultipleMatchesReply(parsed.playerQuery, playerResult.matches, commandName),
+      components: buildPlayerOperationButtons(playerResult.matches, commandName, parsed.action, parsed.amount),
+    }).catch(() => {});
+    return;
+  }
+
+  await applyPlayerBalanceChange(message, playerResult.player, kind, parsed.action, parsed.amount);
+}
+
+async function handleOnlineCommand(message) {
+  const onlinePlayers = await getOnlinePlayers();
+
+  if (onlinePlayers.length === 0) {
+    await message.reply("No players are currently online.").catch(() => {});
+    return;
+  }
+
+  const sorted = onlinePlayers.sort((a, b) => String(a.characterName || a.steamName || "").localeCompare(String(b.characterName || b.steamName || "")));
+  const rows = sorted.slice(0, 25).map((player, index) => {
+    const squad = player.squad?.name || "No squad";
+    return `**${index + 1}. ${getPlayerDisplayName(player)}** — Ping: ${player.ping ?? "?"} ms | Fame: ${formatMoney(player.fame)} | Cash: ${formatMoney(player.accountBalance)} | Squad: ${squad}\nSteam ID: \`${player.userId || "Unknown"}\` | Location: ${formatLocation(player.location)}`;
+  });
+
+  const extra = sorted.length > 25 ? `\n\nShowing 25 of ${sorted.length} online players.` : "";
+
+  await message.reply(clampDiscord([
+    `🟢 **Online Players (${sorted.length})**`,
+    "",
+    rows.join("\n\n"),
+    extra,
+  ].join("\n"))).catch(() => {});
+}
+
+function buildNearbyVehicleLine(entry, index) {
+  const vehicle = entry.vehicle;
+  return [
+    `**${index + 1}. ${vehicle.name || vehicle.class || "Vehicle"}** — ${formatApproxDistance(entry.distance)} away`,
+    `ID: \`${vehicle.id}\` | Class: ${vehicle.class || "Unknown"}`,
+    `Owner: ${vehicle.owner || "Unknown"}${vehicle.ownerSteamId ? ` | \`${vehicle.ownerSteamId}\`` : ""}`,
+    `Location: ${formatLocation(vehicle.location)}`,
+  ].join("\n");
+}
+
+async function buildNearVehiclesBySteamId(steamId) {
+  const playerResult = await getPlayerForLookup(String(steamId || ""));
+  if (playerResult.type !== "single") return `No player found for \`${steamId}\`.`;
+
+  const player = playerResult.player;
+  if (!player.location) {
+    return `No usable location found for **${getPlayerDisplayName(player)}**. They may need to be online or have a last-known location in GGCON.`;
+  }
+
+  const vehicleData = await ggconGet("/vehicles.json");
+  const vehicles = Array.isArray(vehicleData.vehicles) ? vehicleData.vehicles : [];
+  const nearby = vehicles
+    .filter((vehicle) => vehicle.location)
+    .map((vehicle) => ({ vehicle, distance: distanceUnrealUnits(player.location, vehicle.location) }))
+    .filter((entry) => Number.isFinite(entry.distance))
+    .sort((a, b) => a.distance - b.distance);
+
+  if (nearby.length === 0) {
+    return `No vehicles with usable locations found near **${getPlayerDisplayName(player)}**.`;
+  }
+
+  const rows = nearby.slice(0, 10).map(buildNearbyVehicleLine);
+  const ownershipNote = vehicleData.ownershipResolved === false
+    ? "\n\n⚠️ Vehicle ownership is not fully resolved right now."
+    : "";
+
+  return clampDiscord([
+    `📍 **Nearest Vehicles to ${getPlayerDisplayName(player)}**`,
+    `Player Location: ${formatLocation(player.location)}`,
+    `Showing closest ${Math.min(10, nearby.length)} of ${nearby.length} vehicle(s).`,
+    "",
+    rows.join("\n\n"),
+    ownershipNote,
+  ].join("\n"));
+}
+
+async function handleNearVehiclesCommand(message, args) {
+  const query = args.join(" ").trim();
+  if (!query) {
+    await message.reply("Use: `!nearvehicles <player name or Steam ID>`").catch(() => {});
+    return;
+  }
+
+  const playerResult = await getPlayerForLookup(query);
+
+  if (playerResult.type === "none") {
+    await message.reply(`No player found for **${query}**.`).catch(() => {});
+    return;
+  }
+
+  if (playerResult.type === "multiple") {
+    await message.reply({
+      content: buildMultipleMatchesReply(query, playerResult.matches, "!nearvehicles"),
+      components: buildMatchButtons(playerResult.matches, "!nearvehicles"),
+    }).catch(() => {});
+    return;
+  }
+
+  const content = await buildNearVehiclesBySteamId(playerResult.player.userId);
+  await message.reply(content).catch(() => {});
+}
+
+async function handleCashOrFameButton(interaction, kind, valueParts) {
+  const [steamId, action, amountText] = valueParts;
+  const amount = Number(amountText);
+  const playerResult = await getPlayerForLookup(String(steamId || ""));
+
+  if (playerResult.type !== "single") {
+    await interaction.reply({ content: `No player found for \`${steamId}\`.`, ephemeral: true }).catch(() => {});
+    return true;
+  }
+
+  await ggconPost(`/players/${encodeURIComponent(steamId)}/${kind === "cash" ? "currency" : "fame"}`, {
+    action,
+    amount,
+  });
+
+  await interaction.reply({
+    content: `${kind === "cash" ? "Cash" : "Fame"} updated for **${getPlayerDisplayName(playerResult.player)}**: **${action}** ${Number(amount).toLocaleString("en-CA")}.`,
+    ephemeral: true,
+  }).catch(() => {});
+  return true;
+}
+
 async function handleGgconInteraction(interaction) {
   if (!interaction.isButton?.()) return false;
   if (!String(interaction.customId || "").startsWith("ggcon:")) return false;
@@ -1315,6 +1774,27 @@ async function handleGgconInteraction(interaction) {
   const [, action, value] = interaction.customId.split(":");
 
   try {
+    if (action === "cancel") {
+      await interaction.update({ content: "Cancelled.", components: [] }).catch(() => {});
+      return true;
+    }
+
+    if (action === "confirmDestroyVehicle") {
+      return await confirmDestroyVehicle(interaction);
+    }
+
+    if (action === "confirmDestroyBase") {
+      return await confirmDestroyBase(interaction);
+    }
+
+    if (action === "cashop") {
+      return await handleCashOrFameButton(interaction, "cash", value ? [value, ...interaction.customId.split(":").slice(3)] : interaction.customId.split(":").slice(2));
+    }
+
+    if (action === "fameop") {
+      return await handleCashOrFameButton(interaction, "fame", value ? [value, ...interaction.customId.split(":").slice(3)] : interaction.customId.split(":").slice(2));
+    }
+
     if (action === "flagall") {
       const flagData = await ggconGet("/flags.json");
       const page = buildAllFlagsPage(flagData, Number(value || 1));
@@ -1337,6 +1817,7 @@ async function handleGgconInteraction(interaction) {
     if (action === "vehicle" || action === "vehicles") content = await buildVehiclesBySteamId(value);
     else if (action === "flag" || action === "flags") content = await buildFlagsBySteamId(value);
     else if (action === "squad") content = await buildSquadBySteamId(value);
+    else if (action === "nearvehicles") content = await buildNearVehiclesBySteamId(value);
     else content = await buildPlayerDetailsBySteamId(value);
 
     await interaction.reply({ content, ephemeral: true }).catch(() => {});
@@ -1361,7 +1842,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!destroyvehicle", "!destroybase", "!announce", "!cash", "!fame", "!online", "!nearvehicles"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -1401,6 +1882,41 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!overcap") {
       await handleOvercapLookup(message, args);
+      return true;
+    }
+
+    if (command === "!destroyvehicle") {
+      await handleDestroyVehicleCommand(message, args);
+      return true;
+    }
+
+    if (command === "!destroybase") {
+      await handleDestroyBaseCommand(message, args);
+      return true;
+    }
+
+    if (command === "!announce") {
+      await handleAnnounceCommand(message, args);
+      return true;
+    }
+
+    if (command === "!cash") {
+      await handleCashOrFameCommand(message, args, "cash");
+      return true;
+    }
+
+    if (command === "!fame") {
+      await handleCashOrFameCommand(message, args, "fame");
+      return true;
+    }
+
+    if (command === "!online") {
+      await handleOnlineCommand(message);
+      return true;
+    }
+
+    if (command === "!nearvehicles") {
+      await handleNearVehiclesCommand(message, args);
       return true;
     }
 
