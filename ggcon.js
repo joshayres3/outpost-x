@@ -1332,6 +1332,7 @@ async function handlePlayerLookup(message, args) {
 
   const player = result.player;
   const ipInfo = await getPlayerIpInfo(player).catch(() => null);
+  const knownPreviousNames = await getKnownPreviousNamesForPlayer(player).catch(() => []);
   const online = player.online === true || player.ping !== undefined || player.health !== undefined;
   const squad = player.squad?.name
     ? `${player.squad.name}${player.squad.members !== undefined ? ` (${player.squad.members} members)` : ""}`
@@ -1343,6 +1344,8 @@ async function handlePlayerLookup(message, args) {
     `**Status:** ${online ? "Online" : "Offline"}`,
     `**Steam ID:** \`${player.userId || "Unknown"}\``,
     `**Steam Name:** ${player.steamName || "Unknown"}`,
+    `**Fake Name:** ${formatPlayerFakeName(getPlayerFakeName(player))}`,
+    `**Known Previous Names:** ${formatKnownPreviousNames(knownPreviousNames)}`,
     `**Last IP:** ${formatPlayerIpInfo(ipInfo)}`,
     `**Fame:** ${formatMoney(player.fame)}`,
     `**Cash:** ${formatMoney(player.accountBalance)}`,
@@ -2264,6 +2267,222 @@ function getPlayerProfileId(player) {
   return String(value);
 }
 
+function firstNonEmptyValue(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return null;
+}
+
+function getPlayerFakeName(player) {
+  return firstNonEmptyValue(
+    player?.fakeName,
+    player?.fake_name,
+    player?.alias,
+    player?.displayAlias,
+    player?.displayName,
+    player?.currentAlias,
+    player?.lastKnownAlias,
+  );
+}
+
+function formatPlayerFakeName(value) {
+  return value ? value : "Unknown";
+}
+
+
+function cleanKnownPlayerName(value) {
+  const text = String(value ?? "")
+    .replace(/[`*_~|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return null;
+
+  const lowered = text.toLowerCase();
+  if (["unknown", "none", "null", "undefined", "offline", "n/a", "na"].includes(lowered)) return null;
+  if (/^\d{15,20}$/.test(text)) return null;
+  if (/^\d+$/.test(text)) return null;
+  return text.slice(0, 80);
+}
+
+function getNameHistoryTimestamp(value) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) && num > 0 ? num : Date.now();
+}
+
+function addKnownName(history, steamId, name, kind = "name", seenAt = Date.now()) {
+  const id = String(steamId || "").trim();
+  const clean = cleanKnownPlayerName(name);
+  if (!id || !clean) return history || {};
+
+  const next = { ...(history || {}) };
+  const current = next[id] || { names: [] };
+  const names = Array.isArray(current.names) ? current.names.slice() : [];
+  const key = clean.toLowerCase();
+  const now = getNameHistoryTimestamp(seenAt);
+  const index = names.findIndex((entry) => String(entry?.name || "").toLowerCase() === key);
+
+  if (index >= 0) {
+    names[index] = {
+      ...names[index],
+      name: names[index].name || clean,
+      kind: names[index].kind || kind,
+      firstSeenAt: Math.min(getNameHistoryTimestamp(names[index].firstSeenAt), now),
+      lastSeenAt: Math.max(getNameHistoryTimestamp(names[index].lastSeenAt), now),
+    };
+  } else {
+    names.push({ name: clean, kind, firstSeenAt: now, lastSeenAt: now });
+  }
+
+  names.sort((a, b) => Number(b?.lastSeenAt || 0) - Number(a?.lastSeenAt || 0));
+  next[id] = {
+    ...current,
+    steamId: id,
+    names: names.slice(0, 30),
+    updatedAt: Date.now(),
+  };
+  return next;
+}
+
+function collectNameValuesFromObject(value, out = [], seen = new Set()) {
+  if (value === null || value === undefined) return out;
+
+  if (typeof value === "string" || typeof value === "number") {
+    const clean = cleanKnownPlayerName(value);
+    if (clean) out.push(clean);
+    return out;
+  }
+
+  if (typeof value !== "object") return out;
+  if (seen.has(value)) return out;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 40)) collectNameValuesFromObject(item, out, seen);
+    return out;
+  }
+
+  const preferredKeys = [
+    "previousName", "previousNames", "oldName", "oldNames", "knownName", "knownNames",
+    "nameHistory", "name_history", "aliases", "aliasHistory", "fakeNameHistory",
+    "characterName", "steamName", "realName", "fakeName", "fake_name", "alias", "displayAlias",
+    "displayName", "currentAlias", "lastKnownAlias",
+  ];
+
+  for (const key of preferredKeys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      collectNameValuesFromObject(value[key], out, seen);
+    }
+  }
+
+  return out;
+}
+
+function addObjectNamesToHistory(history, steamId, player, seenAt = Date.now()) {
+  let next = history || {};
+  const names = collectNameValuesFromObject(player, []);
+  for (const name of names) {
+    next = addKnownName(next, steamId, name, "server record", seenAt);
+  }
+  return next;
+}
+
+function parsePlayerRefsFromLogLine(entry) {
+  const line = String(entry?.line || "");
+  const results = [];
+  const regex = /([0-9]{15,20}):([^('\n]+)\((\d+)\)/g;
+  let match;
+  while ((match = regex.exec(line)) !== null) {
+    results.push({
+      steamId: match[1],
+      name: match[2].trim(),
+      profileId: match[3],
+      time: Number(entry?.t || Date.now()),
+      source: entry?.src || "server logs",
+    });
+  }
+  return results;
+}
+
+function updateNameHistoryFromLoginData(previousHistory, currentOnline, rawEvents, rawLines) {
+  let history = { ...(previousHistory || {}) };
+
+  for (const record of Object.values(currentOnline || {})) {
+    if (!record?.steamId) continue;
+    history = addKnownName(history, record.steamId, record.name, "player name", record.lastSeenAt || Date.now());
+    history = addKnownName(history, record.steamId, record.steamName, "steam name", record.lastSeenAt || Date.now());
+    history = addKnownName(history, record.steamId, record.fakeName, "fake name", record.lastSeenAt || Date.now());
+  }
+
+  for (const event of rawEvents || []) {
+    if (!event?.steamId) continue;
+    history = addKnownName(history, event.steamId, event.name, "login/log name", event.time || Date.now());
+  }
+
+  for (const entry of rawLines || []) {
+    for (const ref of parsePlayerRefsFromLogLine(entry)) {
+      history = addKnownName(history, ref.steamId, ref.name, "server log name", ref.time || Date.now());
+    }
+  }
+
+  return history;
+}
+
+function currentPlayerNameSet(player) {
+  const values = [
+    player?.characterName,
+    player?.steamName,
+    player?.realName,
+    getPlayerFakeName(player),
+  ];
+  return new Set(values.map(cleanKnownPlayerName).filter(Boolean).map((name) => name.toLowerCase()));
+}
+
+function formatKnownPreviousNames(entries) {
+  const usable = (entries || [])
+    .filter((entry) => cleanKnownPlayerName(entry?.name))
+    .sort((a, b) => Number(b?.lastSeenAt || 0) - Number(a?.lastSeenAt || 0))
+    .slice(0, 8);
+
+  if (!usable.length) return "None saved yet";
+
+  return usable
+    .map((entry) => {
+      const date = entry?.lastSeenAt ? formatDate(entry.lastSeenAt) : "Unknown time";
+      return `${cleanKnownPlayerName(entry.name)} (${date})`;
+    })
+    .join(", ");
+}
+
+async function getKnownPreviousNamesForPlayer(player) {
+  const steamId = getPlayerSteamId(player);
+  if (!steamId) return [];
+
+  const state = await loadLoginLogStatePersistent().catch(() => null);
+  let history = { ...(state?.nameHistory || {}) };
+  history = addObjectNamesToHistory(history, steamId, player, Date.now());
+
+  const hours = Math.max(1, Number(process.env.WATCHER_PLAYER_NAME_LOOKBACK_HOURS || "168") || 168);
+  const logData = await fetchRawServerLogs({
+    since: Math.max(0, Date.now() - (hours * 60 * 60 * 1000)),
+    label: `${hours}h`,
+  }, "SCUM,login").catch(() => null);
+
+  const lines = Array.isArray(logData?.lines) ? logData.lines : [];
+  const rawLookups = buildLoginRawLookups(lines);
+  history = updateNameHistoryFromLoginData(history, {}, rawLookups.events, lines);
+
+  const currentNames = currentPlayerNameSet(player);
+  const entries = Array.isArray(history?.[steamId]?.names) ? history[steamId].names : [];
+  return entries.filter((entry) => {
+    const clean = cleanKnownPlayerName(entry?.name);
+    if (!clean) return false;
+    return !currentNames.has(clean.toLowerCase());
+  });
+}
+
 function parseLoginLogPlayerLine(entry) {
   const line = String(entry?.line || "");
   const match = line.match(/'((?:\d{1,3}\.){3}\d{1,3})\s+([0-9]{15,20}):([^(']+)\((\d+)\)'\s+logged\s+(in|out)(?:\s+at:\s*X=([-\d.]+)\s+Y=([-\d.]+)\s+Z=([-\d.]+))?/i);
@@ -2306,6 +2525,7 @@ function makeOnlinePlayerSnapshot(player, previous, rawRecord) {
   return {
     steamId,
     name: getPlayerDisplayName(player, rawRecord?.name || previous?.name || "Unknown"),
+    fakeName: getPlayerFakeName(player) || rawRecord?.fakeName || previous?.fakeName || null,
     steamName: player?.steamName || previous?.steamName || null,
     profileId,
     ip: directIp || rawRecord?.ip || previous?.ip || null,
@@ -2335,6 +2555,7 @@ function buildPlayerConnectionAlert(kind, record, options = {}) {
     title,
     "",
     `**Player:** ${record?.name || "Unknown"}`,
+    `**Fake Name:** ${formatPlayerFakeName(record?.fakeName)}`,
     `**Steam ID:** \`${record?.steamId || "Unknown"}\``,
     `**IP:** ${ip}`,
     `**Location:** ${location}`,
@@ -2349,6 +2570,7 @@ function mergeLogoutRecord(previous, rawEvent) {
   return {
     steamId: rawEvent?.steamId || previous?.steamId || "Unknown",
     name: rawEvent?.name || previous?.name || "Unknown",
+    fakeName: rawEvent?.fakeName || previous?.fakeName || null,
     steamName: previous?.steamName || null,
     profileId: rawEvent?.profileId || previous?.profileId || null,
     ip: rawEvent?.ip || previous?.ip || null,
@@ -2375,11 +2597,14 @@ async function scanLoginLogAndAlert(bot, { baselineOnly = false } = {}) {
   const currentOnline = buildOnlinePlayerSnapshotMap(onlinePlayers, previousOnline, rawLookups);
   const cursor = logData?.next || now;
 
+  const nameHistory = updateNameHistoryFromLoginData(previousState.nameHistory || {}, currentOnline, rawLookups.events, logLines);
+
   if (baselineOnly || !previousState.online) {
     await saveLoginLogStatePersistent({
       updatedAt: now,
       cursor,
       online: currentOnline,
+      nameHistory,
       seenRawEvents: previousState.seenRawEvents || [],
       lastLoginCount: 0,
       lastLogoutCount: 0,
@@ -2434,6 +2659,7 @@ async function scanLoginLogAndAlert(bot, { baselineOnly = false } = {}) {
     updatedAt: now,
     cursor,
     online: currentOnline,
+    nameHistory,
     lastLoginCount: loginCount,
     lastLogoutCount: logoutCount,
     lastSentCount: sent,
