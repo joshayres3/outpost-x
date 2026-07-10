@@ -11,8 +11,8 @@ const MECH_PACKS = {
   rpg7: {
     key: "rpg7",
     emoji: "🚀",
-    label: "RPG-7",
-    buttonLabel: "Buy RPG-7",
+    label: "RPG-7 x1",
+    buttonLabel: "Buy RPG-7 x1",
     price: 50000,
     quantity: 1,
     aliases: [
@@ -27,8 +27,8 @@ const MECH_PACKS = {
   rockets10: {
     key: "rockets10",
     emoji: "💥",
-    label: "Rockets PG-7M",
-    buttonLabel: "Buy Rockets PG-7M",
+    label: "Rockets PG-7M x10",
+    buttonLabel: "Buy Rockets PG-7M x10",
     price: 15000,
     quantity: 10,
     aliases: [
@@ -225,8 +225,8 @@ async function resolvePackItem(pack) {
 function buildMechPackRows() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("mechpack:buy:rpg7").setLabel("Buy RPG-7 — $50,000").setEmoji("🚀").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("mechpack:buy:rockets10").setLabel("Buy Rockets PG-7M — $15,000").setEmoji("💥").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId("mechpack:buy:rpg7").setLabel("Buy RPG-7 x1 — $50,000").setEmoji("🚀").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("mechpack:buy:rockets10").setLabel("Buy Rockets PG-7M x10 — $15,000").setEmoji("💥").setStyle(ButtonStyle.Primary)
     ),
   ];
 }
@@ -236,8 +236,8 @@ function buildMechPackText() {
     "# 🤖 Mech Hunting Packs",
     "Buy a small starter pack for mech hunting nights.",
     "",
-    "🚀 **RPG-7** — `$50,000`",
-    "💥 **Rockets PG-7M** — `$15,000`",
+    "🚀 **RPG-7 x1** — `$50,000`",
+    "💥 **Rockets PG-7M x10** — `$15,000`",
     "",
     "⚠️ **Profit note:** To actually profit from mechs, you will need to loot/find rockets — buying rockets is mainly for fun.",
     "",
@@ -403,7 +403,7 @@ async function confirmBuy(interaction, packKey) {
   await interaction.update({
     content: [
       "✅ **Mech Hunting Pack Purchased**",
-      `${pack.emoji} **${pack.label}** x${pack.quantity}`,
+      `${pack.emoji} **${pack.label}**`,
       `Price Paid: **${formatMoney(pack.price)}**`,
       `New Cash Balance: **${formatMoney(afterCash)}**`,
       "Item spawned near your linked SCUM character.",

@@ -44,6 +44,18 @@ const CATEGORIES = {
       ["Rules intelligence", "Answers rule questions from posted rules."],
     ],
   },
+  register: {
+    emoji: "🔗",
+    label: "Register",
+    title: "🔗 REGISTER STEAM",
+    aliases: ["register", "steam", "link", "linksteam", "registersetup", "verify"],
+    lines: [
+      ["!registersetup", "Post/move the player Register Steam panel."],
+      ["Register Steam button", "Player gets a code to type in SCUM chat."],
+      ["Verify Code button", "Links Discord to the player’s SCUM character."],
+      ["Used for", "Vehicle insurance and mech hunting packs."],
+    ],
+  },
   server: {
     emoji: "📡",
     label: "Server",
@@ -109,7 +121,7 @@ const CATEGORIES = {
     emoji: "👁️",
     label: "Logs",
     title: "👁️ LOGS + WATCHERS",
-    aliases: ["logs", "log", "vehiclelog", "killlog", "loginlog", "watchers"],
+    aliases: ["logs", "log", "vehiclelog", "vehiclelogs", "killlog", "killlogs", "loginlog", "loginlogs", "watchers"],
     lines: [
       ["!vehiclelogsetup", "Start vehicle destruction log."],
       ["!vehiclelogstatus", "Vehicle log status."],
@@ -145,7 +157,7 @@ const CATEGORIES = {
     emoji: "🤖",
     label: "Mechs",
     title: "🤖 MECH SCHEDULE",
-    aliases: ["mechs", "mech", "sentry", "sentries", "mechschedule", "mechpack", "mechpacks", "rpg", "rpg7"],
+    aliases: ["mechs", "mech", "sentry", "sentries", "mechschedule"],
     lines: [
       ["!mechtest", "Test SFTP and read current sentry setting."],
       ["!mechson", "Set mechs ON after next restart."],
@@ -153,8 +165,21 @@ const CATEGORIES = {
       ["!mechschedulesetup", "Sunday 11:45 PM ON / Monday 11:45 PM OFF Toronto."],
       ["!mechschedulestatus", "Mech schedule and current setting status."],
       ["!mechscheduleoff", "Disable automatic mech schedule."],
-      ["!mechpacksetup", "Post/move the mech hunting pack shop."],
-      ["!mechpackstatus", "Check mech pack item resolution."],
+      ["Panel", "Watcher edits the original mech status post."],
+    ],
+  },
+
+  mechpacks: {
+    emoji: "🎯",
+    label: "Mech Packs",
+    title: "🎯 MECH HUNTING PACKS",
+    aliases: ["mechpacks", "mechpack", "rpg", "rpg7", "pg7m", "rockets"],
+    lines: [
+      ["!mechpacksetup", "Post/move the player mech hunting pack shop."],
+      ["!mechpackstatus", "Check RPG-7 and Rockets PG-7M item resolution."],
+      ["RPG-7 x1", "$50,000."],
+      ["Rockets PG-7M x10", "$15,000."],
+      ["Register first", "Players must register before buying."],
     ],
   },
   cargo: {
@@ -203,6 +228,7 @@ const CATEGORIES = {
 const ORDER = [
   "core",
   "setup",
+  "register",
   "server",
   "players",
   "vehicles",
@@ -211,6 +237,7 @@ const ORDER = [
   "logs",
   "insurance",
   "mechs",
+  "mechpacks",
   "cargo",
   "events",
   "safety",
@@ -245,7 +272,7 @@ function buildMenuContent() {
     "",
     rows.join("  •  "),
     "",
-    "Examples: `!help vehicle`, `!help insurance`, `!help mechs`, `!help cargo`, `!help jail`",
+    "Examples: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help register`, `!help loginlogs`",
   ].join("\n");
 }
 
@@ -364,7 +391,7 @@ async function handleCommandHelpMessage(message) {
     await message.reply([
       "Unknown help category.",
       "Use `!commands` to see the menu.",
-      "Examples: `!help vehicle`, `!help insurance`, `!help mechs`, `!help cargo`, `!help jail`",
+      "Examples: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help register`, `!help loginlogs`",
     ].join("\n")).catch(() => {});
     return true;
   }
