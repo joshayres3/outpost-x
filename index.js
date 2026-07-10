@@ -67,6 +67,11 @@ const {
   handleCommandHelpMessage,
   handleCommandHelpInteraction,
 } = require("./watcherCommandHelp");
+const {
+  handleInsuranceCommand,
+  handleInsuranceInteraction,
+  startInsuranceOnBoot,
+} = require("./insurance");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -194,6 +199,7 @@ bot.once(Events.ClientReady, async () => {
 
     startEventScheduler(bot, db);
     startGgconStatusOnBoot(bot);
+    startInsuranceOnBoot(bot);
   } catch (err) {
     console.error("❌ Startup database load failed:", err);
   }
@@ -201,6 +207,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleInsuranceInteraction(interaction)) return;
+
     if (await handleGgconInteraction(interaction)) return;
 
     if (await handleCommandHelpInteraction(interaction)) return;
@@ -276,6 +284,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
+
+    if (await handleInsuranceCommand(msg, bot)) return;
 
     if (await handleGgconCommand(msg, bot)) return;
 

@@ -124,6 +124,20 @@ const CATEGORIES = {
       ["!loginlogoff", "Stop login log."],
     ],
   },
+
+  insurance: {
+    emoji: "🛡️",
+    label: "Insurance",
+    title: "🛡️ VEHICLE INSURANCE",
+    aliases: ["insurance", "insure", "insured", "vehicleinsurance"],
+    lines: [
+      ["!insurancesetup", "Post/move the insurance menu."],
+      ["!insurancestatus", "Insurance system status."],
+      ["!insurancescan", "Force an insurance destruction scan."],
+      ["!wipeinsurance", "Owner-only wipe after server wipe."],
+      ["Player buttons", "Register Steam, buy insurance, view policies, claim replacements."],
+    ],
+  },
   cargo: {
     emoji: "📦",
     label: "Cargo",
@@ -176,6 +190,7 @@ const ORDER = [
   "bases",
   "jail",
   "logs",
+  "insurance",
   "cargo",
   "events",
   "safety",
@@ -210,7 +225,7 @@ function buildMenuContent() {
     "",
     rows.join("  •  "),
     "",
-    "Examples: `!help vehicle`, `!help cargo`, `!help jail`",
+    "Examples: `!help vehicle`, `!help insurance`, `!help cargo`, `!help jail`",
   ].join("\n");
 }
 
@@ -329,7 +344,7 @@ async function handleCommandHelpMessage(message) {
     await message.reply([
       "Unknown help category.",
       "Use `!commands` to see the menu.",
-      "Examples: `!help vehicle`, `!help cargo`, `!help jail`",
+      "Examples: `!help vehicle`, `!help insurance`, `!help cargo`, `!help jail`",
     ].join("\n")).catch(() => {});
     return true;
   }
