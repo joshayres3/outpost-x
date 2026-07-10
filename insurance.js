@@ -12,16 +12,16 @@ const INSURANCE_SCAN_SECONDS = Math.max(30, Number(process.env.WATCHER_INSURANCE
 const LINK_CODE_TTL_MINUTES = Math.max(5, Number(process.env.WATCHER_INSURANCE_LINK_CODE_TTL_MINUTES || "15"));
 
 const INSURABLE_VEHICLES = [
-  { type: "duster", label: "Kinglet Duster", price: 50000, aliases: ["duster", "kinglet_duster", "bpc_kinglet_duster", "kinglet duster"] },
-  { type: "mariner", label: "Kinglet Mariner", price: 50000, aliases: ["mariner", "kinglet_mariner", "bpc_kinglet_mariner", "kinglet mariner"] },
-  { type: "cruiser", label: "Cruiser", price: 25000, aliases: ["cruiser", "bpc_cruiser"] },
-  { type: "dirtbike", label: "Dirt Bike", price: 20000, aliases: ["dirtbike", "dirt_bike", "dirt bike", "bpc_dirtbike", "bpc_dirt_bike"] },
-  { type: "sidecarbike", label: "Sidecar Bike", price: 35000, aliases: ["sidecarbike", "sidecar_bike", "sidecar bike", "bpc_sidecarbike", "bpc_sidecar_bike"] },
-  { type: "laika", label: "Laika", price: 45000, aliases: ["laika", "bpc_laika"] },
-  { type: "wolfswagen", label: "WolfsWagen", price: 45000, aliases: ["wolfswagen", "wolfswagon", "wolfs wagen", "bpc_wolfswagen", "bpc_wolfswagon"] },
-  { type: "rager", label: "Rager", price: 65000, aliases: ["rager", "bpc_rager"] },
-  { type: "ris", label: "RIS", price: 30000, aliases: ["ris", "ris_es", "bpc_ris"] },
-  { type: "tractor", label: "Tractor", price: 30000, aliases: ["tractor", "bpc_tractor"] },
+  { type: "duster", label: "Kinglet Duster", price: 50000, aliases: ["duster", "kinglet_duster", "bpc_kinglet_duster", "kinglet duster"], spawnAliases: ["BPC_Duster", "Duster", "Kinglet Duster"] },
+  { type: "mariner", label: "Kinglet Mariner", price: 50000, aliases: ["mariner", "kinglet_mariner", "bpc_kinglet_mariner", "kinglet mariner"], spawnAliases: ["BPC_Mariner", "Mariner", "Kinglet Mariner"] },
+  { type: "cruiser", label: "Cruiser", price: 25000, aliases: ["cruiser", "bpc_cruiser"], spawnAliases: ["BPC_Cruiser", "Cruiser"] },
+  { type: "dirtbike", label: "Dirt Bike", price: 20000, aliases: ["dirtbike", "dirt_bike", "dirt bike", "bpc_dirtbike", "bpc_dirt_bike"], spawnAliases: ["BPC_Dirtbike", "BPC_DirtBike", "Dirtbike", "Dirt Bike"] },
+  { type: "sidecarbike", label: "Sidecar Bike", price: 35000, aliases: ["sidecarbike", "sidecar_bike", "sidecar bike", "bpc_sidecarbike", "bpc_sidecar_bike"], spawnAliases: ["BPC_SidecarBike", "BPC_Sidecar_Bike", "SidecarBike", "Sidecar Bike"] },
+  { type: "laika", label: "Laika", price: 45000, aliases: ["laika", "bpc_laika"], spawnAliases: ["BPC_Laika", "Laika"] },
+  { type: "wolfswagen", label: "WolfsWagen", price: 45000, aliases: ["wolfswagen", "wolfswagon", "wolfs wagen", "bpc_wolfswagen", "bpc_wolfswagon"], spawnAliases: ["BPC_WolfsWagen", "BPC_Wolfswagen", "BPC_WolfsWagon", "BPC_Wolfswagon", "WolfsWagen", "Wolfswagen", "Wolfswagon"] },
+  { type: "rager", label: "Rager", price: 65000, aliases: ["rager", "bpc_rager"], spawnAliases: ["BPC_Rager", "Rager"] },
+  { type: "ris", label: "RIS", price: 30000, aliases: ["ris", "ris_es", "bpc_ris"], spawnAliases: ["BPC_RIS", "RIS"] },
+  { type: "tractor", label: "Tractor", price: 30000, aliases: ["tractor", "bpc_tractor"], spawnAliases: ["BPC_Tractor", "Tractor"] },
 ];
 
 const BLOCKED_VEHICLE_TERMS = ["boat", "sup", "paddle", "raft", "kayak"];
@@ -197,6 +197,73 @@ async function fetchRawServerLogs(range, sources) {
   params.set("since", String(range?.since ?? 0));
   if (sources) params.set("sources", sources);
   return serverGet(`/logs?${params.toString()}`);
+}
+
+function compactVehicleText(value) {
+  return normalizeVehicleText(value).replace(/_/g, "");
+}
+
+function vehicleTypeScore(vehicleType, query, aliases = []) {
+  const rawQuery = String(query || "").trim();
+  const q = normalizeVehicleText(rawQuery);
+  const compactQ = compactVehicleText(rawQuery);
+  if (!q) return 0;
+
+  const rawClass = String(vehicleType?.i || vehicleType?.class || vehicleType?.name || "").trim();
+  const normalizedClass = normalizeVehicleText(rawClass);
+  const normalizedNoPrefix = normalizeVehicleText(rawClass.replace(/^BPC[_-]?/i, ""));
+  const compactClass = compactVehicleText(rawClass);
+  const compactNoPrefix = compactVehicleText(rawClass.replace(/^BPC[_-]?/i, ""));
+
+  let best = 0;
+  for (const alias of aliases) {
+    const compactAlias = compactVehicleText(alias);
+    if (!compactAlias) continue;
+    if (compactClass === compactAlias || compactNoPrefix === compactAlias) best = Math.max(best, 2500);
+    else if (compactClass.includes(compactAlias) || compactNoPrefix.includes(compactAlias)) best = Math.max(best, 1900);
+  }
+
+  for (const field of [rawClass.toLowerCase(), normalizedClass, normalizedNoPrefix, compactClass, compactNoPrefix]) {
+    if (!field) continue;
+    if (field === rawQuery.toLowerCase() || field === q || field === compactQ) best = Math.max(best, 1200);
+    else if (field.startsWith(q) || field.startsWith(compactQ)) best = Math.max(best, 900);
+    else if (field.includes(q) || field.includes(compactQ)) best = Math.max(best, 700);
+  }
+
+  return best;
+}
+
+async function getVehicleTypes() {
+  const data = await serverGet("/vehicle-types.json");
+  return Array.isArray(data?.items) ? data.items : [];
+}
+
+async function resolveReplacementVehicleClass(policy, claim) {
+  const config = INSURABLE_VEHICLES.find((item) => item.type === (policy?.vehicle_type || claim?.vehicle_type));
+  const aliases = config?.spawnAliases?.length ? config.spawnAliases : [config?.label, config?.type, policy?.vehicle_class, claim?.vehicle_class].filter(Boolean);
+  const types = await getVehicleTypes().catch(() => []);
+
+  if (types.length) {
+    for (const query of aliases) {
+      const match = types
+        .map((vehicleType) => ({ vehicleType, score: vehicleTypeScore(vehicleType, query, aliases) }))
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score || String(a.vehicleType.i || "").localeCompare(String(b.vehicleType.i || "")))[0]?.vehicleType;
+      if (match?.i) return match.i;
+    }
+  }
+
+  // Last-resort fallback. This is only used if the vehicle catalog cannot be read.
+  // Prefer the same class format that !givevehicle uses, not the live vehicle class like RIS_ES.
+  const fallback = aliases.find((value) => /^BPC_/i.test(String(value || ""))) || aliases[0] || policy?.vehicle_class || claim?.vehicle_class;
+  return String(fallback || "").trim();
+}
+
+async function spawnReplacementVehicle(steamId, policy, claim) {
+  const vehicleClass = await resolveReplacementVehicleClass(policy, claim);
+  if (!vehicleClass) throw new Error("Could not resolve replacement vehicle class.");
+  const result = await serverPost("/spawn-vehicle", { steamId, vehicle: vehicleClass });
+  return { vehicleClass, result };
 }
 
 function buildMainRows() {
@@ -656,22 +723,8 @@ async function processInsuranceDestructionEvent(bot, guildId, channelId, event) 
     if (updateError) throw updateError;
 
     created += 1;
-    if (channelId) {
-      const channel = await bot.channels.fetch(channelId).catch(() => null);
-      if (channel?.send) {
-        await channel.send(clampDiscord([
-          "🛡️ **Insurance Claim Available**",
-          "",
-          `Player: **${policy.player_name || event.ownerName || "Unknown"}**`,
-          `Vehicle: **${policy.vehicle_name || event.vehicleClass || "Vehicle"}**`,
-          `Vehicle ID: \`${policy.vehicle_id}\``,
-          `Destroyed At: ${formatDate(event.t)}`,
-          `Location: ${formatLocation(event.location)}`,
-          "",
-          "The owner can use **Claim Insurance** in the insurance menu to redeem a replacement.",
-        ].join("\n"))).catch(() => {});
-      }
-    }
+    // Do not post automatic/permanent claim notices in the insurance channel.
+    // Claims are saved silently and shown privately when the player clicks Claim Insurance.
   }
   return created;
 }
@@ -771,9 +824,8 @@ async function redeemClaim(interaction, claimId) {
   }
 
   const policy = claim.policy || {};
-  const vehicleClass = policy.vehicle_class || claim.vehicle_class;
   const steamId = policy.steam_id || claim.steam_id;
-  await serverPost("/spawn-vehicle", { steamId, vehicle: vehicleClass });
+  const replacement = await spawnReplacementVehicle(steamId, policy, claim);
 
   const now = new Date().toISOString();
   await db.from(INSURANCE_CLAIMS_TABLE).update({ status: "redeemed", redeemed_at: now, updated_at: now }).eq("id", claim.id);
@@ -782,9 +834,10 @@ async function redeemClaim(interaction, claimId) {
   await interaction.reply({
     content: [
       "✅ **Insurance Redeemed**",
-      `Vehicle: **${policy.vehicle_name || claim.vehicle_name || vehicleClass}**`,
+      `Vehicle: **${policy.vehicle_name || claim.vehicle_name || replacement.vehicleClass}**`,
       `Old Vehicle ID: \`${claim.vehicle_id}\``,
-      "A replacement was spawned near your linked SCUM character.",
+      `Replacement Spawned: \`${replacement.vehicleClass}\``,
+      "A replacement was spawned near your linked SCUM character using the same spawn flow as `!givevehicle`.",
       "The old insurance policy is now closed. You may buy a new policy for that vehicle type.",
     ].join("\n"),
     ephemeral: true,
