@@ -1993,18 +1993,18 @@ function parseVehicleDestructionLog(entry) {
 }
 
 function buildVehicleDestroyedAlert(event) {
+  const ownerFakeName = event.ownerFakeName ? formatPlayerFakeName(event.ownerFakeName) : null;
+
   return clampDiscord([
     "💥 **Vehicle Destroyed**",
     "",
     `**Vehicle:** ${event.vehicleName || event.vehicleClass || "Vehicle"}`,
-    `**ID:** \`${event.vehicleId}\``,
-    `**Class:** ${event.vehicleClass || "Unknown"}`,
     `**Owner:** ${event.ownerName || "Unknown"}`,
-    `**Fake Name:** ${formatPlayerFakeName(event.ownerFakeName)}`,
-    `**Location:** ${formatLocation(event.location)}`,
+    ownerFakeName ? `**Fake Name:** ${ownerFakeName}` : null,
     `**Time:** ${formatDate(event.t)}`,
     "",
-    "This is a confirmed vehicle destruction event from the server logs.",
+    "Confirmed destroyed by server logs.",
+    "Insurance may be available if this vehicle was covered.",
   ].filter(Boolean).join("\n"));
 }
 
@@ -4003,27 +4003,24 @@ function buildKillAlert(event, vehicleData = null) {
   const vehicleGuess = isVehicleLikeDeath(event)
     ? findNearestVehicleToLocation(vehicleData?.vehicles || [], location)
     : null;
+  const killerFakeName = getKillPersonFakeName(event.killer);
+  const victimFakeName = getKillPersonFakeName(event.victim);
+  const cause = event.weapon || event.weaponRaw || event.type || "Unknown";
 
   return clampDiscord([
     `${emoji} **${title}**`,
     "",
-    `Type: ${event.type || "Unknown"}`,
-    event.killer ? `Killer / Cause: ${formatKillPerson(event.killer)}` : null,
-    getKillPersonFakeName(event.killer) ? `Killer Fake Name: ${getKillPersonFakeName(event.killer)}` : null,
-    event.victim ? `Victim / Death: ${formatKillPerson(event.victim)}` : null,
-    getKillPersonFakeName(event.victim) ? `Victim Fake Name: ${getKillPersonFakeName(event.victim)}` : null,
-    event.weapon ? `Weapon / Cause: ${event.weapon}` : null,
-    event.weaponRaw ? `Raw Cause: ${event.weaponRaw}` : null,
-    event.cat ? `Category: ${event.cat}` : null,
-    event.dist !== undefined && event.dist !== null ? `Distance: ${Number(event.dist).toFixed(1)} m` : null,
-    event.tod ? `In-Game Time: ${event.tod}` : null,
-    `Death Location: ${formatLocation(location)}`,
-    vehicleGuess ? "" : null,
-    vehicleGuess ? `Possible Vehicle: **${vehicleGuess.vehicle.name || vehicleGuess.vehicle.class || "Vehicle"}**` : null,
-    vehicleGuess ? `Vehicle ID: \`${vehicleGuess.vehicle.id}\`` : null,
-    vehicleGuess ? `Possible Owner: ${vehicleGuess.vehicle.owner || "Unknown"}` : null,
-    vehicleGuess ? `Vehicle Distance from Death: ${formatApproxDistance(vehicleGuess.distance)}` : null,
-    vehicleGuess ? "_Vehicle owner is a best guess from the nearest listed vehicle._" : null,
+    event.killer ? `**Killer / Cause:** ${formatKillPerson(event.killer)}` : null,
+    killerFakeName ? `**Killer Fake Name:** ${killerFakeName}` : null,
+    event.victim ? `**Victim:** ${formatKillPerson(event.victim)}` : null,
+    victimFakeName ? `**Victim Fake Name:** ${victimFakeName}` : null,
+    `**Cause:** ${cause}`,
+    event.dist !== undefined && event.dist !== null ? `**Distance:** ${Number(event.dist).toFixed(1)} m` : null,
+    event.tod ? `**In-Game Time:** ${event.tod}` : null,
+    `**Location:** ${formatLocation(location)}`,
+    vehicleGuess ? `**Nearby Vehicle:** ${vehicleGuess.vehicle.name || vehicleGuess.vehicle.class || "Vehicle"}` : null,
+    vehicleGuess ? `**Possible Owner:** ${vehicleGuess.vehicle.owner || "Unknown"}` : null,
+    vehicleGuess ? `**Vehicle Distance:** ${formatApproxDistance(vehicleGuess.distance)}` : null,
   ].filter(Boolean).join("\n"));
 }
 
@@ -4128,13 +4125,12 @@ function buildRawPrisonerDeathAlert(event) {
     "☠️ **Player Death Detected**",
     "",
     `**Player:** ${playerName}`,
-    `**Fake Name:** ${formatPlayerFakeName(fakeName)}`,
-    "**Cause:** Not reported by the server",
+    fakeName ? `**Fake Name:** ${formatPlayerFakeName(fakeName)}` : null,
+    "**Cause:** Unknown",
+    `**Location:** ${formatLocation(locationProbe.location)}`,
     `**Time:** ${formatDate(event.t)}`,
-    `**Location Probe:** ${formatLocation(locationProbe.location)}`,
-    locationProbe.status ? `**Probe Note:** ${locationProbe.status}` : null,
     "",
-    "_Testing note: this uses the server's prisoner-died signal. Location is only shown if the live player lookup still exposes it before respawn._",
+    "The island claimed another one.",
   ].filter(Boolean).join("\n"));
 }
 
