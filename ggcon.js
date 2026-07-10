@@ -2563,14 +2563,21 @@ function buildOnlinePlayerSnapshotMap(onlinePlayers, previousOnline, rawLookups)
 function buildPlayerConnectionAlert(kind, record, options = {}) {
   const isLogin = kind === "login";
   const title = isLogin ? "🟢 **Player Login**" : "🟠 **Player Logout**";
+  const playerName = record?.name || "Unknown";
+  const knownAs = cleanKnownPlayerName(record?.fakeName) || "Not set";
+  const steamId = record?.steamId ? `\`${record.steamId}\`` : "Unknown";
   const ip = record?.ip ? `\`${record.ip}\`` : "Unknown";
   const location = formatLocation(record?.location);
+  const actionLine = isLogin
+    ? `**${playerName}** joined the server.`
+    : `**${playerName}** left the server.`;
+
   const lines = [
     title,
+    actionLine,
     "",
-    `**Player:** ${record?.name || "Unknown"}`,
-    `**Fake Name:** ${formatPlayerFakeName(record?.fakeName)}`,
-    `**Steam ID:** \`${record?.steamId || "Unknown"}\``,
+    `**Known As:** ${knownAs}`,
+    `**Steam ID:** ${steamId}`,
     `**IP:** ${ip}`,
     `**Location:** ${location}`,
     `**Time:** ${formatDate(options.time || Date.now())}`,
@@ -2720,7 +2727,7 @@ async function handleLoginLogSetup(message, bot) {
   await message.reply([
     "Login log is now active in this channel.",
     "I saved the current online players as the baseline, so I will only post future logins/logouts.",
-    "Each alert shows player name, Steam ID, IP when available, and location.",
+    "Each alert is now formatted as a cleaner admin activity card with player, Steam ID, IP, location, and time.",
     `Scan interval: ${getLoginWatchIntervalSeconds()} seconds`,
   ].join("\n")).catch(() => {});
 }
