@@ -4,7 +4,6 @@ const { createClient } = require("@supabase/supabase-js");
 const DEFAULT_SERVER_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const RUNTIME_STATE_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || "watcher_runtime_state";
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
-const REGISTER_CHANNEL_ID = process.env.WATCHER_REGISTER_CHANNEL_ID || "1517255357888466964";
 const INSURANCE_TABLE = process.env.WATCHER_VEHICLE_INSURANCE_TABLE || "watcher_vehicle_insurance";
 const INSURANCE_CLAIMS_TABLE = process.env.WATCHER_INSURANCE_CLAIMS_TABLE || "watcher_insurance_claims";
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
@@ -270,7 +269,11 @@ async function spawnReplacementVehicle(steamId, policy, claim) {
 function buildMainRows() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("insurance:rates").setLabel("Rates").setEmoji("💵").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("insurance:register").setLabel("Register Steam").setEmoji("🔗").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("insurance:verify").setLabel("Verify Code").setEmoji("✅").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("insurance:rates").setLabel("Rates").setEmoji("💵").setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("insurance:buy").setLabel("Buy Insurance").setEmoji("🛡️").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("insurance:mine").setLabel("My Insurance").setEmoji("📋").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("insurance:claim").setLabel("Claim Insurance").setEmoji("🚗").setStyle(ButtonStyle.Success)
@@ -291,8 +294,7 @@ function buildInsuranceMenuText() {
     "⚠️ **After locking or claiming a vehicle, give Watcher a few minutes to see it.**",
     "If your vehicle does not show up right away, wait a bit and try **Buy Insurance** again.",
     "",
-    `Need to register first? Use <#${REGISTER_CHANNEL_ID}>.`,
-    "Use the buttons below to view rates, buy, view, or claim insurance.",
+    "Use the buttons below to register, buy, view, or claim insurance.",
   ].join("\n");
 }
 
@@ -460,7 +462,7 @@ function buildVehicleBuyRows(vehicles) {
 async function buildBuyMenu(interaction) {
   const link = await getLink(interaction.guildId, interaction.user.id);
   if (!link?.steam_id) {
-    await interaction.reply({ content: `You need to register your SCUM character first here: <#${REGISTER_CHANNEL_ID}>`, ephemeral: true }).catch(() => {});
+    await interaction.reply({ content: "You need to register your SCUM account first. Click **Register Steam** in the insurance menu.", ephemeral: true }).catch(() => {});
     return;
   }
 

@@ -241,7 +241,7 @@ function buildMechPackText() {
     "",
     "⚠️ **Profit note:** To actually profit from mechs, you will need to loot/find rockets — buying rockets is mainly for fun.",
     "",
-    `Need to register first? Use <#${REGISTER_CHANNEL_ID}>.`,
+    `You must register your SCUM character first here: <#${REGISTER_CHANNEL_ID}>`,
   ].join("\n");
 }
 
@@ -257,17 +257,13 @@ function buildRegisterRows() {
 function buildRegisterPanelText() {
   return [
     "# 🔗 Register Your SCUM Character",
-    "Link your Discord account to your SCUM character so Watcher knows who you are in-game.",
+    "Register first so Watcher knows which SCUM character belongs to your Discord account.",
     "",
-    "You need this for:",
+    "You need this for player features like:",
     "🛡️ Vehicle Insurance",
     "🤖 Mech Hunting Packs",
-    "🎁 Future player features",
     "",
-    "**How to register**",
-    "1. Click **Register Steam**.",
-    "2. Type the code Watcher gives you in SCUM chat.",
-    "3. Come back here and click **Verify Code**.",
+    "Click **Register Steam**, type the code in SCUM chat, then click **Verify Code**.",
   ].join("\n");
 }
 
@@ -322,7 +318,7 @@ async function showBuyConfirm(interaction, packKey) {
   const link = await getLink(interaction.guildId, interaction.user.id);
   if (!link?.steam_id) {
     await interaction.reply({
-      content: `Need to register first? Use <#${REGISTER_CHANNEL_ID}>`,
+      content: `You need to register your SCUM character first here: <#${REGISTER_CHANNEL_ID}>`,
       ephemeral: true,
     }).catch(() => {});
     return;
@@ -365,7 +361,7 @@ async function confirmBuy(interaction, packKey) {
 
   const link = await getLink(interaction.guildId, interaction.user.id);
   if (!link?.steam_id) {
-    await interaction.update({ content: `Need to register first: <#${REGISTER_CHANNEL_ID}>`, components: [] }).catch(() => {});
+    await interaction.update({ content: `Register first here: <#${REGISTER_CHANNEL_ID}>`, components: [] }).catch(() => {});
     return;
   }
 
