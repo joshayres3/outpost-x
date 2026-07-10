@@ -1927,9 +1927,7 @@ function hasVehicleOwner(vehicle) {
 }
 
 function formatVehicleOwner(vehicle) {
-  const owner = vehicle?.owner || "Unknown";
-  const steamId = vehicle?.ownerSteamId ? ` (\`${vehicle.ownerSteamId}\`)` : "";
-  return `${owner}${steamId}`;
+  return vehicle?.owner || "Unknown";
 }
 
 function buildMissingVehicleAlert(vehicle) {
@@ -2002,12 +2000,27 @@ function buildVehicleDestroyedAlert(event) {
     `**ID:** \`${event.vehicleId}\``,
     `**Class:** ${event.vehicleClass || "Unknown"}`,
     `**Owner:** ${event.ownerName || "Unknown"}`,
-    event.ownerSteamId ? `**Owner Steam ID:** \`${event.ownerSteamId}\`` : null,
+    `**Fake Name:** ${formatPlayerFakeName(event.ownerFakeName)}`,
     `**Location:** ${formatLocation(event.location)}`,
     `**Time:** ${formatDate(event.t)}`,
     "",
     "This is a confirmed vehicle destruction event from the server logs.",
   ].filter(Boolean).join("\n"));
+}
+
+async function enrichVehicleDestructionEvent(event) {
+  if (!event?.ownerSteamId) return event;
+  try {
+    const data = await ggconGet(`/players/${encodeURIComponent(event.ownerSteamId)}.json`);
+    const player = data?.player || data;
+    return {
+      ...event,
+      ownerName: event.ownerName && event.ownerName !== "Unknown" ? event.ownerName : (player?.characterName || player?.steamName || player?.realName || "Unknown"),
+      ownerFakeName: getPlayerFakeName(player) || event.ownerFakeName || null,
+    };
+  } catch {
+    return event;
+  }
 }
 
 async function fetchVehicleDestructionLogsSince(since) {
@@ -2088,8 +2101,9 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
     if (!event || destructionSeen.has(event.key)) continue;
     destructionSeen.add(event.key);
     if (event.ownerSteamId || (event.ownerName && event.ownerName !== "Unknown")) {
-      destroyedEvents.push(event);
-      alerts.push({ type: "destroyed", content: buildVehicleDestroyedAlert(event) });
+      const enrichedEvent = await enrichVehicleDestructionEvent(event);
+      destroyedEvents.push(enrichedEvent);
+      alerts.push({ type: "destroyed", content: buildVehicleDestroyedAlert(enrichedEvent) });
     }
   }
   // Do not alert from live-list disappearance alone. The live vehicle list can temporarily hide
@@ -3871,9 +3885,19 @@ function getKillEventLocation(event) {
 
 function formatKillPerson(person) {
   if (!person) return "Unknown";
-  const name = person.name || "Unknown";
-  const sid = person.sid ? ` (\`${person.sid}\`)` : "";
-  return `${name}${sid}`;
+  return person.name || "Unknown";
+}
+
+function getKillPersonFakeName(person) {
+  return firstNonEmptyValue(
+    person?.fakeName,
+    person?.fake_name,
+    person?.alias,
+    person?.displayAlias,
+    person?.displayName,
+    person?.currentAlias,
+    person?.lastKnownAlias,
+  );
 }
 
 function eventPersonHasSteamId(person) {
@@ -3985,7 +4009,9 @@ function buildKillAlert(event, vehicleData = null) {
     "",
     `Type: ${event.type || "Unknown"}`,
     event.killer ? `Killer / Cause: ${formatKillPerson(event.killer)}` : null,
+    getKillPersonFakeName(event.killer) ? `Killer Fake Name: ${getKillPersonFakeName(event.killer)}` : null,
     event.victim ? `Victim / Death: ${formatKillPerson(event.victim)}` : null,
+    getKillPersonFakeName(event.victim) ? `Victim Fake Name: ${getKillPersonFakeName(event.victim)}` : null,
     event.weapon ? `Weapon / Cause: ${event.weapon}` : null,
     event.weaponRaw ? `Raw Cause: ${event.weaponRaw}` : null,
     event.cat ? `Category: ${event.cat}` : null,
@@ -3996,7 +4022,6 @@ function buildKillAlert(event, vehicleData = null) {
     vehicleGuess ? `Possible Vehicle: **${vehicleGuess.vehicle.name || vehicleGuess.vehicle.class || "Vehicle"}**` : null,
     vehicleGuess ? `Vehicle ID: \`${vehicleGuess.vehicle.id}\`` : null,
     vehicleGuess ? `Possible Owner: ${vehicleGuess.vehicle.owner || "Unknown"}` : null,
-    vehicleGuess?.vehicle?.ownerSteamId ? `Owner Steam ID: \`${vehicleGuess.vehicle.ownerSteamId}\`` : null,
     vehicleGuess ? `Vehicle Distance from Death: ${formatApproxDistance(vehicleGuess.distance)}` : null,
     vehicleGuess ? "_Vehicle owner is a best guess from the nearest listed vehicle._" : null,
   ].filter(Boolean).join("\n"));
@@ -4066,6 +4091,7 @@ function parsePrisonerDeathEventsFromRawLines(lines, profileIdMap = {}) {
       profileId: profileId || "Unknown",
       steamId: identity?.steamId || "",
       name: identity?.name || "Unknown",
+      fakeName: identity?.fakeName || null,
       rawLine: line,
     });
   }
@@ -4095,14 +4121,14 @@ async function probePlayerLocationForDeath(event) {
 
 function buildRawPrisonerDeathAlert(event) {
   const locationProbe = event.locationProbe || {};
-  const playerName = event.name && event.name !== "Unknown" ? event.name : `Profile ID ${event.profileId}`;
+  const playerName = event.name && event.name !== "Unknown" ? event.name : "Unknown";
+  const fakeName = getPlayerFakeName(locationProbe.player) || event.fakeName || null;
 
   return clampDiscord([
     "☠️ **Player Death Detected**",
     "",
     `**Player:** ${playerName}`,
-    event.steamId ? `**Steam ID:** \`${event.steamId}\`` : null,
-    `**Profile ID:** \`${event.profileId || "Unknown"}\``,
+    `**Fake Name:** ${formatPlayerFakeName(fakeName)}`,
     "**Cause:** Not reported by the server",
     `**Time:** ${formatDate(event.t)}`,
     `**Location Probe:** ${formatLocation(locationProbe.location)}`,
