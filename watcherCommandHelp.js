@@ -139,6 +139,21 @@ const CATEGORIES = {
       ["Player buttons", "Register Steam, buy insurance, view policies, claim replacements."],
     ],
   },
+
+  mechs: {
+    emoji: "🤖",
+    label: "Mechs",
+    title: "🤖 MECH SCHEDULE",
+    aliases: ["mechs", "mech", "sentry", "sentries", "mechschedule"],
+    lines: [
+      ["!mechtest", "Test SFTP and read current sentry setting."],
+      ["!mechson", "Set mechs ON after next restart."],
+      ["!mechsoff", "Set mechs OFF after next restart."],
+      ["!mechschedulesetup", "Sunday 11:45 PM ON / Monday 11:45 PM OFF Toronto."],
+      ["!mechschedulestatus", "Mech schedule and current setting status."],
+      ["!mechscheduleoff", "Disable automatic mech schedule."],
+    ],
+  },
   cargo: {
     emoji: "📦",
     label: "Cargo",
@@ -192,6 +207,7 @@ const ORDER = [
   "jail",
   "logs",
   "insurance",
+  "mechs",
   "cargo",
   "events",
   "safety",
@@ -226,7 +242,7 @@ function buildMenuContent() {
     "",
     rows.join("  •  "),
     "",
-    "Examples: `!help vehicle`, `!help insurance`, `!help cargo`, `!help jail`",
+    "Examples: `!help vehicle`, `!help insurance`, `!help mechs`, `!help cargo`, `!help jail`",
   ].join("\n");
 }
 
@@ -345,7 +361,7 @@ async function handleCommandHelpMessage(message) {
     await message.reply([
       "Unknown help category.",
       "Use `!commands` to see the menu.",
-      "Examples: `!help vehicle`, `!help insurance`, `!help cargo`, `!help jail`",
+      "Examples: `!help vehicle`, `!help insurance`, `!help mechs`, `!help cargo`, `!help jail`",
     ].join("\n")).catch(() => {});
     return true;
   }
