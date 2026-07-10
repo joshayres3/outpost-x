@@ -2001,6 +2001,7 @@ function buildVehicleDestroyedAlert(event) {
     `**Vehicle:** ${event.vehicleName || event.vehicleClass || "Vehicle"}`,
     `**Owner:** ${event.ownerName || "Unknown"}`,
     ownerFakeName ? `**Fake Name:** ${ownerFakeName}` : null,
+    event.location ? `**Location:** ${formatLocation(event.location)}` : null,
     `**Time:** ${formatDate(event.t)}`,
     "",
     "Confirmed destroyed by server logs.",
