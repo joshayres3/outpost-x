@@ -4503,7 +4503,8 @@ async function runCargoFrenzy(message, options = {}) {
   try {
     preflight = await getCargoPreflightStatus();
   } catch (err) {
-    await message.reply(`Cargo ${isTest ? "test" : "frenzy"} cancelled. I could not confirm server status: ${err.message}`).catch(() => {});
+    await message.reply(`📦 **Cargo ${isTest ? "Test" : "Frenzy"} cancelled.**\nWatcher could not confirm server status. Try again in a minute.`).catch(() => {});
+    console.warn("Cargo preflight failed:", err.message);
     return;
   }
 
@@ -4511,10 +4512,8 @@ async function runCargoFrenzy(message, options = {}) {
     await message.reply(clampDiscord([
       `📦 **Cargo ${isTest ? "Test" : "Frenzy"} cancelled.**`,
       preflight.reason,
-      `Players online: ${preflight.server?.onlinePlayers ?? "Unknown"}`,
-      `FPS: ${preflight.server?.fps ?? "Unknown"}`,
       "",
-      "Watcher cannot read GGHOST's restart countdown directly, so avoid running this within 10 minutes of a scheduled restart.",
+      "Try again after the server is fully online and away from restart time.",
     ].join("\n"))).catch(() => {});
     return;
   }
@@ -4524,7 +4523,8 @@ async function runCargoFrenzy(message, options = {}) {
   try {
     flagData = await ggconGet("/flags.json");
   } catch (err) {
-    await message.reply(`Cargo ${isTest ? "test" : "frenzy"} cancelled. I could not read flags to verify base safety: ${err.message}`).catch(() => {});
+    await message.reply(`📦 **Cargo ${isTest ? "Test" : "Frenzy"} cancelled.**\nWatcher could not verify safe drop zones. Try again shortly.`).catch(() => {});
+    console.warn("Cargo flag safety check failed:", err.message);
     return;
   }
 
@@ -4532,27 +4532,26 @@ async function runCargoFrenzy(message, options = {}) {
   const points = plan.selected;
 
   if (points.length < plan.requestedCount) {
-    const closestBlocked = plan.closestBlocked.length
-      ? [
-          "Closest blocked preset(s):",
-          ...plan.closestBlocked.map((entry, index) => `${index + 1}. X: ${entry.point.x} | Y: ${entry.point.y} — ${formatApproxDistance(entry.nearest.distance)} from ${entry.nearest.flag?.baseName || `Flag ${entry.nearest.flag?.flagId || "?"}`} (${entry.nearest.flag?.owner || "Unknown"})`),
-        ].join("\n")
-      : "";
-
     await message.reply(clampDiscord([
       `📦 **Cargo ${isTest ? "Test" : "Frenzy"} cancelled.**`,
-      `Needed ${plan.requestedCount} safe location(s), but only found ${points.length}.`,
-      `Flags checked: ${plan.flagsChecked}`,
-      `Safe distance from flags: ${formatApproxDistance(plan.safeDistance)}`,
-      `Cargo event: ${CARGO_FRENZY_EVENT_NAME}`,
-      `Candidate locations checked: ${plan.totalCandidates}`,
-      `Blocked for being too close to flags: ${plan.blockedCount}`,
-      closestBlocked,
+      "Watcher could not find enough safe drop zones away from player bases.",
       "",
-      "No cargo drops were launched. Add more known-safe presets or lower the cargo safety distance if you are sure it is safe.",
-    ].filter(Boolean).join("\n"))).catch(() => {});
+      `Safe drops found: ${points.length}/${plan.requestedCount}`,
+      "No cargo drops were launched.",
+    ].join("\n"))).catch(() => {});
+
+    console.warn("Cargo Frenzy cancelled - not enough safe locations", JSON.stringify({
+      requested: plan.requestedCount,
+      found: points.length,
+      flagsChecked: plan.flagsChecked,
+      safeDistance: plan.safeDistance,
+      totalCandidates: plan.totalCandidates,
+      blockedCount: plan.blockedCount,
+      closestBlocked: plan.closestBlocked.slice(0, 5),
+    }));
     return;
   }
+
 
   if (!isTest) {
     await ggconPost("/message", {
@@ -4577,45 +4576,52 @@ async function runCargoFrenzy(message, options = {}) {
   const successCount = results.filter((entry) => entry.ok).length;
   const failed = results.filter((entry) => !entry.ok);
 
-  const safetyLines = [
-    `Server status: online | players: ${preflight.server?.onlinePlayers ?? "Unknown"} | FPS: ${preflight.server?.fps ?? "Unknown"}`,
-    `Flags checked: ${plan.flagsChecked}`,
-    `Safe distance from flags: ${formatApproxDistance(plan.safeDistance)}`,
-    `Cargo event: ${CARGO_FRENZY_EVENT_NAME}`,
-    `Candidate locations checked: ${plan.totalCandidates}`,
-    `Safe candidates found: ${plan.safeCandidateCount}`,
-    `Blocked near flags: ${plan.blockedCount}`,
-  ];
+  const lines = isTest
+    ? [
+        "📦 **Cargo Test Sent**",
+        `Drops requested: ${successCount}/${points.length}`,
+        `Server: online | players: ${preflight.server?.onlinePlayers ?? "Unknown"} | FPS: ${preflight.server?.fps ?? "Unknown"}`,
+        "",
+        failed.length
+          ? "⚠️ The server did not accept every cargo command. Check Railway logs if this keeps happening."
+          : "Test drop command was accepted by the server.",
+      ]
+    : [
+        "📦 **Cargo Frenzy Active**",
+        `Cargo drops launched: **${successCount}/${points.length}**`,
+        "",
+        "Cargo drops have been scattered across the island.",
+        "Watcher checked live base flags first and avoided unsafe drop zones.",
+        "",
+        "Move fast, Exiles. Bring ammo. Bring bad decisions.",
+      ];
 
-  const title = isTest ? "📦 **Cargo Test launched.**" : "📦 **Cargo Frenzy launched.**";
-  const lines = [
-    title,
-    isTest ? "One cargo drop was requested for testing." : `Cargo drops sent: ${successCount}/${points.length}`,
-    isTest ? `Command sent: ${successCount}/${points.length}` : null,
-    ...safetyLines,
-    "",
-    "Locations:",
-    ...results.slice(0, 10).map((entry, index) => {
-      const nearest = entry.point.nearestFlagDistance !== null ? ` | nearest flag: ${formatApproxDistance(entry.point.nearestFlagDistance)}` : " | nearest flag: none found";
-      return `${index + 1}. ${entry.ok ? "✅" : "❌"} X: ${entry.point.x} | Y: ${entry.point.y} | Z: ${entry.point.z}${nearest}`;
-    }),
-  ].filter(Boolean);
-
-  if (failed.length) {
-    lines.push("", "Failures / raw server result:");
-    for (const entry of failed.slice(0, 5)) {
-      lines.push(`• ${entry.command}`);
-      lines.push(`  ${entry.output}`);
-    }
-  } else if (isTest) {
-    lines.push("", `Server result: ${results[0]?.output || "sent"}`);
+  if (failed.length && !isTest) {
+    lines.push("", "⚠️ Some drops may not have launched. Staff can check Railway logs if needed.");
   }
 
-  if (!isTest) {
-    lines.push("", "Note: Watcher now uses `#ScheduleWorldEvent BP_CargoDropEvent X Y Z`, which current SCUM builds use for exact-coordinate cargo drops. The server accepting the command still means SCUM has to process the event, so avoid running this right before restart.");
-  }
+  console.log("📦 Cargo Frenzy details", JSON.stringify({
+    isTest,
+    requested: points.length,
+    successCount,
+    flagsChecked: plan.flagsChecked,
+    safeDistance: plan.safeDistance,
+    totalCandidates: plan.totalCandidates,
+    safeCandidateCount: plan.safeCandidateCount,
+    blockedCount: plan.blockedCount,
+    eventName: CARGO_FRENZY_EVENT_NAME,
+    locations: results.map((entry) => ({
+      ok: entry.ok,
+      x: entry.point.x,
+      y: entry.point.y,
+      z: entry.point.z,
+      nearestFlagDistance: entry.point.nearestFlagDistance,
+      output: entry.output,
+    })),
+  }));
 
   await message.reply(clampDiscord(lines.join("\n"))).catch(() => {});
+
 }
 
 async function handleCargoFrenzyCommand(message) {
@@ -4732,7 +4738,6 @@ async function runScheduledCargoFrenzy(bot, slot) {
       author: { id: "scheduled-cargo-frenzy", tag: "Scheduled Cargo Frenzy" },
     };
 
-    await channel.send(`📦 **Scheduled Cargo Frenzy starting.**\nSlot: ${slot.label}\nTiming: 30 minutes after scheduled restart.`).catch(() => {});
     await runCargoFrenzy(pseudoMessage, { count: CARGO_FRENZY_COUNT, isTest: false, scheduled: true });
 
     await saveCargoScheduleConfigPersistent({
@@ -4819,13 +4824,14 @@ async function handleCargoScheduleSetup(message, bot) {
   await ensureCargoScheduleLoop(bot);
 
   await message.reply([
-    "📦 **Automatic Cargo Frenzy is now enabled in this channel.**",
-    "It will run 30 minutes after each scheduled restart.",
-    `Schedule: ${getCargoScheduleLabel()}`,
-    `Drops per run: ${CARGO_FRENZY_COUNT}`,
-    `Cargo event: ${CARGO_FRENZY_EVENT_NAME}`,
-    "The setup is saved to persistent runtime state so redeploys/restarts do not wipe it.",
-    "It still checks flags/bases first and cancels if it cannot find safe locations.",
+    "📦 **Outpost X Cargo Frenzy**",
+    "Automatic cargo drops are enabled in this channel.",
+    "",
+    "**Schedule:** 30 minutes after each server restart",
+    `**Drops:** ${CARGO_FRENZY_COUNT} per run`,
+    "**Safety:** Watcher checks live base flags first",
+    "",
+    "When it launches, players will only see a clean event post — no coordinate wall.",
   ].join("\n")).catch(() => {});
 }
 
@@ -4848,18 +4854,13 @@ async function handleCargoScheduleStatus(message) {
   const nextSlot = cargoScheduleNextSlot || getNextCargoScheduleSlot();
   const lines = [
     "📦 **Cargo Schedule Status**",
-    `Enabled: Yes`,
-    `Report Channel: <#${config.channelId}>`,
-    `Schedule: ${getCargoScheduleLabel()}`,
-    `Current ${CARGO_SCHEDULE_TIMEZONE} time: ${parts.keyDate} ${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}:${String(parts.second || 0).padStart(2, "0")}`,
-    `Active window right now: ${slot ? "Yes" : "No"}`,
-    `Next Run: ${nextSlot.label} (about ${formatDelay(nextSlot.delayMs)} from now)`,
-    "Timer Mode: exact sleep-until-next-run, not once-per-minute polling.",
-    "Storage: persistent runtime state, survives redeploys/restarts.",
-    `Last Run: ${config.lastRunAt ? formatDate(config.lastRunAt) : "Never"}`,
-    `Last Slot: ${config.lastRunLabel || "None"}`,
-    `Drops per run: ${CARGO_FRENZY_COUNT}`,
-    `Cargo event: ${CARGO_FRENZY_EVENT_NAME}`,
+    "**Status:** Enabled",
+    `**Channel:** <#${config.channelId}>`,
+    "**Schedule:** 30 minutes after each server restart",
+    `**Next Run:** ${nextSlot.label} — about ${formatDelay(nextSlot.delayMs)} from now`,
+    `**Last Run:** ${config.lastRunAt ? formatDate(config.lastRunAt) : "Never"}`,
+    `**Drops:** ${CARGO_FRENZY_COUNT} per run`,
+    "**Safety:** live base flags checked before every run",
   ];
 
   await message.reply(lines.join("\n")).catch(() => {});
