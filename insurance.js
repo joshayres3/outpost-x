@@ -519,7 +519,7 @@ async function confirmBuy(interaction, vehicleId) {
     return;
   }
 
-  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "remove", amount: config.price });
+  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -config.price });
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const afterPlayer = await getPlayerBySteamId(link.steam_id);
   const afterCash = getPlayerCash(afterPlayer);
