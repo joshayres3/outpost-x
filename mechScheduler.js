@@ -308,41 +308,122 @@ function scheduleSummaryLines() {
   ];
 }
 
+function getReturnLabelForAction(action) {
+  return action === "on"
+    ? "Monday 11:45 PM Toronto — Mechs OFF"
+    : "Sunday 11:45 PM Toronto — Mechs ON";
+}
+
+function modeLabelFromValue(value) {
+  if (value === "False") return "🟢 Mechs ON after restart";
+  if (value === "True") return "🔴 Mechs OFF after restart";
+  return "Unknown";
+}
+
+function formatPanelTime(timestamp) {
+  if (!timestamp) return "Never";
+  return DateTime.fromMillis(Number(timestamp)).setZone(TIMEZONE).toFormat("yyyy-MM-dd h:mm a");
+}
+
+async function buildMechStatusPanel(config, options = {}) {
+  const now = DateTime.now().setZone(TIMEZONE);
+  const nextSlot = mechScheduleNextSlot || getNextMechScheduleSlot();
+
+  let currentSetting = "Unknown";
+  let currentMode = "Unknown";
+  try {
+    const current = await readCurrentSentrySetting();
+    currentSetting = `${SETTING_NAME}=${current.value}`;
+    currentMode = modeLabelFromValue(current.value);
+  } catch (err) {
+    currentSetting = `Could not read setting: ${err.message}`;
+  }
+
+  const lastAction = options.action || config?.lastRunAction || null;
+  const turnsBack = lastAction ? getReturnLabelForAction(lastAction) : (nextSlot?.label || "Unknown");
+  const lastResult = options.resultText || (config?.lastRunLabel ? `${config.lastRunLabel}` : "No schedule action has run yet.");
+
+  const lines = [
+    "# 🤖 Outpost X Mech Schedule",
+    `**Status:** ${currentMode}`,
+    `**Current File Setting:** \`${currentSetting}\``,
+    `**Next Automatic Change:** ${config?.enabled ? nextSlot.label : "Disabled"}`,
+    `**Turns Back:** ${config?.enabled ? turnsBack : "Disabled"}`,
+    "",
+    "**Schedule**",
+    "Sunday 11:45 PM Toronto → Mechs ON",
+    "Monday 11:45 PM Toronto → Mechs OFF",
+    "Midnight server restart applies the change.",
+    "",
+    `**Last Update:** ${lastResult}`,
+    `**Last Checked:** ${now.toFormat("yyyy-MM-dd h:mm a")} Toronto`,
+    "",
+    "Watcher edits only `scum.DisableSentrySpawning` from a fresh ServerSettings.ini each time.",
+  ];
+
+  if (options.error) lines.splice(1, 0, `**Last Error:** ${options.error}`);
+  return lines.join("\n");
+}
+
+async function getMechPanelMessage(bot, config, shouldCreate = false) {
+  if (!config?.channelId) return null;
+
+  const channel = await bot.channels.fetch(config.channelId).catch(() => null);
+  if (!channel) return null;
+
+  if (config.panelMessageId) {
+    const existing = await channel.messages.fetch(config.panelMessageId).catch(() => null);
+    if (existing) return existing;
+  }
+
+  if (!shouldCreate) return null;
+  return await channel.send("🤖 Building mech schedule panel...").catch(() => null);
+}
+
+async function updateMechStatusPanel(bot, config, options = {}) {
+  if (!config?.channelId) return null;
+
+  const message = await getMechPanelMessage(bot, config, true);
+  if (!message) return null;
+
+  const content = await buildMechStatusPanel(config, options);
+  const edited = await message.edit(content).catch(() => null);
+
+  if (edited && edited.id !== config.panelMessageId) {
+    await saveMechScheduleConfig({ ...config, panelMessageId: edited.id });
+  }
+
+  return edited || message;
+}
+
 async function runScheduledMechAction(bot, slot) {
   const config = await loadMechScheduleConfig();
   if (!config?.enabled || !config.channelId) return;
   if (config.lastRunKey === slot.key) return;
   if (mechScheduleRunning) return;
 
-  const channel = await bot.channels.fetch(config.channelId).catch(() => null);
-  if (!channel) return;
-
   mechScheduleRunning = true;
   try {
     const result = await applyMechAction(slot.action);
-    await saveMechScheduleConfig({
+    const updatedConfig = {
       ...config,
       lastRunKey: slot.key,
       lastRunAt: Date.now(),
       lastRunAction: slot.action,
       lastRunLabel: slot.label,
-    });
+    };
+    await saveMechScheduleConfig(updatedConfig);
 
-    await channel.send([
-      `🤖 **Mech Schedule Applied — ${actionLabel(slot.action)}**`,
-      `Slot: ${slot.label}`,
-      `Edited Setting: \`${SETTING_NAME}=${result.verifiedValue}\``,
-      result.changed ? "Result: ServerSettings.ini updated from a fresh copy." : "Result: Setting was already correct. No upload needed.",
-      "Only `scum.DisableSentrySpawning` was checked/changed.",
-      "This takes effect after the midnight server restart.",
-    ].join("\n")).catch(() => {});
+    await updateMechStatusPanel(bot, updatedConfig, {
+      action: slot.action,
+      resultText: `${actionLabel(slot.action)} applied at ${DateTime.now().setZone(TIMEZONE).toFormat("yyyy-MM-dd h:mm a")} Toronto. ${result.changed ? "File updated from a fresh copy." : "Setting was already correct."}`,
+    });
   } catch (err) {
-    await channel.send([
-      `🤖 **Mech Schedule Failed — ${actionLabel(slot.action)}**`,
-      `Slot: ${slot.label}`,
-      `Error: ${err.message}`,
-      "No other settings were changed.",
-    ].join("\n")).catch(() => {});
+    await updateMechStatusPanel(bot, config, {
+      action: slot.action,
+      error: `${actionLabel(slot.action)} failed: ${err.message}`,
+      resultText: `Failed slot: ${slot.label}. No other settings were changed.`,
+    });
   } finally {
     mechScheduleRunning = false;
   }
@@ -393,6 +474,7 @@ async function handleMechScheduleSetup(message, bot) {
     guildId: message.guild?.id || "default",
     setBy: message.author.id,
     setAt: Date.now(),
+    panelMessageId: existing?.channelId === message.channel.id ? existing?.panelMessageId || null : null,
     lastRunKey: existing?.lastRunKey || null,
     lastRunAt: existing?.lastRunAt || null,
     lastRunAction: existing?.lastRunAction || null,
@@ -402,20 +484,30 @@ async function handleMechScheduleSetup(message, bot) {
   await saveMechScheduleConfig(config);
   await ensureMechScheduleLoop(bot);
 
-  const nextSlot = mechScheduleNextSlot || getNextMechScheduleSlot();
-  await message.reply([
-    "🤖 **Mech scheduler is now enabled in this channel.**",
-    ...scheduleSummaryLines(),
-    `Next Run: ${nextSlot.label} (about ${formatDelay(nextSlot.delayMs)} from now)`,
-    "Storage: persistent runtime state, survives bot restarts/redeploys.",
-    "Safety: downloads a fresh ServerSettings.ini every run and only edits `scum.DisableSentrySpawning`.",
-  ].join("\n")).catch(() => {});
+  const panel = await updateMechStatusPanel(bot, config, {
+    resultText: `Schedule enabled by ${message.author.tag} at ${DateTime.now().setZone(TIMEZONE).toFormat("yyyy-MM-dd h:mm a")} Toronto.`,
+  });
+
+  if (panel?.id) {
+    const saved = await loadMechScheduleConfig();
+    if (saved?.panelMessageId !== panel.id) {
+      await saveMechScheduleConfig({ ...saved, panelMessageId: panel.id });
+    }
+  }
+
+  await message.react("✅").catch(() => {});
 }
 
-async function handleMechScheduleOff(message) {
+async function handleMechScheduleOff(message, bot) {
+  const config = await loadMechScheduleConfig();
+  if (config?.channelId) {
+    await updateMechStatusPanel(bot, { ...config, enabled: false }, {
+      resultText: `Schedule disabled by ${message.author.tag} at ${DateTime.now().setZone(TIMEZONE).toFormat("yyyy-MM-dd h:mm a")} Toronto.`,
+    }).catch(() => {});
+  }
   await clearMechScheduleConfig();
   clearMechScheduleTimer();
-  await message.reply("🤖 Mech scheduler is now disabled.").catch(() => {});
+  await message.react("✅").catch(() => {});
 }
 
 async function handleMechScheduleStatus(message) {
@@ -461,15 +553,18 @@ async function handleMechTest(message) {
   ].join("\n")).catch(() => {});
 }
 
-async function handleManualMechAction(message, action) {
+async function handleManualMechAction(message, bot, action) {
   const result = await applyMechAction(action);
-  await message.reply([
-    `🤖 **${actionLabel(action)} setting applied.**`,
-    `Edited Setting: \`${SETTING_NAME}=${result.verifiedValue}\``,
-    result.changed ? `Previous Value: \`${result.previousValue}\`` : "Result: Setting was already correct. No upload needed.",
-    "Only `scum.DisableSentrySpawning` was checked/changed from a fresh file.",
-    "This takes effect after the next server restart.",
-  ].join("\n")).catch(() => {});
+  const config = await loadMechScheduleConfig();
+
+  if (config?.enabled && config.channelId) {
+    await updateMechStatusPanel(bot, config, {
+      action,
+      resultText: `${actionLabel(action)} manually applied by ${message.author.tag} at ${DateTime.now().setZone(TIMEZONE).toFormat("yyyy-MM-dd h:mm a")} Toronto. ${result.changed ? "File updated from a fresh copy." : "Setting was already correct."}`,
+    });
+  }
+
+  await message.react("✅").catch(() => {});
 }
 
 async function handleMechCommand(message, bot) {
@@ -487,11 +582,11 @@ async function handleMechCommand(message, bot) {
 
   try {
     if (command === "!mechtest") await handleMechTest(message);
-    else if (command === "!mechson") await handleManualMechAction(message, "on");
-    else if (command === "!mechsoff") await handleManualMechAction(message, "off");
+    else if (command === "!mechson") await handleManualMechAction(message, bot, "on");
+    else if (command === "!mechsoff") await handleManualMechAction(message, bot, "off");
     else if (command === "!mechschedulesetup") await handleMechScheduleSetup(message, bot);
     else if (command === "!mechschedulestatus") await handleMechScheduleStatus(message);
-    else if (command === "!mechscheduleoff") await handleMechScheduleOff(message);
+    else if (command === "!mechscheduleoff") await handleMechScheduleOff(message, bot);
     return true;
   } catch (err) {
     console.error("❌ Mech command failed:", err);
@@ -505,6 +600,9 @@ async function startMechScheduleOnBoot(bot) {
   if (!config?.enabled || !config.channelId) return;
 
   await ensureMechScheduleLoop(bot);
+  await updateMechStatusPanel(bot, config, {
+    resultText: config.lastRunLabel ? `Last schedule action: ${config.lastRunLabel}.` : "Bot restarted. Schedule is active.",
+  }).catch(() => {});
 
   const dueSlot = getCurrentDueSlot();
   if (dueSlot && config.lastRunKey !== dueSlot.key) {
