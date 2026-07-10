@@ -27,11 +27,20 @@ const MECH_PACKS = {
   rockets10: {
     key: "rockets10",
     emoji: "💥",
-    label: "10 RPG Rockets",
-    buttonLabel: "Buy 10 Rockets",
+    label: "Rockets PG-7M",
+    buttonLabel: "Buy Rockets PG-7M",
     price: 15000,
     quantity: 10,
     aliases: [
+      "PG-7M",
+      "PG7M",
+      "PG_7M",
+      "Ammo_PG7M",
+      "Ammo_PG_7M",
+      "Ammo_RPG7_PG7M",
+      "Ammo_RPG_7_PG_7M",
+      "RPG7_PG7M",
+      "RPG_7_PG_7M",
       "Ammo_RPG7",
       "Ammo_RPG_7",
       "Ammo_RPG7_Rocket",
@@ -217,7 +226,7 @@ function buildMechPackRows() {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("mechpack:buy:rpg7").setLabel("Buy RPG-7 — $50,000").setEmoji("🚀").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("mechpack:buy:rockets10").setLabel("Buy 10 Rockets — $15,000").setEmoji("💥").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId("mechpack:buy:rockets10").setLabel("Buy Rockets PG-7M — $15,000").setEmoji("💥").setStyle(ButtonStyle.Primary)
     ),
   ];
 }
@@ -228,7 +237,7 @@ function buildMechPackText() {
     "Buy a small starter pack for mech hunting nights.",
     "",
     "🚀 **RPG-7** — `$50,000`",
-    "💥 **10 RPG Rockets** — `$15,000`",
+    "💥 **Rockets PG-7M** — `$15,000`",
     "",
     "⚠️ **Profit note:** To actually profit from mechs, you will need to loot/find rockets — buying rockets is mainly for fun.",
     "",
@@ -295,7 +304,7 @@ async function showMechPackStatus(message) {
     `Register Channel: <#${REGISTER_CHANNEL_ID}>`,
     "",
     `RPG-7 item: ${rpg?.itemClass ? `\`${rpg.itemClass}\`${rpg.catalogMatched ? "" : " (fallback)"}` : `Error: ${rpg?.error || "unknown"}`}`,
-    `Rocket item: ${rockets?.itemClass ? `\`${rockets.itemClass}\`${rockets.catalogMatched ? "" : " (fallback)"}` : `Error: ${rockets?.error || "unknown"}`}`,
+    `Rockets PG-7M item: ${rockets?.itemClass ? `\`${rockets.itemClass}\`${rockets.catalogMatched ? "" : " (fallback)"}` : `Error: ${rockets?.error || "unknown"}`}`,
   ].join("\n")).catch(() => {});
 }
 
