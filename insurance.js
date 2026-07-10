@@ -224,6 +224,9 @@ function buildInsuranceMenuText() {
     "**Limit:** 1 active insurance per vehicle type per player.",
     "**Expiration:** none.",
     "",
+    "⚠️ **After locking or claiming a vehicle, give Watcher a few minutes to see it.**",
+    "If your vehicle does not show up right away, wait a bit and try **Buy Insurance** again.",
+    "",
     "Use the buttons below to register, buy, view, or claim insurance.",
   ].join("\n");
 }
