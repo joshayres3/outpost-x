@@ -60,12 +60,13 @@ const CATEGORIES = {
     emoji: "👥",
     label: "Players",
     title: "👥 PLAYERS + SQUADS + ECONOMY",
-    aliases: ["players", "player", "squad", "cash", "fame", "money", "economy", "econ"],
+    aliases: ["players", "player", "squad", "cash", "fame", "refund", "money", "economy", "econ"],
     lines: [
       ["!player <name/SteamID>", "Full lookup, recent IP, fake name, previous names."],
       ["!squad <player>", "Squad info."],
       ["!cash <player> add/remove/set <amount>", "Change cash."],
       ["!fame <player> add/remove/set <amount>", "Change fame."],
+      ["!refund <player> <amount>", "Refund cash to a player."],
     ],
   },
   vehicles: {

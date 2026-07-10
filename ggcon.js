@@ -3032,6 +3032,25 @@ async function handleAnnounceCommand(message, args) {
   await message.reply(`Announcement sent in-game:\n> ${text}`).catch(() => {});
 }
 
+function normalizeBalanceChangeAction(action, amount) {
+  const rawAction = String(action || "").toLowerCase();
+  const rawAmount = Math.floor(Number(amount));
+
+  if (rawAction === "set") {
+    return { action: "set", amount: Math.max(0, rawAmount), label: "set" };
+  }
+
+  if (rawAction === "remove") {
+    return { action: "change", amount: -Math.abs(rawAmount), label: "remove" };
+  }
+
+  if (rawAction === "change") {
+    return { action: "change", amount: rawAmount, label: rawAmount < 0 ? "remove" : "add" };
+  }
+
+  return { action: "change", amount: Math.abs(rawAmount), label: "add" };
+}
+
 async function applyPlayerBalanceChange(message, player, kind, action, amount) {
   const steamId = String(player.userId || "").trim();
   const endpoint = kind === "cash" ? "currency" : "fame";
@@ -3042,14 +3061,19 @@ async function applyPlayerBalanceChange(message, player, kind, action, amount) {
     return;
   }
 
-  await ggconPost(`/players/${encodeURIComponent(steamId)}/${endpoint}`, { action, amount });
+  const payload = normalizeBalanceChangeAction(action, amount);
+  await ggconPost(`/players/${encodeURIComponent(steamId)}/${endpoint}`, {
+    action: payload.action,
+    amount: payload.amount,
+  });
 
   await message.reply([
     `${label} updated for **${getPlayerDisplayName(player)}**.`,
     `Steam ID: \`${steamId}\``,
-    `Action: **${action}** ${amount.toLocaleString("en-CA")}`,
+    `Action: **${payload.label}** ${Math.abs(Number(amount)).toLocaleString("en-CA")}`,
   ].join("\n")).catch(() => {});
 }
+
 
 function buildPlayerOperationButtons(matches, commandName, action, amount) {
   const op = commandName === "!cash" ? "cashop" : "fameop";
@@ -3099,6 +3123,121 @@ async function handleCashOrFameCommand(message, args, kind) {
   }
 
   await applyPlayerBalanceChange(message, playerResult.player, kind, parsed.action, parsed.amount);
+}
+
+
+function parseRefundArgs(args) {
+  if (!Array.isArray(args) || args.length < 2) {
+    return { error: "Use: `!refund <player name or Steam ID> <amount>`" };
+  }
+
+  const amountText = String(args[args.length - 1] || "").replace(/,/g, "").trim();
+  const amount = Math.floor(Number(amountText));
+  const playerQuery = args.slice(0, -1).join(" ").trim();
+
+  if (!playerQuery || !Number.isFinite(amount) || amount <= 0) {
+    return { error: "Use: `!refund <player name or Steam ID> <amount>`" };
+  }
+
+  return { playerQuery, amount };
+}
+
+function buildRefundButtons(matches, amount) {
+  const usable = matches.filter((player) => player.userId).slice(0, 10);
+  const rows = [];
+
+  for (let i = 0; i < usable.length; i += 5) {
+    const row = new ActionRowBuilder();
+
+    usable.slice(i, i + 5).forEach((player, offset) => {
+      const index = i + offset;
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ggcon:refundop:${player.userId}:${amount}`)
+          .setLabel(String(index + 1))
+          .setStyle(ButtonStyle.Success)
+      );
+    });
+
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+function getPlayerCashValue(player) {
+  const candidates = [player?.accountBalance, player?.cash, player?.currency, player?.money, player?.balance, player?.account_balance];
+  for (const value of candidates) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+async function applyRefund(message, player, amount) {
+  const steamId = String(player.userId || "").trim();
+  if (!steamId) {
+    await message.reply("That player does not have a usable Steam ID.").catch(() => {});
+    return;
+  }
+
+  const cleanAmount = Math.abs(Math.floor(Number(amount)));
+  const beforeCash = getPlayerCashValue(player);
+  await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, {
+    action: "change",
+    amount: cleanAmount,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const afterResult = await getPlayerForLookup(steamId);
+  const afterPlayer = afterResult.type === "single" ? afterResult.player : null;
+  const afterCash = getPlayerCashValue(afterPlayer);
+
+  const lines = [
+    `💸 **Refund Sent**`,
+    `Player: **${getPlayerDisplayName(player)}**`,
+    `Steam ID: \`${steamId}\``,
+    `Amount: **$${formatMoney(cleanAmount)}**`,
+  ];
+
+  if (beforeCash !== null && afterCash !== null) {
+    lines.push(`Cash: $${formatMoney(beforeCash)} → $${formatMoney(afterCash)}`);
+  }
+
+  lines.push(`Refunded by: ${message.member?.displayName || message.author?.tag || "Unknown"}`);
+
+  await message.reply(lines.join("\n")).catch(() => {});
+  await sendGgconActionLog(message.client, message.channel, buildAdminActionLog("💸 **Player Refunded**", [
+    `Player: **${getPlayerDisplayName(player)}**`,
+    `Steam ID: \`${steamId}\``,
+    `Amount: **$${formatMoney(cleanAmount)}**`,
+    beforeCash !== null && afterCash !== null ? `Cash: $${formatMoney(beforeCash)} → $${formatMoney(afterCash)}` : null,
+    `Refunded by: ${message.member?.displayName || message.author?.tag || "Unknown"}`,
+  ]));
+}
+
+async function handleRefundCommand(message, args) {
+  const parsed = parseRefundArgs(args);
+  if (parsed.error) {
+    await message.reply(parsed.error).catch(() => {});
+    return;
+  }
+
+  const playerResult = await getPlayerForLookup(parsed.playerQuery);
+  if (playerResult.type === "none") {
+    await message.reply(`No player found for **${parsed.playerQuery}**.`).catch(() => {});
+    return;
+  }
+
+  if (playerResult.type === "multiple") {
+    await message.reply({
+      content: buildMultipleMatchesReply(parsed.playerQuery, playerResult.matches, "!refund"),
+      components: buildRefundButtons(playerResult.matches, parsed.amount),
+    }).catch(() => {});
+    return;
+  }
+
+  await applyRefund(message, playerResult.player, parsed.amount);
 }
 
 async function handleOnlineCommand(message) {
@@ -3207,13 +3346,14 @@ async function handleCashOrFameButton(interaction, kind, valueParts) {
     return true;
   }
 
+  const payload = normalizeBalanceChangeAction(action, amount);
   await ggconPost(`/players/${encodeURIComponent(steamId)}/${kind === "cash" ? "currency" : "fame"}`, {
-    action,
-    amount,
+    action: payload.action,
+    amount: payload.amount,
   });
 
   await interaction.reply({
-    content: `${kind === "cash" ? "Cash" : "Fame"} updated for **${getPlayerDisplayName(playerResult.player)}**: **${action}** ${Number(amount).toLocaleString("en-CA")}.`,
+    content: `${kind === "cash" ? "Cash" : "Fame"} updated for **${getPlayerDisplayName(playerResult.player)}**: **${payload.label}** ${Math.abs(Number(amount)).toLocaleString("en-CA")}.`,
     ephemeral: true,
   }).catch(() => {});
   return true;
@@ -5269,6 +5409,30 @@ async function handleGgconInteraction(interaction) {
       return await handleCashOrFameButton(interaction, "fame", value ? [value, ...interaction.customId.split(":").slice(3)] : interaction.customId.split(":").slice(2));
     }
 
+
+    if (action === "refundop") {
+      const parts = value ? [value, ...interaction.customId.split(":").slice(3)] : interaction.customId.split(":").slice(2);
+      const [steamId, amountText] = parts;
+      const amount = Math.floor(Number(amountText));
+      const playerResult = await getPlayerForLookup(String(steamId || ""));
+      if (playerResult.type !== "single" || !Number.isFinite(amount) || amount <= 0) {
+        await interaction.reply({ content: "Refund target was not found or the amount was invalid.", ephemeral: true }).catch(() => {});
+        return true;
+      }
+      await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action: "change", amount });
+      await interaction.reply({
+        content: `💸 Refund sent to **${getPlayerDisplayName(playerResult.player)}**: **$${formatMoney(amount)}**.`,
+        ephemeral: true,
+      }).catch(() => {});
+      await sendGgconActionLog(interaction.client, interaction.channel, buildAdminActionLog("💸 **Player Refunded**", [
+        `Player: **${getPlayerDisplayName(playerResult.player)}**`,
+        `Steam ID: \`${steamId}\``,
+        `Amount: **$${formatMoney(amount)}**`,
+        `Refunded by: ${interaction.member?.displayName || interaction.user?.tag || "Unknown"}`,
+      ]));
+      return true;
+    }
+
     if (action === "flagall") {
       const flagData = await ggconGet("/flags.json");
       const page = buildAllFlagsPage(flagData, Number(value || 1));
@@ -5316,7 +5480,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!loginlogsetup", "!loginlogoff", "!loginlogstatus", "!loginlogscan", "!rawlogdump", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!loginlogsetup", "!loginlogoff", "!loginlogstatus", "!loginlogscan", "!rawlogdump", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!refund", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -5406,6 +5570,11 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!fame") {
       await handleCashOrFameCommand(message, args, "fame");
+      return true;
+    }
+
+    if (command === "!refund") {
+      await handleRefundCommand(message, args);
       return true;
     }
 
