@@ -133,6 +133,7 @@ const CATEGORIES = {
     aliases: ["insurance", "insure", "insured", "vehicleinsurance"],
     lines: [
       ["!insurancesetup", "Post/move the insurance menu."],
+      ["!registersetup", "Post a standalone Register Steam panel."],
       ["!insurancestatus", "Insurance system status."],
       ["!insurancescan", "Force an insurance destruction scan."],
       ["!wipeinsurance", "Owner-only wipe after server wipe."],
@@ -144,7 +145,7 @@ const CATEGORIES = {
     emoji: "🤖",
     label: "Mechs",
     title: "🤖 MECH SCHEDULE",
-    aliases: ["mechs", "mech", "sentry", "sentries", "mechschedule"],
+    aliases: ["mechs", "mech", "sentry", "sentries", "mechschedule", "mechpack", "mechpacks", "rpg", "rpg7"],
     lines: [
       ["!mechtest", "Test SFTP and read current sentry setting."],
       ["!mechson", "Set mechs ON after next restart."],
@@ -152,6 +153,8 @@ const CATEGORIES = {
       ["!mechschedulesetup", "Sunday 11:45 PM ON / Monday 11:45 PM OFF Toronto."],
       ["!mechschedulestatus", "Mech schedule and current setting status."],
       ["!mechscheduleoff", "Disable automatic mech schedule."],
+      ["!mechpacksetup", "Post/move the mech hunting pack shop."],
+      ["!mechpackstatus", "Check mech pack item resolution."],
     ],
   },
   cargo: {

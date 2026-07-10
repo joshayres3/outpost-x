@@ -73,6 +73,10 @@ const {
   startInsuranceOnBoot,
 } = require("./insurance");
 const {
+  handleMechPackCommand,
+  handleMechPackInteraction,
+} = require("./mechPacks");
+const {
   handleMechCommand,
   startMechScheduleOnBoot,
 } = require("./mechScheduler");
@@ -212,6 +216,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleMechPackInteraction(interaction)) return;
+
     if (await handleInsuranceInteraction(interaction)) return;
 
     if (await handleGgconInteraction(interaction)) return;
@@ -289,6 +295,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
+
+    if (await handleMechPackCommand(msg)) return;
 
     if (await handleInsuranceCommand(msg, bot)) return;
 
