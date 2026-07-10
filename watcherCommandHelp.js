@@ -149,7 +149,7 @@ const CATEGORIES = {
       ["!insurancestatus", "Insurance system status."],
       ["!insurancescan", "Force an insurance destruction scan."],
       ["!wipeinsurance", "Owner-only wipe after server wipe."],
-      ["Player buttons", "Register Steam, buy insurance, view policies, claim replacements."],
+      ["Player buttons", "Rates, Buy Insurance, My Insurance, Claim Insurance."],
     ],
   },
 
@@ -165,7 +165,7 @@ const CATEGORIES = {
       ["!mechschedulesetup", "Sunday 11:45 PM ON / Monday 11:45 PM OFF Toronto."],
       ["!mechschedulestatus", "Mech schedule and current setting status."],
       ["!mechscheduleoff", "Disable automatic mech schedule."],
-      ["Panel", "Watcher edits the original mech status post."],
+      ["Panel", "Clean player-facing status post that edits itself."],
     ],
   },
 
@@ -257,22 +257,28 @@ function categoryFromInput(input) {
 }
 
 function buildMenuContent() {
-  const rows = ORDER.map((key) => {
+  const label = (key) => {
     const section = CATEGORIES[key];
     return `${section.emoji} **${section.label}**`;
-  });
+  };
 
   return [
-    "# 🛰️ OUTPOST X | THE WATCHER",
-    "## Admin Command Menu",
+    "# 🛰️ Outpost X | Watcher Command Center",
     "**Staff only:** Owner / Admin / Trial Admin",
-    "**Partial names work. Multiple matches = buttons.**",
+    "Partial player names work. If multiple players match, Watcher shows buttons.",
     "",
-    "Pick a category below, or type `!help <category>`.",
+    "Pick a button below, or type `!help <category>`.",
     "",
-    rows.join("  •  "),
+    "**Player-facing panels**",
+    ["register", "insurance", "mechs", "mechpacks", "cargo"].map(label).join("  •  "),
     "",
-    "Examples: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help register`, `!help loginlogs`",
+    "**Admin tools**",
+    ["server", "players", "vehicles", "bases", "jail", "logs"].map(label).join("  •  "),
+    "",
+    "**Server management**",
+    ["core", "setup", "events", "safety"].map(label).join("  •  "),
+    "",
+    "**Most used setup:** `!registersetup` • `!insurancesetup` • `!mechschedulesetup` • `!mechpacksetup` • `!cargoschedulesetup`",
   ].join("\n");
 }
 
@@ -287,8 +293,8 @@ function buildMenuComponents() {
   });
 
   const rows = [];
-  for (let i = 0; i < buttons.length; i += 4) {
-    rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 4)));
+  for (let i = 0; i < buttons.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
   }
   return rows;
 }
@@ -311,16 +317,16 @@ function buildCategoryContent(key) {
 
   const lines = [
     `## ${section.title}`,
+    "",
   ];
 
   for (const [cmd, desc] of section.lines) {
     const isCommand = String(cmd).startsWith("!");
-    lines.push(`${isCommand ? "🔹" : "▫️"} **\`${cmd}\`**`);
-    lines.push(desc);
+    lines.push(`${isCommand ? "•" : "-"} ${isCommand ? `\`${cmd}\`` : `**${cmd}**`} — ${desc}`);
   }
 
   lines.push("");
-  lines.push("Type `!commands` for the full menu.");
+  lines.push("Use `!commands` to return to the full menu.");
   return lines.join("\n");
 }
 
@@ -391,7 +397,7 @@ async function handleCommandHelpMessage(message) {
     await message.reply([
       "Unknown help category.",
       "Use `!commands` to see the menu.",
-      "Examples: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help register`, `!help loginlogs`",
+      "Try: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help cargo`, or `!help logs`.",
     ].join("\n")).catch(() => {});
     return true;
   }

@@ -320,6 +320,12 @@ function modeLabelFromValue(value) {
   return "Unknown";
 }
 
+function shortMechModeLabel(value) {
+  if (value === "False") return "🟢 Mechs ON";
+  if (value === "True") return "🔴 Mechs OFF";
+  return "Unknown";
+}
+
 function formatPanelTime(timestamp) {
   if (!timestamp) return "Never";
   return DateTime.fromMillis(Number(timestamp)).setZone(TIMEZONE).toFormat("yyyy-MM-dd h:mm a");
@@ -329,14 +335,12 @@ async function buildMechStatusPanel(config, options = {}) {
   const now = DateTime.now().setZone(TIMEZONE);
   const nextSlot = mechScheduleNextSlot || getNextMechScheduleSlot();
 
-  let currentSetting = "Unknown";
   let currentMode = "Unknown";
   try {
     const current = await readCurrentSentrySetting();
-    currentSetting = `${SETTING_NAME}=${current.value}`;
-    currentMode = modeLabelFromValue(current.value);
+    currentMode = shortMechModeLabel(current.value);
   } catch (err) {
-    currentSetting = `Could not read setting: ${err.message}`;
+    currentMode = `Could not read mech status: ${err.message}`;
   }
 
   const lastAction = options.action || config?.lastRunAction || null;
@@ -346,19 +350,16 @@ async function buildMechStatusPanel(config, options = {}) {
   const lines = [
     "# 🤖 Outpost X Mech Schedule",
     `**Status:** ${currentMode}`,
-    `**Current File Setting:** \`${currentSetting}\``,
-    `**Next Automatic Change:** ${config?.enabled ? nextSlot.label : "Disabled"}`,
+    `**Next Change:** ${config?.enabled ? nextSlot.label : "Disabled"}`,
     `**Turns Back:** ${config?.enabled ? turnsBack : "Disabled"}`,
+    "**Applies After:** midnight restart",
     "",
     "**Schedule**",
-    "Sunday 11:45 PM Toronto → Mechs ON",
-    "Monday 11:45 PM Toronto → Mechs OFF",
-    "Midnight server restart applies the change.",
+    "Sunday night → Mechs ON",
+    "Monday night → Mechs OFF",
     "",
     `**Last Update:** ${lastResult}`,
     `**Last Checked:** ${now.toFormat("yyyy-MM-dd h:mm a")} Toronto`,
-    "",
-    "Watcher edits only `scum.DisableSentrySpawning` from a fresh ServerSettings.ini each time.",
   ];
 
   if (options.error) lines.splice(1, 0, `**Last Error:** ${options.error}`);
