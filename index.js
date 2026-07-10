@@ -80,10 +80,6 @@ const {
   handleMechCommand,
   startMechScheduleOnBoot,
 } = require("./mechScheduler");
-const {
-  handleNpcEventCommand,
-  startNpcEventsOnBoot,
-} = require("./npcEvents");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -213,7 +209,6 @@ bot.once(Events.ClientReady, async () => {
     startGgconStatusOnBoot(bot);
     startInsuranceOnBoot(bot);
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));
-    startNpcEventsOnBoot(bot).catch((err) => console.error("❌ NPC event startup failed:", err.message));
   } catch (err) {
     console.error("❌ Startup database load failed:", err);
   }
@@ -306,8 +301,6 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleInsuranceCommand(msg, bot)) return;
 
     if (await handleMechCommand(msg, bot)) return;
-
-    if (await handleNpcEventCommand(msg, bot)) return;
 
     if (await handleGgconCommand(msg, bot)) return;
 

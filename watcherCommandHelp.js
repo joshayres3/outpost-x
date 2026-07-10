@@ -182,20 +182,6 @@ const CATEGORIES = {
       ["Register first", "Players must register before buying."],
     ],
   },
-  npcevents: {
-    emoji: "🎁",
-    label: "NPC Events",
-    title: "🎁 NPC LOOT EVENTS",
-    aliases: ["npc", "npcevent", "npcevents", "lootnpc", "lootevent", "npcloot"],
-    lines: [
-      ["!npcarea <shortname> <Display Name>", "Save your current SCUM location as an event center."],
-      ["!npctest <shortname>", "Small staff test: 2 NPCs, max 2 presents, no public event flow."],
-      ["!npcstart <shortname>", "Start the 1-hour public NPC Loot Event."],
-      ["!npcstop", "Stop the active NPC event and attempt NPC cleanup."],
-      ["!npcstatus", "Show active event, saved areas, NPC class resolution, and present item."],
-      ["!npcareas", "List saved NPC event areas."],
-    ],
-  },
   cargo: {
     emoji: "📦",
     label: "Cargo",
@@ -252,7 +238,6 @@ const ORDER = [
   "insurance",
   "mechs",
   "mechpacks",
-  "npcevents",
   "cargo",
   "events",
   "safety",
@@ -287,7 +272,7 @@ function buildMenuContent() {
     "",
     rows.join("  •  "),
     "",
-    "Examples: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help npc`, `!help register`, `!help loginlogs`",
+    "Examples: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help register`, `!help loginlogs`",
   ].join("\n");
 }
 
@@ -406,7 +391,7 @@ async function handleCommandHelpMessage(message) {
     await message.reply([
       "Unknown help category.",
       "Use `!commands` to see the menu.",
-      "Examples: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help npc`, `!help register`, `!help loginlogs`",
+      "Examples: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help register`, `!help loginlogs`",
     ].join("\n")).catch(() => {});
     return true;
   }
