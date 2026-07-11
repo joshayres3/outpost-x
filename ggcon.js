@@ -1,4 +1,5 @@
 const fs = require("fs");
+const { processInsuranceDestructionEvents } = require("./insurance");
 const path = require("path");
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
@@ -2107,6 +2108,17 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
       alerts.push({ type: "destroyed", content: buildVehicleDestroyedAlert(enrichedEvent) });
     }
   }
+
+  let insuranceClaims = 0;
+  if (destroyedEvents.length) {
+    try {
+      const insuranceResult = await processInsuranceDestructionEvents(bot, destroyedEvents);
+      insuranceClaims = insuranceResult?.claims || 0;
+    } catch (err) {
+      console.error("❌ Shared insurance destruction processing failed:", err.message);
+    }
+  }
+
   // Do not alert from live-list disappearance alone. The live vehicle list can temporarily hide
   // valid vehicles, which caused false "possible missing" alerts. Vehicle watch now only posts
   // confirmed destruction events from the server destruction log.
@@ -2148,9 +2160,15 @@ async function scanVehiclesAndAlert(bot, { baselineOnly = false } = {}) {
     pendingMissing: 0,
     confirmationScans: null,
     destroyedEvents: destroyedEvents.length,
+    insuranceClaims,
     alerts: alerts.length,
     sent,
   };
+}
+
+function getVehicleWatchIntervalSeconds() {
+  const raw = Number(process.env.GGCON_VEHICLE_WATCH_INTERVAL_SECONDS || process.env.WATCHER_VEHICLE_DESTRUCTION_SCAN_SECONDS || "30");
+  return Math.max(30, Number.isFinite(raw) ? raw : 30);
 }
 
 function ensureVehicleWatchLoop(bot) {
@@ -2163,8 +2181,7 @@ function ensureVehicleWatchLoop(bot) {
   }
   if (vehicleWatchTimer) return;
 
-  const seconds = Number(process.env.GGCON_VEHICLE_WATCH_INTERVAL_SECONDS || "180");
-  const intervalMs = Math.max(60, Number.isFinite(seconds) ? seconds : 180) * 1000;
+  const intervalMs = getVehicleWatchIntervalSeconds() * 1000;
 
   vehicleWatchTimer = setInterval(() => {
     scanVehiclesAndAlert(bot).catch((err) => {
@@ -2214,13 +2231,12 @@ async function handleVehicleLogStatus(message) {
   const vehicles = state?.vehicles ? Object.values(state.vehicles) : [];
   const ownedTracked = vehicles.filter(hasVehicleOwner).length;
   const unownedTracked = vehicles.length - ownedTracked;
-  const seconds = Number(process.env.GGCON_VEHICLE_WATCH_INTERVAL_SECONDS || "180");
-
   await message.reply([
     "🚗 **Vehicle Watch Status**",
     `Alert Channel: <#${channelId}>`,
     `Tracking Active: ${vehicleWatchTimer ? "Yes" : "Will start on next bot boot/setup"}`,
-    `Scan Interval: ${Math.max(60, Number.isFinite(seconds) ? seconds : 180)} seconds`,
+    `Scan Interval: ${getVehicleWatchIntervalSeconds()} seconds`,
+    `Shared With: insurance claim detection`,
     `Tracked Vehicles: ${vehicles.length}`,
     `Owned Vehicles Tracked: ${ownedTracked}`,
     `Unowned Vehicles Ignored for Alerts: ${unownedTracked}`,
@@ -2244,6 +2260,7 @@ async function handleVehicleLogScan(message, bot) {
     `Tracked Vehicles: ${result.vehicleCount ?? "Unknown"}`,
     `Owned Vehicles Tracked: ${result.ownedTracked ?? "Unknown"}`,
     `Confirmed Destruction Events: ${result.destroyedEvents ?? 0}`,
+    `Insurance Claims Unlocked: ${result.insuranceClaims ?? 0}`,
     `Alerts Found: ${result.alerts ?? 0}`,
     `Alerts Sent: ${result.sent ?? 0}`,
   ].join("\n")).catch(() => {});
@@ -4190,8 +4207,8 @@ async function scanRawPrisonerDeaths(previous, { baselineOnly = false } = {}) {
 }
 
 function getKillLogIntervalSeconds() {
-  const seconds = Number(process.env.GGCON_KILL_LOG_INTERVAL_SECONDS || "5");
-  return Math.max(5, Number.isFinite(seconds) ? seconds : 5);
+  const seconds = Number(process.env.GGCON_KILL_LOG_INTERVAL_SECONDS || "15");
+  return Math.max(15, Number.isFinite(seconds) ? seconds : 15);
 }
 
 async function fetchKillEventsSince(cursor) {

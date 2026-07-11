@@ -755,8 +755,42 @@ async function scanInsuranceDestructions(bot, { baselineOnly = false } = {}) {
   return { scanned: true, events, claims };
 }
 
+async function processInsuranceDestructionEvents(bot, events = [], { baselineOnly = false } = {}) {
+  const config = await loadRuntimeValue("insurance_config");
+  if (!config?.guildId || !config?.channelId) return { scanned: false, reason: "Insurance is not set up." };
+
+  const state = await loadRuntimeValue("insurance_state") || {};
+  const seen = new Set(state.seen || []);
+  let claims = 0;
+  let processed = 0;
+  let newest = Number(state.destructionCursor || 0);
+
+  for (const event of events || []) {
+    if (!event?.key || seen.has(event.key)) continue;
+    seen.add(event.key);
+    processed += 1;
+    newest = Math.max(newest, Number(event.t || 0));
+    if (!baselineOnly) claims += await processInsuranceDestructionEvent(bot, config.guildId, config.channelId, event);
+  }
+
+  await saveRuntimeValue("insurance_state", {
+    destructionCursor: newest || Date.now(),
+    seen: Array.from(seen).slice(-1000),
+    updatedAt: Date.now(),
+    source: "shared_vehicle_destruction_scan",
+  });
+
+  return { scanned: true, events: processed, claims };
+}
+
 function ensureInsuranceLoop(bot) {
   if (insuranceTimer) return;
+
+  if (String(process.env.WATCHER_SEPARATE_INSURANCE_SCAN || "false").toLowerCase() !== "true") {
+    console.log("🛡️ Insurance destruction checks are using the shared vehicle destruction scan.");
+    return;
+  }
+
   insuranceTimer = setInterval(() => {
     scanInsuranceDestructions(bot).catch((err) => console.error("❌ Insurance scan failed:", err.message));
   }, INSURANCE_SCAN_SECONDS * 1000);
@@ -878,7 +912,7 @@ async function handleInsuranceCommand(message, bot) {
     });
     await scanInsuranceDestructions(bot, { baselineOnly: true });
     ensureInsuranceLoop(bot);
-    await message.reply("🛡️ Vehicle insurance menu is now active in this channel. Rerun `!insurancesetup` in a different channel to move it.").catch(() => {});
+    await message.reply("🛡️ Vehicle insurance menu is now active in this channel. Insurance claim checks now share the vehicle destruction scan instead of running a separate constant pull. Rerun `!insurancesetup` in a different channel to move it.").catch(() => {});
     return true;
   }
 
@@ -898,11 +932,12 @@ async function handleInsuranceCommand(message, bot) {
     await message.reply([
       "🛡️ **Insurance Status**",
       `Menu Channel: ${config?.channelId ? `<#${config.channelId}>` : "Not set"}`,
-      `Scan Interval: ${INSURANCE_SCAN_SECONDS} seconds`,
-      `Loop Active: ${insuranceTimer ? "Yes" : "No"}`,
+      `Scan Source: Shared vehicle destruction scan`,
+      `Separate Insurance Loop: ${insuranceTimer ? "Yes" : "No"}`,
       `Last Cursor: ${state?.destructionCursor || "Not saved yet"}`,
       `Last Scan: ${state?.updatedAt ? formatDate(state.updatedAt) : "Never"}`,
       "Claims trigger only from confirmed vehicle destruction logs.",
+      "Keep vehicle logs enabled with `!vehiclelogsetup` so insurance claims unlock automatically.",
     ].join("\n")).catch(() => {});
     return true;
   }
@@ -1038,4 +1073,5 @@ module.exports = {
   handleInsuranceCommand,
   handleInsuranceInteraction,
   startInsuranceOnBoot,
+  processInsuranceDestructionEvents,
 };
