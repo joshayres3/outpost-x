@@ -77,6 +77,10 @@ const {
   handleMechPackInteraction,
 } = require("./mechPacks");
 const {
+  handleTradeTestCommand,
+  handleTradeTestInteraction,
+} = require("./tradeTest");
+const {
   handleMechCommand,
   startMechScheduleOnBoot,
 } = require("./mechScheduler");
@@ -218,6 +222,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await handleMechPackInteraction(interaction)) return;
 
+    if (await handleTradeTestInteraction(interaction)) return;
+
     if (await handleInsuranceInteraction(interaction)) return;
 
     if (await handleGgconInteraction(interaction)) return;
@@ -297,6 +303,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot) return;
 
     if (await handleMechPackCommand(msg)) return;
+
+    if (await handleTradeTestCommand(msg)) return;
 
     if (await handleInsuranceCommand(msg, bot)) return;
 
