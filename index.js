@@ -89,6 +89,10 @@ const {
   handleGroundTradeTestInteraction,
 } = require("./groundTradeTest");
 const {
+  handleSftpGroundTradeTestCommand,
+  handleSftpGroundTradeTestInteraction,
+} = require("./sftpGroundTradeTest");
+const {
   handleMechCommand,
   startMechScheduleOnBoot,
 } = require("./mechScheduler");
@@ -236,6 +240,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
 
     if (await handleGroundTradeTestInteraction(interaction)) return;
 
+    if (await handleSftpGroundTradeTestInteraction(interaction)) return;
+
     if (await handleInsuranceInteraction(interaction)) return;
 
     if (await handleGgconInteraction(interaction)) return;
@@ -321,6 +327,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleWardrobeProbeCommand(msg)) return;
 
     if (await handleGroundTradeTestCommand(msg)) return;
+
+    if (await handleSftpGroundTradeTestCommand(msg)) return;
 
     if (await handleInsuranceCommand(msg, bot)) return;
 
