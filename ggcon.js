@@ -536,6 +536,7 @@ function buildLastKnownSnapshotBlock(snapshot) {
   if (!snapshot?.steam_id) {
     return [
       "**Last Known Watcher Snapshot:** None saved yet",
+      "This will fill after Watcher sees this player online or receives usable server data for them.",
     ];
   }
 
@@ -548,13 +549,42 @@ function buildLastKnownSnapshotBlock(snapshot) {
     "**Last Known Watcher Snapshot**",
     `**Last Seen Online:** ${formatDate(snapshot.last_seen_online_at)}`,
     `**Last Updated:** ${formatDate(snapshot.last_updated_at)}`,
-    `**Last Known IP:** ${snapshot.last_ip ? `\`${snapshot.last_ip}\`` : "Unknown"}`,
-    `**Last Known Location:** ${formatLocation(snapshot.location)}`,
-    `**Last Known Squad:** ${formatSnapshotSquad(snapshot.squad)}`,
-    `**Last Known Fame/Cash/Gold:** ${formatSnapshotMoney(snapshot.fame)} / ${formatSnapshotMoney(snapshot.cash)} / ${formatSnapshotMoney(snapshot.gold)}`,
-    `**Last Known Health:** ${formatSnapshotHealth(snapshot.health)}`,
-    `**Last Known Gear:** ${gear}`,
-    `**Last Known Hands:** ${hands}`,
+    `**Last IP:** ${snapshot.last_ip ? `\`${snapshot.last_ip}\`` : "Unknown"}`,
+    `**Location:** ${formatLocation(snapshot.location)}`,
+    `**Squad:** ${formatSnapshotSquad(snapshot.squad)}`,
+    `**Fame/Cash/Gold:** ${formatSnapshotMoney(snapshot.fame)} / ${formatSnapshotMoney(snapshot.cash)} / ${formatSnapshotMoney(snapshot.gold)}`,
+    `**Health:** ${formatSnapshotHealth(snapshot.health)}`,
+    `**Gear:** ${gear}`,
+    `**Hands:** ${hands}`,
+  ];
+}
+
+function formatBodyEffectsSummary(effects) {
+  if (!Array.isArray(effects) || effects.length === 0) return "None";
+  const names = effects
+    .slice(0, 5)
+    .map((effect) => effect?.name || "Unknown")
+    .filter(Boolean);
+  const extra = effects.length > names.length ? ` +${effects.length - names.length} more` : "";
+  return `${effects.length} active: ${names.join(", ")}${extra}`;
+}
+
+function buildCurrentOnlineBlock(player, ipInfo) {
+  const squad = player.squad?.name
+    ? `${player.squad.name}${player.squad.members !== undefined ? ` (${player.squad.members} members)` : ""}`
+    : "None / Unknown";
+
+  return [
+    "**Current Server Info**",
+    `**IP:** ${formatPlayerIpInfo(ipInfo)}`,
+    `**Fame/Cash/Gold:** ${formatMoney(player.fame)} / ${formatMoney(player.accountBalance)} / ${formatMoney(player.goldBalance)}`,
+    `**Ping:** ${player.ping !== null && player.ping !== undefined ? `${player.ping} ms` : "Unknown"}`,
+    `**Location:** ${formatLocation(player.location)}`,
+    `**Squad:** ${squad}`,
+    `**Health:** ${formatHealth(player.health)}`,
+    `**Body Effects:** ${formatBodyEffectsSummary(player.bodyEffects)}`,
+    `**Gear:** ${player.gearWeightKg !== null && player.gearWeightKg !== undefined ? `${player.gearWeightKg} kg` : "Unknown"}`,
+    `**Hands:** ${player.itemInHands || "None / Unknown"}`,
   ];
 }
 
@@ -584,10 +614,6 @@ async function buildPlayerLookupContent(player, options = {}) {
     loadPlayerRegistrationLinks(guildId, steamId),
   ]);
 
-  const squad = player.squad?.name
-    ? `${player.squad.name}${player.squad.members !== undefined ? ` (${player.squad.members} members)` : ""}`
-    : "None / Unknown";
-
   const registrationWarning = registrationLinks.length > 1
     ? "⚠️ Multiple Discord registrations use this Steam ID. Review the registration table before changing anything."
     : null;
@@ -599,28 +625,11 @@ async function buildPlayerLookupContent(player, options = {}) {
     `**Steam ID:** \`${steamId || "Unknown"}\``,
     `**Discord:** ${formatDiscordRegistrationLinks(registrationLinks)}`,
     registrationWarning,
-    `**Steam Name:** ${player.steamName || "Unknown"}`,
-    `**Fake Name:** ${formatPlayerFakeName(getPlayerFakeName(player))}`,
+    `**Steam Name:** ${player.steamName || snapshot?.steam_name || "Unknown"}`,
+    `**Fake Name:** ${formatPlayerFakeName(getPlayerFakeName(player) || snapshot?.fake_name)}`,
     `**Known Previous Names:** ${formatKnownPreviousNames(knownPreviousNames)}`,
-    `**Last IP:** ${formatPlayerIpInfo(ipInfo)}`,
-    `**Fame:** ${formatMoney(player.fame)}`,
-    `**Cash:** ${formatMoney(player.accountBalance)}`,
-    `**Gold:** ${formatMoney(player.goldBalance)}`,
-    `**Ping:** ${player.ping !== null && player.ping !== undefined ? `${player.ping} ms` : "Offline / Unknown"}`,
     "",
-    `**Location:** ${formatLocation(player.location)}`,
-    `**Squad:** ${squad}`,
-    `**Health:** ${formatHealth(player.health)}`,
-    `**Body Effects:**\n${formatBodyEffects(player.bodyEffects)}`,
-    "",
-    `**Gear Weight:** ${player.gearWeightKg !== null && player.gearWeightKg !== undefined ? `${player.gearWeightKg} kg` : "Offline / Unknown"}`,
-    `**Item in Hands:** ${player.itemInHands || "None / Unknown"}`,
-    "",
-    ...buildLastKnownSnapshotBlock(snapshot),
-    "",
-    `**Attributes:** ${formatAttributes(player.attributes)}`,
-    "",
-    `**Skills:**\n${formatSkills(player.skills)}`,
+    ...(online ? buildCurrentOnlineBlock(player, ipInfo) : buildLastKnownSnapshotBlock(snapshot)),
   ].filter((line) => line !== null && line !== undefined);
 
   return clampDiscord(lines.join("\n"));
