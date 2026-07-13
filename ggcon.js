@@ -16,6 +16,9 @@ const LOGIN_LOG_FILE = path.join(__dirname, "data", "ggcon-login-log.json");
 const LOGIN_STATE_FILE = path.join(__dirname, "data", "ggcon-login-state.json");
 const JAIL_RETURNS_TABLE = process.env.GGCON_JAIL_RETURNS_TABLE || "watcher_jail_returns";
 const RUNTIME_STATE_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || "watcher_runtime_state";
+const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
+const PLAYER_SNAPSHOTS_TABLE = process.env.WATCHER_PLAYER_SNAPSHOTS_TABLE || "watcher_player_snapshots";
+const PLAYER_SNAPSHOT_SAVE_INTERVAL_MS = Math.max(30, Number(process.env.WATCHER_PLAYER_SNAPSHOT_INTERVAL_SECONDS || "120")) * 1000;
 const JAIL_LOCATION = { x: 231926.016, y: -289455.094, z: 16877.357, pitch: 308.556671, yaw: 1.584615, roll: 0 };
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10");
@@ -317,6 +320,310 @@ async function clearRuntimeValue(key) {
   }
 
   return true;
+}
+
+function safeIsoFromMillis(value) {
+  const ms = Number(value || Date.now());
+  const date = new Date(Number.isFinite(ms) ? ms : Date.now());
+  return date.toISOString();
+}
+
+function setTextField(target, key, value) {
+  const text = firstNonEmptyValue(value);
+  if (text) target[key] = text;
+}
+
+function setNumberField(target, key, value) {
+  if (value === null || value === undefined || value === "") return;
+  const number = Number(value);
+  if (Number.isFinite(number)) target[key] = number;
+}
+
+function cleanSnapshotJson(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const text = value.trim();
+    return text ? text : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.length ? value : null;
+  if (typeof value === "object") {
+    const cleaned = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (item === null || item === undefined || item === "") continue;
+      cleaned[key] = item;
+    }
+    return Object.keys(cleaned).length ? cleaned : null;
+  }
+  return null;
+}
+
+function buildPlayerSnapshotPayload(player, options = {}) {
+  const steamId = String(options.steamId || getPlayerSteamId(player) || "").trim();
+  if (!steamId) return null;
+
+  const payload = {
+    steam_id: steamId,
+    last_updated_at: safeIsoFromMillis(options.updatedAt || Date.now()),
+  };
+
+  setTextField(payload, "character_name", player?.characterName || player?.realName || options.name);
+  setTextField(payload, "steam_name", player?.steamName || options.steamName);
+  setTextField(payload, "fake_name", getPlayerFakeName(player) || options.fakeName);
+  setTextField(payload, "last_ip", options.ip || findIpInObject(player));
+
+  const location = cloneLocation(player?.location) || cloneLocation(options.location);
+  if (location) payload.location = location;
+
+  const squad = cleanSnapshotJson(player?.squad || options.squad);
+  if (squad) payload.squad = squad;
+
+  setNumberField(payload, "fame", player?.fame ?? options.fame);
+  setNumberField(payload, "cash", player?.accountBalance ?? player?.cash ?? options.cash);
+  setNumberField(payload, "gold", player?.goldBalance ?? player?.gold ?? options.gold);
+
+  const health = cleanSnapshotJson(player?.health ?? options.health);
+  if (health !== null) payload.health = health;
+
+  setNumberField(payload, "gear_weight_kg", player?.gearWeightKg ?? options.gearWeightKg);
+  setTextField(payload, "item_in_hands", player?.itemInHands || options.itemInHands);
+
+  if (options.markOnline) {
+    payload.last_seen_online_at = safeIsoFromMillis(options.seenAt || Date.now());
+  }
+
+  return payload;
+}
+
+async function upsertPlayerSnapshotPayload(payload) {
+  if (!payload?.steam_id) return false;
+  const db = getSupabaseForGgcon();
+  if (!db) return false;
+
+  const { error } = await db
+    .from(PLAYER_SNAPSHOTS_TABLE)
+    .upsert(payload, { onConflict: "steam_id" });
+
+  if (error) {
+    console.warn(`⚠️ Player snapshot write skipped for ${payload.steam_id}: ${error.message}`);
+    return false;
+  }
+
+  return true;
+}
+
+async function upsertPlayerSnapshotFromPlayer(player, options = {}) {
+  const payload = buildPlayerSnapshotPayload(player, options);
+  if (!payload) return false;
+  return upsertPlayerSnapshotPayload(payload);
+}
+
+async function upsertOnlinePlayerSnapshots(players, rawLookups, seenAt = Date.now()) {
+  const list = Array.isArray(players) ? players : [];
+  if (!list.length) return 0;
+
+  let saved = 0;
+  for (const player of list) {
+    const steamId = getPlayerSteamId(player);
+    if (!steamId) continue;
+    const rawRecord = rawLookups?.bySteamId?.get(steamId) || null;
+    const payload = buildPlayerSnapshotPayload(player, {
+      steamId,
+      ip: rawRecord?.ip,
+      fakeName: rawRecord?.fakeName,
+      name: rawRecord?.name,
+      profileId: rawRecord?.profileId,
+      location: rawRecord?.location,
+      markOnline: true,
+      seenAt,
+      updatedAt: seenAt,
+    });
+    // One row per Steam ID. This never touches registration or insurance tables.
+    // Failed snapshot writes are logged and ignored so Watcher tools keep working.
+    if (await upsertPlayerSnapshotPayload(payload).catch(() => false)) saved += 1;
+  }
+
+  return saved;
+}
+
+async function loadPlayerSnapshot(steamId) {
+  const id = String(steamId || "").trim();
+  if (!id) return null;
+  const db = getSupabaseForGgcon();
+  if (!db) return null;
+
+  const { data, error } = await db
+    .from(PLAYER_SNAPSHOTS_TABLE)
+    .select("*")
+    .eq("steam_id", id)
+    .maybeSingle();
+
+  if (error) {
+    console.warn(`⚠️ Player snapshot read skipped for ${id}: ${error.message}`);
+    return null;
+  }
+
+  return data || null;
+}
+
+async function loadPlayerRegistrationLinks(guildId, steamId) {
+  const id = String(steamId || "").trim();
+  if (!id) return [];
+  const db = getSupabaseForGgcon();
+  if (!db) return [];
+
+  const { data, error } = await db
+    .from(PLAYER_LINKS_TABLE)
+    .select("discord_id, discord_tag, steam_id, scum_name, profile_id, linked_at, updated_at")
+    .eq("guild_id", String(guildId || "default"))
+    .eq("steam_id", id)
+    .order("linked_at", { ascending: false, nullsFirst: false })
+    .limit(5);
+
+  if (error) {
+    console.warn(`⚠️ Player registration read skipped for ${id}: ${error.message}`);
+    return [];
+  }
+
+  return Array.isArray(data) ? data : [];
+}
+
+function formatDiscordRegistrationLinks(links) {
+  const rows = (links || []).filter((link) => String(link?.discord_id || "").trim());
+  if (!rows.length) return "Not registered with Watcher";
+
+  return rows.slice(0, 3).map((link) => {
+    const mention = `<@${String(link.discord_id).trim()}>`;
+    const tag = link.discord_tag ? ` (${link.discord_tag})` : "";
+    const scum = link.scum_name ? ` — SCUM: ${link.scum_name}` : "";
+    return `${mention}${tag}${scum}`;
+  }).join("\n");
+}
+
+function formatSnapshotSquad(squad) {
+  if (!squad) return "Unknown";
+  if (typeof squad === "string") return squad || "Unknown";
+  if (typeof squad === "object") {
+    const name = squad.name || squad.squadName || squad.title || null;
+    const members = squad.members ?? squad.memberCount ?? squad.count ?? null;
+    if (name) return `${name}${members !== null && members !== undefined ? ` (${members} members)` : ""}`;
+    return JSON.stringify(squad).slice(0, 120);
+  }
+  return String(squad);
+}
+
+function formatSnapshotHealth(value) {
+  if (value === null || value === undefined) return "Unknown";
+  if (typeof value === "number") {
+    if (value >= 0 && value <= 1) return `${Math.round(value * 100)}%`;
+    return `${Math.round(value)}%`;
+  }
+  if (typeof value === "object") {
+    if (value.value !== undefined) return formatSnapshotHealth(Number(value.value));
+    if (value.health !== undefined) return formatSnapshotHealth(Number(value.health));
+    return JSON.stringify(value).slice(0, 120);
+  }
+  const number = Number(value);
+  if (Number.isFinite(number)) return formatSnapshotHealth(number);
+  return String(value);
+}
+
+function formatSnapshotMoney(value) {
+  return value === null || value === undefined ? "Unknown" : formatMoney(value);
+}
+
+function buildLastKnownSnapshotBlock(snapshot) {
+  if (!snapshot?.steam_id) {
+    return [
+      "**Last Known Watcher Snapshot:** None saved yet",
+    ];
+  }
+
+  const hands = snapshot.item_in_hands || "None / Unknown";
+  const gear = snapshot.gear_weight_kg !== null && snapshot.gear_weight_kg !== undefined
+    ? `${snapshot.gear_weight_kg} kg`
+    : "Unknown";
+
+  return [
+    "**Last Known Watcher Snapshot**",
+    `**Last Seen Online:** ${formatDate(snapshot.last_seen_online_at)}`,
+    `**Last Updated:** ${formatDate(snapshot.last_updated_at)}`,
+    `**Last Known IP:** ${snapshot.last_ip ? `\`${snapshot.last_ip}\`` : "Unknown"}`,
+    `**Last Known Location:** ${formatLocation(snapshot.location)}`,
+    `**Last Known Squad:** ${formatSnapshotSquad(snapshot.squad)}`,
+    `**Last Known Fame/Cash/Gold:** ${formatSnapshotMoney(snapshot.fame)} / ${formatSnapshotMoney(snapshot.cash)} / ${formatSnapshotMoney(snapshot.gold)}`,
+    `**Last Known Health:** ${formatSnapshotHealth(snapshot.health)}`,
+    `**Last Known Gear:** ${gear}`,
+    `**Last Known Hands:** ${hands}`,
+  ];
+}
+
+async function buildPlayerLookupContent(player, options = {}) {
+  const steamId = getPlayerSteamId(player) || String(options.fallbackSteamId || "").trim();
+  const guildId = options.guildId || "default";
+  const online = player.online === true || player.ping !== undefined || player.health !== undefined;
+
+  const [ipInfo, knownPreviousNames] = await Promise.all([
+    getPlayerIpInfo(player).catch(() => null),
+    getKnownPreviousNamesForPlayer(player).catch(() => []),
+  ]);
+
+  if (steamId) {
+    await upsertPlayerSnapshotFromPlayer(player, {
+      steamId,
+      ip: ipInfo?.ip,
+      markOnline: online,
+      seenAt: Date.now(),
+    }).catch((err) => {
+      console.warn(`⚠️ Player snapshot update skipped for ${steamId}: ${err.message}`);
+    });
+  }
+
+  const [snapshot, registrationLinks] = await Promise.all([
+    loadPlayerSnapshot(steamId),
+    loadPlayerRegistrationLinks(guildId, steamId),
+  ]);
+
+  const squad = player.squad?.name
+    ? `${player.squad.name}${player.squad.members !== undefined ? ` (${player.squad.members} members)` : ""}`
+    : "None / Unknown";
+
+  const registrationWarning = registrationLinks.length > 1
+    ? "⚠️ Multiple Discord registrations use this Steam ID. Review the registration table before changing anything."
+    : null;
+
+  const lines = [
+    `👤 **Player Lookup: ${getPlayerDisplayName(player)}**`,
+    "",
+    `**Status:** ${online ? "Online" : "Offline"}`,
+    `**Steam ID:** \`${steamId || "Unknown"}\``,
+    `**Discord:** ${formatDiscordRegistrationLinks(registrationLinks)}`,
+    registrationWarning,
+    `**Steam Name:** ${player.steamName || "Unknown"}`,
+    `**Fake Name:** ${formatPlayerFakeName(getPlayerFakeName(player))}`,
+    `**Known Previous Names:** ${formatKnownPreviousNames(knownPreviousNames)}`,
+    `**Last IP:** ${formatPlayerIpInfo(ipInfo)}`,
+    `**Fame:** ${formatMoney(player.fame)}`,
+    `**Cash:** ${formatMoney(player.accountBalance)}`,
+    `**Gold:** ${formatMoney(player.goldBalance)}`,
+    `**Ping:** ${player.ping !== null && player.ping !== undefined ? `${player.ping} ms` : "Offline / Unknown"}`,
+    "",
+    `**Location:** ${formatLocation(player.location)}`,
+    `**Squad:** ${squad}`,
+    `**Health:** ${formatHealth(player.health)}`,
+    `**Body Effects:**\n${formatBodyEffects(player.bodyEffects)}`,
+    "",
+    `**Gear Weight:** ${player.gearWeightKg !== null && player.gearWeightKg !== undefined ? `${player.gearWeightKg} kg` : "Offline / Unknown"}`,
+    `**Item in Hands:** ${player.itemInHands || "None / Unknown"}`,
+    "",
+    ...buildLastKnownSnapshotBlock(snapshot),
+    "",
+    `**Attributes:** ${formatAttributes(player.attributes)}`,
+    "",
+    `**Skills:**\n${formatSkills(player.skills)}`,
+  ].filter((line) => line !== null && line !== undefined);
+
+  return clampDiscord(lines.join("\n"));
 }
 
 function writeJsonFile(file, value) {
@@ -1331,42 +1638,14 @@ async function handlePlayerLookup(message, args) {
     return;
   }
 
-  const player = result.player;
-  const ipInfo = await getPlayerIpInfo(player).catch(() => null);
-  const knownPreviousNames = await getKnownPreviousNamesForPlayer(player).catch(() => []);
-  const online = player.online === true || player.ping !== undefined || player.health !== undefined;
-  const squad = player.squad?.name
-    ? `${player.squad.name}${player.squad.members !== undefined ? ` (${player.squad.members} members)` : ""}`
-    : "None / Unknown";
+  const reply = await buildPlayerLookupContent(result.player, {
+    guildId: message.guild?.id || "default",
+  });
 
-  const reply = [
-    `👤 **Player Lookup: ${player.characterName || player.realName || "Unknown"}**`,
-    "",
-    `**Status:** ${online ? "Online" : "Offline"}`,
-    `**Steam ID:** \`${player.userId || "Unknown"}\``,
-    `**Steam Name:** ${player.steamName || "Unknown"}`,
-    `**Fake Name:** ${formatPlayerFakeName(getPlayerFakeName(player))}`,
-    `**Known Previous Names:** ${formatKnownPreviousNames(knownPreviousNames)}`,
-    `**Last IP:** ${formatPlayerIpInfo(ipInfo)}`,
-    `**Fame:** ${formatMoney(player.fame)}`,
-    `**Cash:** ${formatMoney(player.accountBalance)}`,
-    `**Gold:** ${formatMoney(player.goldBalance)}`,
-    `**Ping:** ${player.ping !== null && player.ping !== undefined ? `${player.ping} ms` : "Offline / Unknown"}`,
-    "",
-    `**Location:** ${formatLocation(player.location)}`,
-    `**Squad:** ${squad}`,
-    `**Health:** ${formatHealth(player.health)}`,
-    `**Body Effects:**\n${formatBodyEffects(player.bodyEffects)}`,
-    "",
-    `**Gear Weight:** ${player.gearWeightKg !== null && player.gearWeightKg !== undefined ? `${player.gearWeightKg} kg` : "Offline / Unknown"}`,
-    `**Item in Hands:** ${player.itemInHands || "None / Unknown"}`,
-    "",
-    `**Attributes:** ${formatAttributes(player.attributes)}`,
-    "",
-    `**Skills:**\n${formatSkills(player.skills)}`,
-  ].join("\n");
-
-  await message.reply(clampDiscord(reply)).catch(() => {});
+  await message.reply({
+    content: reply,
+    allowedMentions: { parse: [] },
+  }).catch(() => {});
 }
 
 function buildVehicleLine(vehicle, index) {
@@ -1581,41 +1860,14 @@ async function handleVehiclesLookup(message, args) {
 
 
 
-async function buildPlayerDetailsBySteamId(steamId) {
+async function buildPlayerDetailsBySteamId(steamId, guildId = "default") {
   const result = await getPlayerForLookup(String(steamId || ""));
   if (result.type !== "single") return `No player found for \`${steamId}\`.`;
 
-  const player = result.player;
-  const ipInfo = await getPlayerIpInfo(player).catch(() => null);
-  const online = player.online === true || player.ping !== undefined || player.health !== undefined;
-  const squad = player.squad?.name
-    ? `${player.squad.name}${player.squad.members !== undefined ? ` (${player.squad.members} members)` : ""}`
-    : "None / Unknown";
-
-  return clampDiscord([
-    `👤 **Player Lookup: ${player.characterName || player.realName || player.steamName || "Unknown"}**`,
-    "",
-    `**Status:** ${online ? "Online" : "Offline"}`,
-    `**Steam ID:** \`${player.userId || steamId || "Unknown"}\``,
-    `**Steam Name:** ${player.steamName || "Unknown"}`,
-    `**Last IP:** ${formatPlayerIpInfo(ipInfo)}`,
-    `**Fame:** ${formatMoney(player.fame)}`,
-    `**Cash:** ${formatMoney(player.accountBalance)}`,
-    `**Gold:** ${formatMoney(player.goldBalance)}`,
-    `**Ping:** ${player.ping !== null && player.ping !== undefined ? `${player.ping} ms` : "Offline / Unknown"}`,
-    "",
-    `**Location:** ${formatLocation(player.location)}`,
-    `**Squad:** ${squad}`,
-    `**Health:** ${formatHealth(player.health)}`,
-    `**Body Effects:**\n${formatBodyEffects(player.bodyEffects)}`,
-    "",
-    `**Gear Weight:** ${player.gearWeightKg !== null && player.gearWeightKg !== undefined ? `${player.gearWeightKg} kg` : "Offline / Unknown"}`,
-    `**Item in Hands:** ${player.itemInHands || "None / Unknown"}`,
-    "",
-    `**Attributes:** ${formatAttributes(player.attributes)}`,
-    "",
-    `**Skills:**\n${formatSkills(player.skills)}`,
-  ].join("\n"));
+  return buildPlayerLookupContent(result.player, {
+    guildId,
+    fallbackSteamId: steamId,
+  });
 }
 
 async function buildVehiclesBySteamId(steamId) {
@@ -2637,14 +2889,22 @@ async function scanLoginLogAndAlert(bot, { baselineOnly = false } = {}) {
   const cursor = logData?.next || now;
 
   const nameHistory = updateNameHistoryFromLoginData(previousState.nameHistory || {}, currentOnline, rawLookups.events, logLines);
+  let snapshotSavedAt = Number(previousState.snapshotSavedAt || 0) || 0;
 
   if (baselineOnly || !previousState.online) {
+    const savedSnapshots = await upsertOnlinePlayerSnapshots(onlinePlayers, rawLookups, now).catch((err) => {
+      console.warn(`⚠️ Player snapshot baseline save skipped: ${err.message}`);
+      return 0;
+    });
+    if (savedSnapshots > 0) snapshotSavedAt = now;
+
     await saveLoginLogStatePersistent({
       updatedAt: now,
       cursor,
       online: currentOnline,
       nameHistory,
       seenRawEvents: previousState.seenRawEvents || [],
+      snapshotSavedAt,
       lastLoginCount: 0,
       lastLogoutCount: 0,
     });
@@ -2693,12 +2953,21 @@ async function scanLoginLogAndAlert(bot, { baselineOnly = false } = {}) {
 
   const loginCount = alerts.filter((alert) => alert.type === "login").length;
   const logoutCount = alerts.filter((alert) => alert.type === "logout").length;
+  const snapshotDue = alerts.length > 0 || !snapshotSavedAt || (now - snapshotSavedAt) >= PLAYER_SNAPSHOT_SAVE_INTERVAL_MS;
+  if (snapshotDue) {
+    const savedSnapshots = await upsertOnlinePlayerSnapshots(onlinePlayers, rawLookups, now).catch((err) => {
+      console.warn(`⚠️ Player snapshot periodic save skipped: ${err.message}`);
+      return 0;
+    });
+    if (savedSnapshots > 0) snapshotSavedAt = now;
+  }
 
   await saveLoginLogStatePersistent({
     updatedAt: now,
     cursor,
     online: currentOnline,
     nameHistory,
+    snapshotSavedAt,
     lastLoginCount: loginCount,
     lastLogoutCount: logoutCount,
     lastSentCount: sent,
@@ -5504,9 +5773,9 @@ async function handleGgconInteraction(interaction) {
     else if (action === "flag" || action === "flags") content = await buildFlagsBySteamId(value);
     else if (action === "squad") content = await buildSquadBySteamId(value);
     else if (action === "nearvehicles") content = await buildNearVehiclesBySteamId(value);
-    else content = await buildPlayerDetailsBySteamId(value);
+    else content = await buildPlayerDetailsBySteamId(value, interaction.guildId || interaction.guild?.id || "default");
 
-    await interaction.reply({ content, ephemeral: true }).catch(() => {});
+    await interaction.reply({ content, ephemeral: true, allowedMentions: { parse: [] } }).catch(() => {});
   } catch (err) {
     console.error("❌ Server button failed:", err);
     const errorContent = `Server tool error: ${err.message}`;
