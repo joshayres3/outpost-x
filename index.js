@@ -77,22 +77,6 @@ const {
   handleMechPackInteraction,
 } = require("./mechPacks");
 const {
-  handleTradeTestCommand,
-  handleTradeTestInteraction,
-} = require("./tradeTest");
-const {
-  handleWardrobeProbeCommand,
-  handleWardrobeProbeInteraction,
-} = require("./wardrobeProbe");
-const {
-  handleGroundTradeTestCommand,
-  handleGroundTradeTestInteraction,
-} = require("./groundTradeTest");
-const {
-  handleSftpGroundTradeTestCommand,
-  handleSftpGroundTradeTestInteraction,
-} = require("./sftpGroundTradeTest");
-const {
   handleMechCommand,
   startMechScheduleOnBoot,
 } = require("./mechScheduler");
@@ -234,14 +218,6 @@ bot.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await handleMechPackInteraction(interaction)) return;
 
-    if (await handleTradeTestInteraction(interaction)) return;
-
-    if (await handleWardrobeProbeInteraction(interaction)) return;
-
-    if (await handleGroundTradeTestInteraction(interaction)) return;
-
-    if (await handleSftpGroundTradeTestInteraction(interaction)) return;
-
     if (await handleInsuranceInteraction(interaction)) return;
 
     if (await handleGgconInteraction(interaction)) return;
@@ -321,14 +297,6 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot) return;
 
     if (await handleMechPackCommand(msg)) return;
-
-    if (await handleTradeTestCommand(msg)) return;
-
-    if (await handleWardrobeProbeCommand(msg)) return;
-
-    if (await handleGroundTradeTestCommand(msg)) return;
-
-    if (await handleSftpGroundTradeTestCommand(msg)) return;
 
     if (await handleInsuranceCommand(msg, bot)) return;
 

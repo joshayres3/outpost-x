@@ -16,7 +16,6 @@
     "dotenv": "^16.4.5",
     "luxon": "^3.5.0",
     "ws": "^8.18.0",
-    "ssh2-sftp-client": "^11.0.0",
-    "sql.js": "^1.11.0"
+    "ssh2-sftp-client": "^11.0.0"
   }
 }
