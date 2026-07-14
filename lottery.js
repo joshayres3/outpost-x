@@ -1,0 +1,1141 @@
+const crypto = require("crypto");
+const { createClient } = require("@supabase/supabase-js");
+const { DateTime } = require("luxon");
+
+const DEFAULT_SERVER_BASE_URL = "https://ggcon.gghost.games/s/2788404";
+const TIMEZONE = process.env.WATCHER_LOTTERY_TIMEZONE || "America/Toronto";
+const RUNTIME_STATE_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || "watcher_runtime_state";
+const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
+const SNAPSHOTS_TABLE = process.env.WATCHER_PLAYER_SNAPSHOTS_TABLE || "watcher_player_snapshots";
+const DRAWS_TABLE = process.env.WATCHER_LOTTERY_DRAWS_TABLE || "watcher_lottery_draws";
+const CODES_TABLE = process.env.WATCHER_LOTTERY_CODES_TABLE || "watcher_lottery_codes";
+const STATE_KEY = "lottery_config";
+
+const REGISTER_CHANNEL_ID = process.env.WATCHER_REGISTER_CHANNEL_ID || "1517255357888466964";
+const DEFAULT_ADMIN_CHANNEL_IDS = ["1516273523046355094", "1516272506804371646"];
+
+const TICK_SECONDS = Math.max(10, Number(process.env.WATCHER_LOTTERY_TICK_SECONDS || "30"));
+const CODE_SCAN_SECONDS = Math.max(10, Number(process.env.WATCHER_LOTTERY_CODE_SCAN_SECONDS || "20"));
+const CLAIM_EXPIRY_HOURS = Math.max(1, Number(process.env.WATCHER_LOTTERY_CODE_EXPIRY_HOURS || "24"));
+const DRAW_GRACE_MINUTES = Math.max(1, Number(process.env.WATCHER_LOTTERY_DRAW_GRACE_MINUTES || "5"));
+const WARNING_GRACE_MINUTES = Math.max(1, Number(process.env.WATCHER_LOTTERY_WARNING_GRACE_MINUTES || "5"));
+const ONLINE_LINK_LIMIT = Math.max(100, Number(process.env.WATCHER_LOTTERY_LINK_LIMIT || "2000"));
+
+const STAFF_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
+const OWNER_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners"]);
+
+let supabase = null;
+let lotteryTimer = null;
+let codeTimer = null;
+let lotteryTickRunning = false;
+let codeScanRunning = false;
+let cachedItems = null;
+let cachedItemsAt = 0;
+
+const LOTTERY_PACKS = [
+  {
+    id: "jackpot",
+    name: "The Jackpot",
+    items: [
+      { label: "MAC-10", qty: 1, fallback: "Weapon_MAC10", aliases: ["Weapon_MAC10", "MAC10", "MAC_10", "MAC-10"] },
+      { label: "MAC-10 Magazine", qty: 2, fallback: "Magazine_MAC10", aliases: ["Magazine_MAC10", "Mag_MAC10", "MAC10_Magazine", "MAC-10 Magazine"] },
+      { label: "9mm Ammo", qty: 2, fallback: "Ammo_9mm", aliases: ["Ammo_9mm", "9mm Ammo", "9mm", "Ammo 9mm"] },
+    ],
+  },
+  {
+    id: "fisherman",
+    name: "The Fisherman Pack",
+    items: [
+      { label: "Fishing Rod", qty: 1, fallback: "Fishing_Rod", aliases: ["Fishing_Rod", "Fishing Rod", "FishingRod"] },
+      { label: "Fishing Line", qty: 1, fallback: "Fishing_Line", aliases: ["Fishing_Line", "Fishing Line"] },
+      { label: "Fishing Hook", qty: 5, fallback: "Fishing_Hook", aliases: ["Fishing_Hook", "Fishing Hook", "Hook"] },
+      { label: "Fishing Bait", qty: 1, fallback: "Fishing_Bait", aliases: ["Fishing_Bait", "Fishing Bait", "Bait"] },
+    ],
+  },
+  {
+    id: "tactical_homeless",
+    name: "The Tactical Homeless Pack",
+    items: [
+      { label: "Improvised Backpack", qty: 1, fallback: "Improvised_Backpack", aliases: ["Improvised_Backpack", "Improvised Backpack", "ImprovisedBackpack"] },
+      { label: "Raincoat", qty: 1, fallback: "Raincoat", aliases: ["Raincoat", "Rain Coat"] },
+      { label: "Duct Tape", qty: 1, fallback: "Duct_Tape", aliases: ["Duct_Tape", "Duct Tape"] },
+    ],
+  },
+  {
+    id: "puppet_souvenir",
+    name: "The Puppet Souvenir Pack",
+    items: [
+      { label: "Rags", qty: 5, fallback: "Rag", aliases: ["Rag", "Rags"] },
+      { label: "Bone Needle", qty: 1, fallback: "Bone_Needle", aliases: ["Bone_Needle", "Bone Needle"] },
+      { label: "Thread", qty: 1, fallback: "Thread", aliases: ["Thread", "Sewing Thread"] },
+    ],
+  },
+  {
+    id: "master_builder",
+    name: "The Master Builder Pack",
+    items: [
+      { label: "Nails", qty: 20, fallback: "Nails", aliases: ["Nails", "Nail"] },
+      { label: "Bolts", qty: 20, fallback: "Bolts", aliases: ["Bolts", "Bolt"] },
+      { label: "Duct Tape", qty: 2, fallback: "Duct_Tape", aliases: ["Duct_Tape", "Duct Tape"] },
+    ],
+  },
+  {
+    id: "romantic_dinner",
+    name: "The Romantic Dinner Pack",
+    items: [
+      { label: "Candle", qty: 1, fallback: "Candle", aliases: ["Candle"] },
+      { label: "Chocolate", qty: 1, fallback: "Chocolate", aliases: ["Chocolate", "Chocolate Bar"] },
+      { label: "Canned Food", qty: 2, fallback: "Canned_Food", aliases: ["Canned_Food", "Canned Food", "Can Food"] },
+    ],
+  },
+  {
+    id: "almost_armed",
+    name: "The Almost Armed Pack",
+    items: [
+      { label: "Baseball Bat", qty: 1, fallback: "Baseball_Bat", aliases: ["Baseball_Bat", "Baseball Bat"] },
+      { label: "9mm Ammo", qty: 1, fallback: "Ammo_9mm", aliases: ["Ammo_9mm", "9mm Ammo", "9mm"] },
+      { label: "Gunpowder", qty: 1, fallback: "Gunpowder", aliases: ["Gunpowder", "Gun Powder"] },
+    ],
+  },
+  {
+    id: "professional_medic",
+    name: "The Professional Medic Pack",
+    items: [
+      { label: "Emergency Bandage", qty: 4, fallback: "Emergency_Bandage", aliases: ["Emergency_Bandage", "Emergency Bandage", "Bandage"] },
+      { label: "Painkillers", qty: 1, fallback: "Painkillers", aliases: ["Painkillers", "Painkillers_Pack", "Painkillers Pack"] },
+      { label: "Antibiotics", qty: 1, fallback: "Antibiotics", aliases: ["Antibiotics", "Antibiotic"] },
+    ],
+  },
+  {
+    id: "bear_necessities",
+    name: "The Bear Necessities Pack",
+    items: [
+      { label: "Bear Steak", qty: 2, fallback: "Bear_Steak", aliases: ["Bear_Steak", "Bear Steak", "Bear Meat"] },
+      { label: "Water Bottle", qty: 1, fallback: "Water_Bottle", aliases: ["Water_Bottle", "Water Bottle"] },
+      { label: "Bandage", qty: 1, fallback: "Emergency_Bandage", aliases: ["Emergency_Bandage", "Bandage"] },
+    ],
+  },
+  {
+    id: "christmas_in_july",
+    name: "Christmas in July",
+    items: [
+      { label: "Santa Hat", qty: 1, fallback: "Santa_Hat", aliases: ["Santa_Hat", "Santa Hat", "Christmas Hat"] },
+      { label: "Candy", qty: 3, fallback: "Candy", aliases: ["Candy", "Candy Bar"] },
+      { label: "Firecracker", qty: 1, fallback: "Firecracker", aliases: ["Firecracker", "Fire Cracker"] },
+    ],
+  },
+  {
+    id: "influencer",
+    name: "The Influencer Pack",
+    items: [
+      { label: "Sunglasses", qty: 1, fallback: "Sunglasses", aliases: ["Sunglasses", "Sun Glasses"] },
+      { label: "Camera", qty: 1, fallback: "Camera", aliases: ["Camera"] },
+      { label: "Smartphone", qty: 1, fallback: "Smartphone", aliases: ["Smartphone", "Smart Phone", "Phone"] },
+    ],
+  },
+  {
+    id: "grand_prize_sort_of",
+    name: "The Grand Prize… Sort Of",
+    items: [
+      { label: "Stone", qty: 1, fallback: "Stone", aliases: ["Stone", "Rock"] },
+      { label: "Rag", qty: 1, fallback: "Rag", aliases: ["Rag"] },
+      { label: "Bottle Cap", qty: 1, fallback: "Bottle_Cap", aliases: ["Bottle_Cap", "Bottle Cap"] },
+    ],
+  },
+];
+
+function getSupabase() {
+  if (supabase) return supabase;
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_KEY;
+  if (!url || !key) throw new Error("Supabase is not configured.");
+  supabase = createClient(url, key, { auth: { persistSession: false } });
+  return supabase;
+}
+
+function serverBaseUrl() {
+  return String(process.env.GGCON_BASE_URL || DEFAULT_SERVER_BASE_URL).replace(/\/+$/, "");
+}
+
+function serverPassword() {
+  const password = process.env.GGCON_PASSWORD;
+  if (!password) throw new Error("Server tool password is not configured.");
+  return password;
+}
+
+async function serverGet(path) {
+  const res = await fetch(`${serverBaseUrl()}${path}`, {
+    method: "GET",
+    headers: { Accept: "application/json", "X-Password": serverPassword() },
+  });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!res.ok) throw new Error(data?.message || data?.error || `Server GET failed: ${res.status}`);
+  if (data?.ok === false) throw new Error(data?.message || data?.error || "Server rejected the request.");
+  return data;
+}
+
+async function serverPost(path, body = {}) {
+  const res = await fetch(`${serverBaseUrl()}${path}`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json", "X-Password": serverPassword() },
+    body: JSON.stringify(body || {}),
+  });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!res.ok) throw new Error(data?.message || data?.error || `Server POST failed: ${res.status}`);
+  if (data?.ok === false || data?.accepted === false) throw new Error(data?.message || data?.error || "Server rejected the request.");
+  return data || { ok: true };
+}
+
+async function sendGameMessage(text, steamId = null) {
+  const body = { text, type: "ServerMessage" };
+  if (steamId) body.steamId = String(steamId);
+  return await serverPost("/message", body);
+}
+
+function splitEnvList(name) {
+  return String(process.env[name] || "")
+    .split(/[\s,]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function adminChannelIds() {
+  const configured = splitEnvList("WATCHER_LOTTERY_ADMIN_CHANNEL_IDS");
+  return configured.length ? new Set(configured) : new Set(DEFAULT_ADMIN_CHANNEL_IDS);
+}
+
+function configuredStaffRoleIds() {
+  return splitEnvList("WATCHER_LOTTERY_STAFF_ROLE_IDS");
+}
+
+function configuredOwnerRoleIds() {
+  return splitEnvList("WATCHER_LOTTERY_OWNER_ROLE_IDS");
+}
+
+function configuredLotteryManagerRoleIds() {
+  return splitEnvList("WATCHER_LOTTERY_MANAGER_ROLE_IDS");
+}
+
+const LOTTERY_MANAGER_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners", "Admin"]);
+
+function hasAnyRoleId(member, ids) {
+  const set = new Set(ids || []);
+  if (!set.size) return false;
+  return !!member?.roles?.cache?.some((role) => set.has(String(role.id)));
+}
+
+function hasAnyRoleName(member, names) {
+  return !!member?.roles?.cache?.some((role) => names.has(role.name));
+}
+
+function isOwnerMember(member) {
+  const ids = configuredOwnerRoleIds();
+  if (ids.length && hasAnyRoleId(member, ids)) return true;
+  return hasAnyRoleName(member, OWNER_ROLE_NAME_FALLBACK);
+}
+
+function isLotteryManagerMember(member) {
+  if (isOwnerMember(member)) return true;
+  const ids = configuredLotteryManagerRoleIds();
+  if (ids.length && hasAnyRoleId(member, ids)) return true;
+  return hasAnyRoleName(member, LOTTERY_MANAGER_ROLE_NAME_FALLBACK);
+}
+
+function isStaffExcluded(member) {
+  const ids = configuredStaffRoleIds();
+  if (ids.length) return hasAnyRoleId(member, ids);
+  return hasAnyRoleName(member, STAFF_ROLE_NAME_FALLBACK);
+}
+
+function isLotteryCommandChannel(message, config = null) {
+  const allowed = adminChannelIds();
+  if (allowed.has(String(message.channelId))) return true;
+  if (config?.channelId && String(config.channelId) === String(message.channelId)) return true;
+  return false;
+}
+
+function playerSteamId(player) {
+  return String(player?.userId || player?.steamId || player?.steam_id || "").trim();
+}
+
+function playerName(player, fallback = "Unknown") {
+  return String(player?.characterName || player?.steamName || player?.realName || player?.fakeName || player?.name || fallback || "Unknown").trim();
+}
+
+function formatDate(msOrIso) {
+  const dt = typeof msOrIso === "number" ? DateTime.fromMillis(msOrIso).setZone(TIMEZONE) : DateTime.fromISO(String(msOrIso || "")).setZone(TIMEZONE);
+  return dt.isValid ? dt.toFormat("yyyy-MM-dd h:mm a") : "Unknown";
+}
+
+function safeJson(value) {
+  try { return JSON.parse(JSON.stringify(value ?? null)); } catch { return null; }
+}
+
+function normalizeCode(value) {
+  return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
+}
+
+function codeHash(guildId, code) {
+  return crypto.createHash("sha256").update(`${guildId}:${normalizeCode(code)}`).digest("hex");
+}
+
+function codeHint(code) {
+  const clean = normalizeCode(code);
+  if (clean.length <= 6) return "OX-****";
+  return `${clean.slice(0, 3)}****${clean.slice(-2)}`;
+}
+
+function generateClaimCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let token = "";
+  const bytes = crypto.randomBytes(6);
+  for (const byte of bytes) token += alphabet[byte % alphabet.length];
+  return `OX-${token.slice(0, 6)}`;
+}
+
+function randomChoice(items) {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function currentToronto() {
+  return DateTime.now().setZone(TIMEZONE);
+}
+
+function slotKey(dt) {
+  return `lottery:${dt.toFormat("yyyy-MM-dd-HH")}:45`;
+}
+
+function warningKey(dt) {
+  return `lottery-warning:${dt.toFormat("yyyy-MM-dd-HH")}:40`;
+}
+
+function drawSlotForNow(now = currentToronto()) {
+  const target = now.set({ minute: 45, second: 0, millisecond: 0 });
+  const end = target.plus({ minutes: DRAW_GRACE_MINUTES });
+  if (now >= target && now <= end) {
+    return { key: slotKey(target), scheduledFor: target.toISO(), label: target.toFormat("yyyy-MM-dd h:mm a") };
+  }
+  return null;
+}
+
+function warningSlotForNow(now = currentToronto()) {
+  const target = now.set({ minute: 40, second: 0, millisecond: 0 });
+  const end = target.plus({ minutes: WARNING_GRACE_MINUTES });
+  if (now >= target && now <= end) {
+    return { key: warningKey(target), drawKey: slotKey(now.set({ minute: 45, second: 0, millisecond: 0 })), label: target.toFormat("yyyy-MM-dd h:mm a") };
+  }
+  return null;
+}
+
+function nextLotteryTimes(now = currentToronto()) {
+  let warning = now.set({ minute: 40, second: 0, millisecond: 0 });
+  let draw = now.set({ minute: 45, second: 0, millisecond: 0 });
+  if (now > draw.plus({ seconds: 1 })) {
+    warning = warning.plus({ hours: 1 });
+    draw = draw.plus({ hours: 1 });
+  } else if (now > warning.plus({ seconds: 1 }) && now <= draw.plus({ seconds: 1 })) {
+    // Warning window passed, draw is still coming.
+  }
+  return { warning, draw };
+}
+
+async function loadRuntimeValue(key) {
+  const db = getSupabase();
+  const { data, error } = await db.from(RUNTIME_STATE_TABLE).select("value").eq("key", key).maybeSingle();
+  if (error) throw error;
+  return data?.value || null;
+}
+
+async function saveRuntimeValue(key, value) {
+  const db = getSupabase();
+  const { error } = await db.from(RUNTIME_STATE_TABLE).upsert(
+    { key, value: value || {}, updated_at: new Date().toISOString() },
+    { onConflict: "key" }
+  );
+  if (error) throw error;
+}
+
+async function loadConfig() {
+  return await loadRuntimeValue(STATE_KEY).catch(() => null);
+}
+
+async function saveConfig(config) {
+  await saveRuntimeValue(STATE_KEY, config);
+}
+
+async function getOnlinePlayers() {
+  const data = await serverGet("/players.json");
+  return Array.isArray(data?.players) ? data.players : [];
+}
+
+async function fetchLinksForGuild(guildId) {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(PLAYER_LINKS_TABLE)
+    .select("*")
+    .eq("guild_id", String(guildId))
+    .not("steam_id", "is", null)
+    .limit(ONLINE_LINK_LIMIT);
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+async function fetchSnapshot(steamId) {
+  const db = getSupabase();
+  const { data, error } = await db.from(SNAPSHOTS_TABLE).select("*").eq("steam_id", String(steamId)).maybeSingle();
+  if (error) return null;
+  return data || null;
+}
+
+function linkFreshness(link) {
+  const ts = Date.parse(link?.linked_at || link?.updated_at || link?.created_at || "");
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function buildSteamLinkMap(links) {
+  const map = new Map();
+  for (const link of links || []) {
+    const steamId = String(link?.steam_id || "").trim();
+    if (!steamId) continue;
+    const previous = map.get(steamId);
+    if (!previous || linkFreshness(link) > linkFreshness(previous)) map.set(steamId, link);
+  }
+  return map;
+}
+
+async function buildEligiblePlayers(bot, guildId) {
+  const guild = await bot.guilds.fetch(guildId).catch(() => null);
+  if (!guild) throw new Error("Discord guild was not available.");
+
+  const [onlinePlayers, links] = await Promise.all([getOnlinePlayers(), fetchLinksForGuild(guildId)]);
+  const linksBySteam = buildSteamLinkMap(links);
+  const eligible = [];
+  const rejected = [];
+
+  for (const player of onlinePlayers) {
+    const steamId = playerSteamId(player);
+    if (!steamId) {
+      rejected.push({ reason: "no Steam ID", player });
+      continue;
+    }
+
+    const link = linksBySteam.get(steamId);
+    if (!link?.discord_id) {
+      rejected.push({ reason: "not registered", player, steamId });
+      continue;
+    }
+
+    const member = await guild.members.fetch(String(link.discord_id)).catch(() => null);
+    if (!member) {
+      rejected.push({ reason: "Discord member not found", player, link, steamId });
+      continue;
+    }
+
+    if (isStaffExcluded(member)) {
+      rejected.push({ reason: "staff role excluded", player, link, steamId });
+      continue;
+    }
+
+    eligible.push({ player, link, member, steamId, scumName: playerName(player, link.scum_name || steamId) });
+  }
+
+  return { eligible, rejected, onlinePlayers, links };
+}
+
+async function getItemCatalog() {
+  if (cachedItems && Date.now() - cachedItemsAt < 10 * 60 * 1000) return cachedItems;
+  const data = await serverGet("/items.json").catch(() => ({ items: [] }));
+  cachedItems = Array.isArray(data?.items) ? data.items : [];
+  cachedItemsAt = Date.now();
+  return cachedItems;
+}
+
+function compact(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function itemScore(item, packItem) {
+  const itemClass = String(item?.i || item?.itemClass || item?.class || "");
+  const display = String(item?.dn || item?.name || "");
+  const category = String(item?.c || "");
+  const combined = `${itemClass} ${display} ${category}`;
+  const compactClass = compact(itemClass);
+  const compactDisplay = compact(display);
+  const compactCombined = compact(combined);
+  let best = 0;
+
+  for (const alias of packItem.aliases || []) {
+    const a = compact(alias);
+    if (!a) continue;
+    if (compactClass === a) best = Math.max(best, 2500);
+    else if (compactClass.includes(a) || a.includes(compactClass)) best = Math.max(best, 1600);
+    if (compactDisplay === a) best = Math.max(best, 1400);
+    else if (compactDisplay.includes(a)) best = Math.max(best, 1000);
+    else if (compactCombined.includes(a)) best = Math.max(best, 600);
+  }
+
+  return best;
+}
+
+async function resolvePackItem(packItem) {
+  const items = await getItemCatalog();
+  const match = items
+    .map((item) => ({ item, score: itemScore(item, packItem) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || String(a.item.i || "").localeCompare(String(b.item.i || "")))[0]?.item;
+
+  if (match?.i) return { itemClass: match.i, displayName: match.dn || match.i, catalogMatched: true };
+  return { itemClass: packItem.fallback || packItem.aliases?.[0] || packItem.label, displayName: packItem.label, catalogMatched: false };
+}
+
+async function deliverPack(steamId, packPayload) {
+  const pack = packPayload || null;
+  const items = Array.isArray(pack?.items) ? pack.items : [];
+  const results = [];
+  for (const packItem of items) {
+    const resolved = await resolvePackItem(packItem);
+    const qty = Math.max(1, Math.floor(Number(packItem.qty || 1)));
+    const result = await serverPost("/spawn", { steamId: String(steamId), item: resolved.itemClass, qty });
+    results.push({ label: packItem.label, qty, itemClass: resolved.itemClass, catalogMatched: resolved.catalogMatched, result: safeJson(result) });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  return results;
+}
+
+async function createDrawRecord({ guildId, drawKey, scheduledFor, channelId }) {
+  const db = getSupabase();
+  const { data, error } = await db.from(DRAWS_TABLE).insert({
+    guild_id: String(guildId),
+    draw_key: drawKey,
+    scheduled_for: scheduledFor,
+    actual_run_at: new Date().toISOString(),
+    channel_id: String(channelId || ""),
+    status: "running",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }).select("*").single();
+
+  if (error) {
+    if (String(error.code || "") === "23505" || /duplicate/i.test(error.message || "")) return null;
+    throw error;
+  }
+  return data;
+}
+
+async function updateDraw(id, updates) {
+  const db = getSupabase();
+  const { data, error } = await db.from(DRAWS_TABLE).update({ ...updates, updated_at: new Date().toISOString() }).eq("id", id).select("*").maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function createCodeRecord({ guildId, drawId, code, winner, pack, expiresAt }) {
+  const db = getSupabase();
+  const { data, error } = await db.from(CODES_TABLE).insert({
+    guild_id: String(guildId),
+    draw_id: drawId,
+    code_hash: codeHash(guildId, code),
+    code_hint: codeHint(code),
+    discord_id: String(winner.link.discord_id),
+    discord_tag: winner.link.discord_tag || winner.member?.user?.tag || null,
+    steam_id: String(winner.steamId),
+    scum_name: winner.scumName,
+    pack_id: pack.id,
+    pack_name: pack.name,
+    pack_payload: safeJson(pack),
+    status: "active",
+    expires_at: expiresAt,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }).select("*").single();
+  if (error) throw error;
+  return data;
+}
+
+async function updateCode(id, updates) {
+  const db = getSupabase();
+  const { data, error } = await db.from(CODES_TABLE).update({ ...updates, updated_at: new Date().toISOString() }).eq("id", id).select("*").maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function dmWinner(winner, code, pack) {
+  const user = winner.member?.user;
+  if (!user?.send) throw new Error("Discord user could not be messaged.");
+  await user.send([
+    "🎉 **YOU WON THE OUTPOST X LOTTERY!**",
+    "",
+    `You won: **${pack.name}**`,
+    "",
+    "Your one-time claim code is:",
+    "",
+    `**${code}**`,
+    "",
+    "Enter this code in SCUM chat to claim your pack.",
+    "",
+    "This code belongs only to your linked SCUM account and cannot be transferred or reused.",
+    "",
+    "The contents of your pack will remain a mystery until it is claimed.",
+    "",
+    "— The Watcher",
+  ].join("\n"));
+}
+
+async function postLotteryChannel(bot, config, text) {
+  const channel = config?.channelId ? await bot.channels.fetch(config.channelId).catch(() => null) : null;
+  if (channel?.send) return await channel.send(text).catch(() => null);
+  return null;
+}
+
+async function runLotteryDraw(bot, config, options = {}) {
+  if (!config?.enabled && !options.manual) return { ran: false, reason: "Lottery is disabled." };
+  const guildId = String(config?.guildId || options.guildId || "");
+  if (!guildId) throw new Error("Lottery guild is not configured.");
+  const now = currentToronto();
+  const drawKey = options.manual ? `manual:${now.toFormat("yyyy-MM-dd-HH-mm-ss")}:${crypto.randomBytes(3).toString("hex")}` : options.drawKey;
+  const scheduledFor = options.scheduledFor || now.set({ minute: 45, second: 0, millisecond: 0 }).toISO();
+
+  const draw = await createDrawRecord({ guildId, drawKey, scheduledFor, channelId: config.channelId });
+  if (!draw) return { ran: false, reason: "Draw already processed." };
+
+  try {
+    const pool = await buildEligiblePlayers(bot, guildId);
+    const eligibleSteamIds = pool.eligible.map((entry) => entry.steamId);
+    await updateDraw(draw.id, { eligible_count: pool.eligible.length, eligible_steam_ids: eligibleSteamIds });
+
+    if (pool.eligible.length === 0) {
+      await updateDraw(draw.id, { status: "no_eligible", claim_status: "none" });
+      const message = "🎟️ The Outpost X Lottery ended with no eligible players online. Better luck next hour!";
+      await sendGameMessage(message).catch(() => {});
+      await postLotteryChannel(bot, config, [
+        "🎟️ **Outpost X Lottery**",
+        "No eligible registered players were online for this draw.",
+        "Better luck next hour.",
+      ].join("\n"));
+      return { ran: true, status: "no_eligible", eligibleCount: 0 };
+    }
+
+    const remaining = pool.eligible.slice();
+    while (remaining.length) {
+      const winnerIndex = Math.floor(Math.random() * remaining.length);
+      const winner = remaining.splice(winnerIndex, 1)[0];
+      const pack = randomChoice(LOTTERY_PACKS);
+      const code = generateClaimCode();
+      const expiresAt = DateTime.now().plus({ hours: CLAIM_EXPIRY_HOURS }).toISO();
+      const codeRow = await createCodeRecord({ guildId, drawId: draw.id, code, winner, pack, expiresAt });
+
+      try {
+        await dmWinner(winner, code, pack);
+        await updateCode(codeRow.id, { dm_sent_at: new Date().toISOString(), dm_status: "sent" });
+        await updateDraw(draw.id, {
+          status: "completed",
+          selected_discord_id: String(winner.link.discord_id),
+          selected_steam_id: String(winner.steamId),
+          selected_scum_name: winner.scumName,
+          selected_pack_id: pack.id,
+          selected_pack_name: pack.name,
+          code_id: codeRow.id,
+          dm_status: "sent",
+          claim_status: "active",
+        });
+
+        const gameAnnouncement = `🎉 LOTTERY WINNER: ${winner.scumName}! You won ${pack.name}! A one-time claim code has been sent through Discord. Enter it in SCUM chat to discover your questionable reward.`;
+        await sendGameMessage(gameAnnouncement).catch(() => {});
+        await postLotteryChannel(bot, config, [
+          "🎉 **OUTPOST X LOTTERY WINNER**",
+          "",
+          `Winner: **${winner.scumName}**`,
+          `Discord: <@${winner.link.discord_id}>`,
+          `Pack Won: **${pack.name}**`,
+          "",
+          "A one-time claim code has been sent through Discord.",
+          "The winner must enter the code in SCUM chat to claim the mystery pack.",
+        ].join("\n"));
+        return { ran: true, status: "completed", winner: winner.scumName, pack: pack.name };
+      } catch (dmErr) {
+        await updateCode(codeRow.id, {
+          status: "dm_failed",
+          dm_status: "failed",
+          dm_error: String(dmErr?.message || dmErr),
+          cancelled_at: new Date().toISOString(),
+        });
+        await postLotteryChannel(bot, config, [
+          "⚠️ **Lottery DM failed**",
+          `Player: **${winner.scumName}**`,
+          `Discord: <@${winner.link.discord_id}>`,
+          "Watcher could not DM this player, so they were skipped for this draw.",
+          remaining.length ? "Trying another eligible player." : "No other eligible players remain.",
+        ].join("\n"));
+      }
+    }
+
+    await updateDraw(draw.id, { status: "dm_failed", dm_status: "failed", claim_status: "none" });
+    await postLotteryChannel(bot, config, "⚠️ **Lottery ended:** eligible players were found, but Watcher could not DM any selected winner.");
+    return { ran: true, status: "dm_failed" };
+  } catch (err) {
+    await updateDraw(draw.id, { status: "failed", error_info: { message: err.message, stack: err.stack?.slice(0, 1000) } }).catch(() => {});
+    throw err;
+  }
+}
+
+async function processLotteryWarning(bot, config) {
+  if (!config?.enabled) return false;
+  const slot = warningSlotForNow();
+  if (!slot) return false;
+  if (config.lastWarningKey === slot.key) return false;
+  await sendGameMessage("🎟️ OUTPOST X LOTTERY IN 5 MINUTES! Registered players who are online at draw time are eligible. Good luck—you will probably need it.").catch(() => {});
+  await saveConfig({ ...config, lastWarningKey: slot.key, lastWarningAt: new Date().toISOString() });
+  return true;
+}
+
+async function processLotteryDraw(bot, config) {
+  if (!config?.enabled) return false;
+  const slot = drawSlotForNow();
+  if (!slot) return false;
+  await runLotteryDraw(bot, config, { drawKey: slot.key, scheduledFor: slot.scheduledFor });
+  return true;
+}
+
+async function lotteryTick(bot) {
+  if (lotteryTickRunning) return;
+  lotteryTickRunning = true;
+  try {
+    const config = await loadConfig();
+    if (!config?.enabled) return;
+    await processLotteryWarning(bot, config);
+    const fresh = await loadConfig();
+    await processLotteryDraw(bot, fresh || config);
+  } catch (err) {
+    console.error("❌ Lottery schedule tick failed:", err.message);
+  } finally {
+    lotteryTickRunning = false;
+  }
+}
+
+function startLotteryTimers(bot) {
+  if (lotteryTimer) clearInterval(lotteryTimer);
+  lotteryTimer = setInterval(() => lotteryTick(bot), TICK_SECONDS * 1000);
+  lotteryTick(bot).catch(() => {});
+
+  if (codeTimer) clearInterval(codeTimer);
+  codeTimer = setInterval(() => scanLotteryClaimCodes(bot), CODE_SCAN_SECONDS * 1000);
+  scanLotteryClaimCodes(bot).catch(() => {});
+}
+
+function stopLotteryTimers() {
+  if (lotteryTimer) clearInterval(lotteryTimer);
+  if (codeTimer) clearInterval(codeTimer);
+  lotteryTimer = null;
+  codeTimer = null;
+}
+
+function extractChatIdentity(line) {
+  const text = String(line || "");
+  const match = text.match(/'?(\d{15,20}):([^('\n]+)\((\d+)\)'?/);
+  if (!match) return null;
+  return { steamId: match[1], name: match[2].trim(), profileId: match[3] };
+}
+
+function extractCodesFromLine(line) {
+  const text = String(line || "").toUpperCase();
+  const matches = text.match(/\bOX-[A-Z0-9]{6}\b/g);
+  return Array.from(new Set(matches || []));
+}
+
+async function fetchChatLogsSince(since) {
+  const params = new URLSearchParams();
+  params.set("since", String(Math.max(0, Number(since || 0))));
+  params.set("sources", "chat");
+  return await serverGet(`/logs?${params.toString()}`);
+}
+
+async function findCodeByInput(guildId, code) {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(CODES_TABLE)
+    .select("*")
+    .eq("guild_id", String(guildId))
+    .eq("code_hash", codeHash(guildId, code))
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function handleClaimAttempt(bot, config, identity, code, rawLine) {
+  const guildId = String(config.guildId || "");
+  const codeRow = await findCodeByInput(guildId, code);
+  if (!codeRow) {
+    await sendGameMessage("❌ That lottery code is invalid, expired, already used, or does not belong to you.", identity.steamId).catch(() => {});
+    return false;
+  }
+
+  const nowIso = new Date().toISOString();
+  const expired = codeRow.expires_at && Date.parse(codeRow.expires_at) < Date.now();
+  if (expired && codeRow.status === "active") {
+    await updateCode(codeRow.id, { status: "expired" }).catch(() => {});
+  }
+
+  if (expired || codeRow.status !== "active" || String(codeRow.steam_id) !== String(identity.steamId)) {
+    await sendGameMessage("❌ That lottery code is invalid, expired, already used, or does not belong to you.", identity.steamId).catch(() => {});
+    return false;
+  }
+
+  await updateCode(codeRow.id, {
+    status: "used_processing",
+    used_at: nowIso,
+    claimed_by_steam_id: identity.steamId,
+    claimed_by_name: identity.name,
+    claim_line: String(rawLine || "").slice(0, 1200),
+  });
+
+  try {
+    const delivery = await deliverPack(identity.steamId, codeRow.pack_payload || LOTTERY_PACKS.find((pack) => pack.id === codeRow.pack_id));
+    await updateCode(codeRow.id, {
+      status: "used",
+      delivery_status: "delivered",
+      delivery_result: safeJson(delivery),
+    });
+
+    if (codeRow.draw_id) {
+      await updateDraw(codeRow.draw_id, {
+        claim_status: "claimed",
+        claim_time: nowIso,
+      }).catch(() => {});
+    }
+
+    await sendGameMessage("🎟️ Lottery code accepted! Your mystery pack has been delivered. The Watcher accepts no responsibility for disappointment.", identity.steamId).catch(() => {});
+    await postLotteryChannel(bot, config, [
+      "🎟️ **Lottery Pack Claimed**",
+      `Player: **${identity.name || codeRow.scum_name || "Unknown"}**`,
+      `Pack: **${codeRow.pack_name}**`,
+      "Status: Delivered",
+    ].join("\n"));
+    return true;
+  } catch (err) {
+    await updateCode(codeRow.id, {
+      status: "delivery_failed",
+      delivery_status: "failed",
+      delivery_error: String(err?.message || err),
+    }).catch(() => {});
+    await sendGameMessage("❌ Your lottery code was accepted, but delivery failed. Staff has been notified.", identity.steamId).catch(() => {});
+    await postLotteryChannel(bot, config, [
+      "⚠️ **Lottery Delivery Failed**",
+      `Player: **${identity.name || codeRow.scum_name || "Unknown"}**`,
+      `Pack: **${codeRow.pack_name}**`,
+      `Error: ${err.message}`,
+    ].join("\n"));
+    return false;
+  }
+}
+
+async function scanLotteryClaimCodes(bot) {
+  if (codeScanRunning) return;
+  codeScanRunning = true;
+  try {
+    const config = await loadConfig();
+    if (!config?.enabled || !config.guildId) return;
+    const since = Number(config.chatCursor || 0) || Math.max(0, Date.now() - (5 * 60 * 1000));
+    const data = await fetchChatLogsSince(since).catch(() => null);
+    const lines = Array.isArray(data?.lines) ? data.lines : [];
+    let nextCursor = data?.next || lines.reduce((max, entry) => Math.max(max, Number(entry?.t || 0)), since) || Date.now();
+
+    for (const entry of lines.slice().sort((a, b) => Number(a?.t || 0) - Number(b?.t || 0))) {
+      const rawLine = String(entry?.line || "");
+      const codes = extractCodesFromLine(rawLine);
+      if (!codes.length) continue;
+      const identity = extractChatIdentity(rawLine);
+      if (!identity?.steamId) continue;
+      for (const code of codes) {
+        await handleClaimAttempt(bot, config, identity, code, rawLine).catch((err) => {
+          console.error("❌ Lottery claim handling failed:", err.message);
+        });
+      }
+    }
+
+    await saveConfig({ ...config, chatCursor: nextCursor, chatCursorUpdatedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error("❌ Lottery code scan failed:", err.message);
+  } finally {
+    codeScanRunning = false;
+  }
+}
+
+function buildRegistrationAnnouncement() {
+  return [
+    "# 🎟️ OUTPOST X HOURLY LOTTERY",
+    "",
+    "The Outpost X Lottery is now active!",
+    "",
+    "A lottery draw takes place once every hour, 45 minutes after server restarts. One eligible player currently online will be randomly selected to receive one of 12 mystery lottery packs.",
+    "",
+    "Every pack has the exact same chance of being selected. One might contain a MAC-10 and ammunition. The others may contain something slightly less impressive—or deeply disappointing.",
+    "",
+    "## How to Enter",
+    "",
+    "Register through this channel to become eligible for future lottery draws.",
+    "",
+    "You must be:",
+    "",
+    "✅ Registered through the Welcome Pack system",
+    "✅ Online in SCUM when the lottery takes place",
+    "✅ Connected to your correct Steam64 ID",
+    "✅ Able to receive DMs from The Watcher",
+    "✅ A regular player without an Owner, Admin, or Trial Admin role",
+    "",
+    "The winner will receive a one-time-use claim code through Discord. Enter that code in SCUM chat to claim your mystery pack.",
+    "",
+    "Codes cannot be transferred or reused.",
+    "",
+    `Need to register? Use <#${REGISTER_CHANNEL_ID}>.`,
+  ].join("\n");
+}
+
+function buildLotteryHelp() {
+  return [
+    "🎟️ **Lottery Commands**",
+    "",
+    "`!lotterysetup` — owner-only. Enable hourly lottery and save this channel for winner posts.",
+    "`!lotterystatus` or `!lottery` — show status, saved channel, next warning, and next draw.",
+    "`!lotteryoff` — owner-only. Pause lottery without deleting history or unused codes.",
+    "`!lotterydraw` — admin/owner. Run an extra one-off lottery right now using normal rules.",
+  ].join("\n");
+}
+
+async function handleLotteryStatus(message, config) {
+  const next = nextLotteryTimes();
+  const roleIdCount = configuredStaffRoleIds().length;
+  await message.reply([
+    "🎟️ **Outpost X Lottery Status**",
+    `Status: **${config?.enabled ? "Enabled" : "Disabled"}**`,
+    `Lottery Channel: ${config?.channelId ? `<#${config.channelId}>` : "Not set"}`,
+    `Next Warning: ${next.warning.toFormat("yyyy-MM-dd h:mm a")} Toronto`,
+    `Next Draw: ${next.draw.toFormat("yyyy-MM-dd h:mm a")} Toronto`,
+    `Code Expiration: ${CLAIM_EXPIRY_HOURS} hour(s)`,
+    `Staff Exclusion: ${roleIdCount ? `${roleIdCount} configured role ID(s)` : "role-name fallback active"}`,
+    `Timers: ${lotteryTimer ? "running" : "not running"}`,
+  ].join("\n")).catch(() => {});
+}
+
+async function handleLotteryOn(message, bot, existing) {
+  const config = {
+    ...(existing || {}),
+    enabled: true,
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    setBy: message.author.id,
+    setAt: new Date().toISOString(),
+    chatCursor: existing?.chatCursor || Math.max(0, Date.now() - (2 * 60 * 1000)),
+  };
+  await saveConfig(config);
+  startLotteryTimers(bot);
+  await message.reply([
+    "🎟️ **Outpost X Hourly Lottery enabled.**",
+    `Winner channel saved as: <#${message.channel.id}>`,
+    "Draws run every hour at :45. In-game warning posts at :40.",
+  ].join("\n")).catch(() => {});
+}
+
+async function handleLotteryOff(message, existing) {
+  const config = { ...(existing || {}), enabled: false, disabledBy: message.author.id, disabledAt: new Date().toISOString() };
+  await saveConfig(config);
+  stopLotteryTimers();
+  await message.reply("🎟️ Hourly lottery is now paused. Registrations, history, and unused codes were not deleted.").catch(() => {});
+}
+
+async function handleLotteryEligible(message, bot, config) {
+  const guildId = config?.guildId || message.guild.id;
+  const pool = await buildEligiblePlayers(bot, guildId);
+  const lines = [
+    "🎟️ **Current Lottery Eligibility**",
+    `Eligible: ${pool.eligible.length}`,
+    `Online players checked: ${pool.onlinePlayers.length}`,
+    "",
+    pool.eligible.length
+      ? pool.eligible.map((entry, index) => `${index + 1}. ${entry.scumName} — <@${entry.link.discord_id}>`).join("\n")
+      : "No eligible registered players are online right now.",
+    "",
+    `Rejected/skipped: ${pool.rejected.length}`,
+  ];
+  await message.author.send(lines.join("\n")).then(async () => {
+    await message.react("✅").catch(() => {});
+  }).catch(async () => {
+    await message.reply(lines.join("\n")).catch(() => {});
+  });
+}
+
+async function handleLotteryHistory(message) {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(DRAWS_TABLE)
+    .select("draw_key, actual_run_at, status, selected_scum_name, selected_pack_name, dm_status, claim_status, claim_time")
+    .eq("guild_id", String(message.guild.id))
+    .order("actual_run_at", { ascending: false })
+    .limit(10);
+  if (error) throw error;
+
+  const rows = (data || []).map((row, index) => {
+    const winner = row.selected_scum_name || "No winner";
+    const pack = row.selected_pack_name || "None";
+    return `${index + 1}. **${winner}** — ${pack}\nStatus: ${row.status || "unknown"} | DM: ${row.dm_status || "n/a"} | Claim: ${row.claim_status || "n/a"}\nTime: ${row.actual_run_at ? formatDate(row.actual_run_at) : "Unknown"}`;
+  });
+
+  await message.reply([
+    "🎟️ **Recent Lottery History**",
+    "",
+    rows.length ? rows.join("\n\n") : "No lottery draws saved yet.",
+  ].join("\n")).catch(() => {});
+}
+
+async function findPlayerLinkForQuery(guildId, query) {
+  const raw = String(query || "").trim();
+  const mention = raw.match(/^<@!?(\d+)>$/)?.[1];
+  const clean = raw.toLowerCase();
+  const db = getSupabase();
+  const { data, error } = await db.from(PLAYER_LINKS_TABLE).select("*").eq("guild_id", String(guildId)).limit(ONLINE_LINK_LIMIT);
+  if (error) throw error;
+  const links = Array.isArray(data) ? data : [];
+  return links.find((link) => {
+    if (mention && String(link.discord_id) === mention) return true;
+    if (raw && String(link.steam_id || "") === raw) return true;
+    const fields = [link.scum_name, link.discord_tag, link.discord_id, link.steam_id].filter(Boolean).map((v) => String(v).toLowerCase());
+    return fields.some((field) => field.includes(clean));
+  }) || null;
+}
+
+async function handleLotteryPlayer(message, query) {
+  if (!query) {
+    await message.reply("Use: `!lottery player <name/@user/SteamID>`").catch(() => {});
+    return;
+  }
+
+  const link = await findPlayerLinkForQuery(message.guild.id, query);
+  if (!link) {
+    await message.reply(`No registered lottery/player link found for **${query}**.`).catch(() => {});
+    return;
+  }
+
+  const db = getSupabase();
+  const { data: codes, error } = await db
+    .from(CODES_TABLE)
+    .select("code_hint, pack_name, status, expires_at, used_at, created_at, dm_status")
+    .eq("guild_id", String(message.guild.id))
+    .eq("steam_id", String(link.steam_id || ""))
+    .order("created_at", { ascending: false })
+    .limit(5);
+  if (error) throw error;
+
+  const snapshot = link.steam_id ? await fetchSnapshot(link.steam_id).catch(() => null) : null;
+  const codeRows = (codes || []).map((code, index) => `${index + 1}. ${code.code_hint || "Hidden"} — ${code.pack_name || "Unknown Pack"} — ${code.status || "unknown"} — DM: ${code.dm_status || "n/a"}`).join("\n");
+
+  await message.reply([
+    "🎟️ **Lottery Player Status**",
+    `Player: **${link.scum_name || snapshot?.character_name || "Unknown"}**`,
+    `Discord: <@${link.discord_id}>`,
+    `Registration: ${link.steam_id ? "Linked" : "Not linked"}`,
+    snapshot?.last_seen_online_at ? `Last Seen: ${formatDate(snapshot.last_seen_online_at)}` : null,
+    "",
+    "**Recent Codes**",
+    codeRows || "No lottery codes found for this player.",
+    "",
+    "Actual code text is never shown here.",
+  ].filter(Boolean).join("\n")).catch(() => {});
+}
+
+async function handleLotteryCancel(message, code) {
+  const clean = normalizeCode(code);
+  if (!/^OX-[A-Z0-9]{6}$/.test(clean)) {
+    await message.reply("Use: `!lottery cancel OX-ABC123`").catch(() => {});
+    return;
+  }
+  const row = await findCodeByInput(message.guild.id, clean);
+  if (!row) {
+    await message.reply("No matching lottery code was found.").catch(() => {});
+    return;
+  }
+  if (row.status !== "active") {
+    await message.reply(`That code is already **${row.status}**.`).catch(() => {});
+    return;
+  }
+  await updateCode(row.id, {
+    status: "cancelled",
+    cancelled_at: new Date().toISOString(),
+    cancelled_by_discord_id: String(message.author.id),
+  });
+  await message.reply(`Lottery code ${row.code_hint || "hidden"} was cancelled.`).catch(() => {});
+}
+
+async function handleLotteryCommand(message, bot) {
+  if (!message.guild || !message.content) return false;
+
+  const parts = message.content.trim().split(/\s+/);
+  const command = String(parts.shift() || "").toLowerCase();
+
+  let action = null;
+  if (command === "!lottery" || command === "!lotterystatus") action = "status";
+  else if (command === "!lotterysetup") action = "setup";
+  else if (command === "!lotteryoff") action = "off";
+  else if (command === "!lotterydraw") action = "draw";
+  else return false;
+
+  const config = await loadConfig().catch(() => null);
+
+  const ownerOnly = new Set(["setup", "off"]);
+  if (ownerOnly.has(action) && !isOwnerMember(message.member)) {
+    await message.reply("The Watcher sees the request. Lottery setup controls are owner-only.").catch(() => {});
+    return true;
+  }
+
+  if (action === "draw" && !isLotteryManagerMember(message.member)) {
+    await message.reply("The Watcher sees the request. Extra lottery draws are for Owner/Admin only.").catch(() => {});
+    return true;
+  }
+
+  if (action === "status" && !isOwnerMember(message.member) && !hasAnyRoleName(message.member, STAFF_ROLE_NAME_FALLBACK) && !hasAnyRoleId(message.member, configuredStaffRoleIds())) {
+    await message.reply("The Watcher sees the request. Lottery status is for staff only.").catch(() => {});
+    return true;
+  }
+
+  if (!isLotteryCommandChannel(message, config) && action !== "setup") {
+    await message.reply("Use lottery commands in the saved lottery channel or configured admin channel.").catch(() => {});
+    return true;
+  }
+
+  try {
+    if (action === "status") {
+      await handleLotteryStatus(message, config);
+    } else if (action === "setup") {
+      await handleLotteryOn(message, bot, config);
+      await message.channel.send(buildRegistrationAnnouncement()).catch(() => {});
+    } else if (action === "off") {
+      await handleLotteryOff(message, config);
+    } else if (action === "draw") {
+      const active = { ...(config || {}), enabled: true, guildId: config?.guildId || message.guild.id, channelId: config?.channelId || message.channel.id };
+      const result = await runLotteryDraw(bot, active, { manual: true, guildId: message.guild.id });
+      await message.reply(`Extra lottery draw complete: ${result.status || result.reason || "done"}.`).catch(() => {});
+    }
+  } catch (err) {
+    console.error("❌ Lottery command failed:", err);
+    await message.reply(`Lottery error: ${err.message}`).catch(() => {});
+  }
+
+  return true;
+}
+
+async function startLotteryOnBoot(bot) {
+  const config = await loadConfig().catch((err) => {
+    console.error("❌ Lottery startup read failed:", err.message);
+    return null;
+  });
+  if (!config?.enabled) return;
+  startLotteryTimers(bot);
+  await postLotteryChannel(bot, config, "🎟️ Lottery scheduler is online. Hourly draws remain active.").catch(() => {});
+}
+
+module.exports = {
+  handleLotteryCommand,
+  startLotteryOnBoot,
+};

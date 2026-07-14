@@ -80,6 +80,10 @@ const {
   handleMechCommand,
   startMechScheduleOnBoot,
 } = require("./mechScheduler");
+const {
+  handleLotteryCommand,
+  startLotteryOnBoot,
+} = require("./lottery");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -209,6 +213,7 @@ bot.once(Events.ClientReady, async () => {
     startGgconStatusOnBoot(bot);
     startInsuranceOnBoot(bot);
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));
+    startLotteryOnBoot(bot).catch((err) => console.error("❌ Lottery startup failed:", err.message));
   } catch (err) {
     console.error("❌ Startup database load failed:", err);
   }
@@ -299,6 +304,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleMechPackCommand(msg)) return;
 
     if (await handleInsuranceCommand(msg, bot)) return;
+
+    if (await handleLotteryCommand(msg, bot)) return;
 
     if (await handleMechCommand(msg, bot)) return;
 

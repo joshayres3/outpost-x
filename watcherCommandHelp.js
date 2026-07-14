@@ -182,6 +182,19 @@ const CATEGORIES = {
       ["Register first", "Players must register before buying."],
     ],
   },
+  lottery: {
+    emoji: "🎟️",
+    label: "Lottery",
+    title: "🎟️ HOURLY LOTTERY",
+    aliases: ["lottery", "draw", "winner", "claim", "code"],
+    lines: [
+      ["!lotterysetup", "Owner-only. Enable hourly lottery and save this channel."],
+      ["!lotterystatus", "Show saved channel, next warning, next draw, and status."],
+      ["!lotteryoff", "Owner-only. Pause lottery without deleting codes/history."],
+      ["!lotterydraw", "Admin/Owner. Run an extra one-off lottery right now using normal rules."],
+      ["Claiming", "Winner types the DM code directly in SCUM chat."],
+    ],
+  },
   cargo: {
     emoji: "📦",
     label: "Cargo",
@@ -238,6 +251,7 @@ const ORDER = [
   "insurance",
   "mechs",
   "mechpacks",
+  "lottery",
   "cargo",
   "events",
   "safety",
@@ -270,7 +284,7 @@ function buildMenuContent() {
     "Pick a button below, or type `!help <category>`.",
     "",
     "**Player-facing panels**",
-    ["register", "insurance", "mechs", "mechpacks", "cargo"].map(label).join("  •  "),
+    ["register", "insurance", "mechs", "mechpacks", "lottery", "cargo"].map(label).join("  •  "),
     "",
     "**Admin tools**",
     ["server", "players", "vehicles", "bases", "jail", "logs"].map(label).join("  •  "),
@@ -278,7 +292,7 @@ function buildMenuContent() {
     "**Server management**",
     ["core", "setup", "events", "safety"].map(label).join("  •  "),
     "",
-    "**Most used setup:** `!registersetup` • `!insurancesetup` • `!mechschedulesetup` • `!mechpacksetup` • `!cargoschedulesetup`",
+    "**Most used setup:** `!registersetup` • `!insurancesetup` • `!mechschedulesetup` • `!mechpacksetup` • `!lotterysetup` • `!cargoschedulesetup`",
   ].join("\n");
 }
 
@@ -397,7 +411,7 @@ async function handleCommandHelpMessage(message) {
     await message.reply([
       "Unknown help category.",
       "Use `!commands` to see the menu.",
-      "Try: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help cargo`, or `!help logs`.",
+      "Try: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help lottery`, `!help cargo`, or `!help logs`.",
     ].join("\n")).catch(() => {});
     return true;
   }
