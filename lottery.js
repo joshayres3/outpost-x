@@ -20,6 +20,10 @@ const CLAIM_EXPIRY_HOURS = Math.max(1, Number(process.env.WATCHER_LOTTERY_CODE_E
 const DRAW_GRACE_MINUTES = Math.max(1, Number(process.env.WATCHER_LOTTERY_DRAW_GRACE_MINUTES || "5"));
 const WARNING_GRACE_MINUTES = Math.max(1, Number(process.env.WATCHER_LOTTERY_WARNING_GRACE_MINUTES || "5"));
 const ONLINE_LINK_LIMIT = Math.max(100, Number(process.env.WATCHER_LOTTERY_LINK_LIMIT || "2000"));
+const RECENT_WINNER_HOURS = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECENT_WINNER_HOURS || "6"));
+const RECENT_WINNER_MIN_ELIGIBLE = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECENT_WINNER_MIN_ELIGIBLE || "4"));
+const LOTTERY_NORMAL_WEIGHT = Math.max(1, Number(process.env.WATCHER_LOTTERY_NORMAL_WEIGHT || "4"));
+const LOTTERY_RECENT_WINNER_WEIGHT = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECENT_WINNER_WEIGHT || "1"));
 
 const STAFF_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const OWNER_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners"]);
@@ -564,6 +568,80 @@ async function updateCode(id, updates) {
   return data;
 }
 
+async function fetchRecentWinnerRows(guildId) {
+  if (RECENT_WINNER_HOURS <= 0) return [];
+  const since = DateTime.now().minus({ hours: RECENT_WINNER_HOURS }).toISO();
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(DRAWS_TABLE)
+    .select("selected_steam_id, selected_scum_name, actual_run_at")
+    .eq("guild_id", String(guildId))
+    .eq("status", "completed")
+    .gte("actual_run_at", since)
+    .not("selected_steam_id", "is", null)
+    .order("actual_run_at", { ascending: false })
+    .limit(500);
+
+  if (error) {
+    console.warn("[lottery] Recent winner lookup failed:", error.message || error);
+    return [];
+  }
+
+  return Array.isArray(data) ? data : [];
+}
+
+async function buildRecentWinnerProtection(guildId, eligiblePlayers) {
+  const eligibleCount = Array.isArray(eligiblePlayers) ? eligiblePlayers.length : 0;
+  const base = {
+    applied: false,
+    reason: "not_applied",
+    recentWinnerIds: new Set(),
+    reducedCount: 0,
+    normalWeight: LOTTERY_NORMAL_WEIGHT,
+    recentWeight: LOTTERY_RECENT_WINNER_WEIGHT,
+    hours: RECENT_WINNER_HOURS,
+    minEligible: RECENT_WINNER_MIN_ELIGIBLE,
+  };
+
+  if (RECENT_WINNER_HOURS <= 0) return { ...base, reason: "disabled" };
+  if (eligibleCount < RECENT_WINNER_MIN_ELIGIBLE) return { ...base, reason: "not_enough_eligible" };
+  if (LOTTERY_RECENT_WINNER_WEIGHT >= LOTTERY_NORMAL_WEIGHT) return { ...base, reason: "weights_equal_or_higher" };
+
+  const rows = await fetchRecentWinnerRows(guildId);
+  const recentWinnerIds = new Set(
+    rows
+      .map((row) => String(row?.selected_steam_id || "").trim())
+      .filter(Boolean)
+  );
+
+  const reducedCount = (eligiblePlayers || []).filter((entry) => recentWinnerIds.has(String(entry.steamId))).length;
+  return {
+    ...base,
+    applied: recentWinnerIds.size > 0,
+    reason: recentWinnerIds.size ? "recent_winners_found" : "no_recent_winners",
+    recentWinnerIds,
+    reducedCount,
+  };
+}
+
+function lotteryTicketWeight(entry, protection) {
+  if (!entry) return 0;
+  const steamId = String(entry.steamId || "");
+  const isRecentWinner = Boolean(protection?.recentWinnerIds?.has(steamId));
+  return isRecentWinner ? Math.max(0, protection.recentWeight || 0) : Math.max(1, protection.normalWeight || 1);
+}
+
+function selectWeightedWinner(eligiblePlayers, protection) {
+  const tickets = [];
+  for (const entry of eligiblePlayers || []) {
+    const weight = lotteryTicketWeight(entry, protection);
+    for (let i = 0; i < weight; i += 1) tickets.push(entry);
+  }
+
+  if (!tickets.length) return randomChoice(eligiblePlayers);
+  return randomChoice(tickets);
+}
+
 async function dmWinner(winner, code, pack) {
   const user = winner.member?.user;
   if (!user?.send) throw new Error("Discord user could not be messaged.");
@@ -635,10 +713,12 @@ async function runLotteryDraw(bot, config, options = {}) {
       return { ran: true, status: "no_eligible", eligibleCount: 0 };
     }
 
+    const protection = await buildRecentWinnerProtection(guildId, pool.eligible);
     const remaining = pool.eligible.slice();
     while (remaining.length) {
-      const winnerIndex = Math.floor(Math.random() * remaining.length);
-      const winner = remaining.splice(winnerIndex, 1)[0];
+      const winner = selectWeightedWinner(remaining, protection);
+      const winnerIndex = remaining.findIndex((entry) => String(entry.steamId) === String(winner?.steamId));
+      if (winnerIndex >= 0) remaining.splice(winnerIndex, 1);
       const pack = randomChoice(LOTTERY_PACKS);
       const code = generateClaimCode();
       const expiresAt = DateTime.now().plus({ hours: CLAIM_EXPIRY_HOURS }).toISO();
@@ -667,6 +747,10 @@ async function runLotteryDraw(bot, config, options = {}) {
           `Winner: **${winner.scumName}**`,
           `Discord: <@${winner.link.discord_id}>`,
           `Pack Won: **${pack.name}**`,
+          `Eligible Players: **${pool.eligible.length}**`,
+          protection.applied
+            ? `Recent Winner Protection: **${protection.reducedCount}** player(s) reduced (${protection.hours}h window, ${protection.normalWeight}:1 tickets)`
+            : `Recent Winner Protection: not applied (${protection.reason})`,
           "",
           "A one-time claim code has been sent through Discord.",
           "The winner must enter the code in SCUM chat to claim the mystery pack.",
@@ -918,6 +1002,7 @@ function buildLotteryHelp() {
     "`!lotterystatus` or `!lottery` — show status, player channel, admin log channel, next warning, and next draw.",
     "`!lotteryoff` — owner-only. Pause lottery without deleting history or unused codes.",
     "`!lotterydraw` — admin/owner. Run an extra one-off lottery right now using normal rules.",
+    `Recent Winner Protection: last ${RECENT_WINNER_HOURS}h winners get ${LOTTERY_RECENT_WINNER_WEIGHT} ticket instead of ${LOTTERY_NORMAL_WEIGHT} when ${RECENT_WINNER_MIN_ELIGIBLE}+ players qualify.`,
   ].join("\n");
 }
 
@@ -932,6 +1017,7 @@ async function handleLotteryStatus(message, config) {
     `Next Warning: ${next.warning.toFormat("yyyy-MM-dd h:mm a")} Toronto`,
     `Next Draw: ${next.draw.toFormat("yyyy-MM-dd h:mm a")} Toronto`,
     `Code Expiration: ${CLAIM_EXPIRY_HOURS} hour(s)`,
+    `Recent Winner Protection: ${RECENT_WINNER_HOURS ? `${RECENT_WINNER_HOURS}h window, normal ${LOTTERY_NORMAL_WEIGHT} ticket(s), recent ${LOTTERY_RECENT_WINNER_WEIGHT} ticket(s), min ${RECENT_WINNER_MIN_ELIGIBLE} eligible` : "Disabled"}`,
     `Staff Exclusion: ${roleIdCount ? `${roleIdCount} configured role ID(s)` : "role-name fallback active"}`,
     `Timers: ${lotteryTimer ? "running" : "not running"}`,
   ].join("\n")).catch(() => {});

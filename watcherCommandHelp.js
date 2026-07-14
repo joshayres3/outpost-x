@@ -193,6 +193,7 @@ const CATEGORIES = {
       ["!lotterystatus", "Show player channel, admin log channel, next warning, next draw, and status."],
       ["!lotteryoff", "Owner-only. Pause lottery without deleting codes/history."],
       ["!lotterydraw", "Admin/Owner. Run an extra one-off lottery right now using normal rules."],
+      ["Repeat protection", "Recent winners have reduced odds for 6 hours when 4+ players qualify."],
       ["Claiming", "Winner types the DM code directly in SCUM chat."],
     ],
   },
