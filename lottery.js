@@ -255,6 +255,7 @@ function isLotteryCommandChannel(message, config = null) {
   const allowed = adminChannelIds();
   if (allowed.has(String(message.channelId))) return true;
   if (config?.channelId && String(config.channelId) === String(message.channelId)) return true;
+  if (config?.logChannelId && String(config.logChannelId) === String(message.channelId)) return true;
   return false;
 }
 
@@ -585,8 +586,23 @@ async function dmWinner(winner, code, pack) {
   ].join("\n"));
 }
 
-async function postLotteryChannel(bot, config, text) {
+async function fetchFirstAvailableChannel(bot, channelIds) {
+  for (const channelId of channelIds || []) {
+    const channel = await bot.channels.fetch(String(channelId)).catch(() => null);
+    if (channel?.send) return channel;
+  }
+  return null;
+}
+
+async function postLotterySetupChannel(bot, config, text) {
   const channel = config?.channelId ? await bot.channels.fetch(config.channelId).catch(() => null) : null;
+  if (channel?.send) return await channel.send(text).catch(() => null);
+  return null;
+}
+
+async function postLotteryLogChannel(bot, config, text) {
+  let channel = config?.logChannelId ? await bot.channels.fetch(config.logChannelId).catch(() => null) : null;
+  if (!channel?.send) channel = await fetchFirstAvailableChannel(bot, Array.from(adminChannelIds()));
   if (channel?.send) return await channel.send(text).catch(() => null);
   return null;
 }
@@ -599,7 +615,7 @@ async function runLotteryDraw(bot, config, options = {}) {
   const drawKey = options.manual ? `manual:${now.toFormat("yyyy-MM-dd-HH-mm-ss")}:${crypto.randomBytes(3).toString("hex")}` : options.drawKey;
   const scheduledFor = options.scheduledFor || now.set({ minute: 45, second: 0, millisecond: 0 }).toISO();
 
-  const draw = await createDrawRecord({ guildId, drawKey, scheduledFor, channelId: config.channelId });
+  const draw = await createDrawRecord({ guildId, drawKey, scheduledFor, channelId: config.logChannelId || "" });
   if (!draw) return { ran: false, reason: "Draw already processed." };
 
   try {
@@ -611,7 +627,7 @@ async function runLotteryDraw(bot, config, options = {}) {
       await updateDraw(draw.id, { status: "no_eligible", claim_status: "none" });
       const message = "🎟️ The Outpost X Lottery ended with no eligible players online. Better luck next hour!";
       await sendGameMessage(message).catch(() => {});
-      await postLotteryChannel(bot, config, [
+      await postLotteryLogChannel(bot, config, [
         "🎟️ **Outpost X Lottery**",
         "No eligible registered players were online for this draw.",
         "Better luck next hour.",
@@ -645,7 +661,7 @@ async function runLotteryDraw(bot, config, options = {}) {
 
         const gameAnnouncement = `🎉 LOTTERY WINNER: ${winner.scumName}! You won ${pack.name}! A one-time claim code has been sent through Discord. Enter it in SCUM chat to discover your questionable reward.`;
         await sendGameMessage(gameAnnouncement).catch(() => {});
-        await postLotteryChannel(bot, config, [
+        await postLotteryLogChannel(bot, config, [
           "🎉 **OUTPOST X LOTTERY WINNER**",
           "",
           `Winner: **${winner.scumName}**`,
@@ -663,7 +679,7 @@ async function runLotteryDraw(bot, config, options = {}) {
           dm_error: String(dmErr?.message || dmErr),
           cancelled_at: new Date().toISOString(),
         });
-        await postLotteryChannel(bot, config, [
+        await postLotteryLogChannel(bot, config, [
           "⚠️ **Lottery DM failed**",
           `Player: **${winner.scumName}**`,
           `Discord: <@${winner.link.discord_id}>`,
@@ -674,7 +690,7 @@ async function runLotteryDraw(bot, config, options = {}) {
     }
 
     await updateDraw(draw.id, { status: "dm_failed", dm_status: "failed", claim_status: "none" });
-    await postLotteryChannel(bot, config, "⚠️ **Lottery ended:** eligible players were found, but Watcher could not DM any selected winner.");
+    await postLotteryLogChannel(bot, config, "⚠️ **Lottery ended:** eligible players were found, but Watcher could not DM any selected winner.");
     return { ran: true, status: "dm_failed" };
   } catch (err) {
     await updateDraw(draw.id, { status: "failed", error_info: { message: err.message, stack: err.stack?.slice(0, 1000) } }).catch(() => {});
@@ -808,7 +824,7 @@ async function handleClaimAttempt(bot, config, identity, code, rawLine) {
     }
 
     await sendGameMessage("🎟️ Lottery code accepted! Your mystery pack has been delivered. The Watcher accepts no responsibility for disappointment.", identity.steamId).catch(() => {});
-    await postLotteryChannel(bot, config, [
+    await postLotteryLogChannel(bot, config, [
       "🎟️ **Lottery Pack Claimed**",
       `Player: **${identity.name || codeRow.scum_name || "Unknown"}**`,
       `Pack: **${codeRow.pack_name}**`,
@@ -822,7 +838,7 @@ async function handleClaimAttempt(bot, config, identity, code, rawLine) {
       delivery_error: String(err?.message || err),
     }).catch(() => {});
     await sendGameMessage("❌ Your lottery code was accepted, but delivery failed. Staff has been notified.", identity.steamId).catch(() => {});
-    await postLotteryChannel(bot, config, [
+    await postLotteryLogChannel(bot, config, [
       "⚠️ **Lottery Delivery Failed**",
       `Player: **${identity.name || codeRow.scum_name || "Unknown"}**`,
       `Pack: **${codeRow.pack_name}**`,
@@ -898,8 +914,8 @@ function buildLotteryHelp() {
   return [
     "🎟️ **Lottery Commands**",
     "",
-    "`!lotterysetup` — owner-only. Enable hourly lottery and save this channel for winner posts.",
-    "`!lotterystatus` or `!lottery` — show status, saved channel, next warning, and next draw.",
+    "`!lotterysetup` — owner-only. Enable hourly lottery and post the player lottery info in this channel.",
+    "`!lotterystatus` or `!lottery` — show status, player channel, admin log channel, next warning, and next draw.",
     "`!lotteryoff` — owner-only. Pause lottery without deleting history or unused codes.",
     "`!lotterydraw` — admin/owner. Run an extra one-off lottery right now using normal rules.",
   ].join("\n");
@@ -911,7 +927,8 @@ async function handleLotteryStatus(message, config) {
   await message.reply([
     "🎟️ **Outpost X Lottery Status**",
     `Status: **${config?.enabled ? "Enabled" : "Disabled"}**`,
-    `Lottery Channel: ${config?.channelId ? `<#${config.channelId}>` : "Not set"}`,
+    `Player Info Channel: ${config?.channelId ? `<#${config.channelId}>` : "Not set"}`,
+    `Admin Log Channel: ${config?.logChannelId ? `<#${config.logChannelId}>` : "Not set — run !lotterylogsetup in the hidden admin log channel"}`,
     `Next Warning: ${next.warning.toFormat("yyyy-MM-dd h:mm a")} Toronto`,
     `Next Draw: ${next.draw.toFormat("yyyy-MM-dd h:mm a")} Toronto`,
     `Code Expiration: ${CLAIM_EXPIRY_HOURS} hour(s)`,
@@ -934,8 +951,25 @@ async function handleLotteryOn(message, bot, existing) {
   startLotteryTimers(bot);
   await message.reply([
     "🎟️ **Outpost X Hourly Lottery enabled.**",
-    `Winner channel saved as: <#${message.channel.id}>`,
+    `Player lottery info channel saved as: <#${message.channel.id}>`,
+    config.logChannelId ? `Winner/admin log channel: <#${config.logChannelId}>` : "Run `!lotterylogsetup` in the hidden admin log channel before winners start posting.",
     "Draws run every hour at :45. In-game warning posts at :40.",
+  ].join("\n")).catch(() => {});
+}
+
+async function handleLotteryLogSetup(message, bot, existing) {
+  const config = {
+    ...(existing || {}),
+    guildId: existing?.guildId || message.guild.id,
+    logChannelId: message.channel.id,
+    logSetBy: message.author.id,
+    logSetAt: new Date().toISOString(),
+  };
+  await saveConfig(config);
+  await message.reply([
+    "🎟️ **Lottery admin log channel saved.**",
+    `Winner, claim, DM failure, and draw summary posts will go to: <#${message.channel.id}>`,
+    config.channelId ? `Player lottery info channel remains: <#${config.channelId}>` : "Player lottery info channel is not set yet. Run `!lotterysetup` in the public lottery/register channel.",
   ].join("\n")).catch(() => {});
 }
 
@@ -1077,13 +1111,14 @@ async function handleLotteryCommand(message, bot) {
   let action = null;
   if (command === "!lottery" || command === "!lotterystatus") action = "status";
   else if (command === "!lotterysetup") action = "setup";
+  else if (command === "!lotterylogsetup") action = "logsetup";
   else if (command === "!lotteryoff") action = "off";
   else if (command === "!lotterydraw") action = "draw";
   else return false;
 
   const config = await loadConfig().catch(() => null);
 
-  const ownerOnly = new Set(["setup", "off"]);
+  const ownerOnly = new Set(["setup", "logsetup", "off"]);
   if (ownerOnly.has(action) && !isOwnerMember(message.member)) {
     await message.reply("The Watcher sees the request. Lottery setup controls are owner-only.").catch(() => {});
     return true;
@@ -1099,7 +1134,7 @@ async function handleLotteryCommand(message, bot) {
     return true;
   }
 
-  if (!isLotteryCommandChannel(message, config) && action !== "setup") {
+  if (!isLotteryCommandChannel(message, config) && action !== "setup" && action !== "logsetup") {
     await message.reply("Use lottery commands in the saved lottery channel or configured admin channel.").catch(() => {});
     return true;
   }
@@ -1110,10 +1145,12 @@ async function handleLotteryCommand(message, bot) {
     } else if (action === "setup") {
       await handleLotteryOn(message, bot, config);
       await message.channel.send(buildRegistrationAnnouncement()).catch(() => {});
+    } else if (action === "logsetup") {
+      await handleLotteryLogSetup(message, bot, config);
     } else if (action === "off") {
       await handleLotteryOff(message, config);
     } else if (action === "draw") {
-      const active = { ...(config || {}), enabled: true, guildId: config?.guildId || message.guild.id, channelId: config?.channelId || message.channel.id };
+      const active = { ...(config || {}), enabled: true, guildId: config?.guildId || message.guild.id, channelId: config?.channelId || message.channel.id, logChannelId: config?.logChannelId || message.channel.id };
       const result = await runLotteryDraw(bot, active, { manual: true, guildId: message.guild.id });
       await message.reply(`Extra lottery draw complete: ${result.status || result.reason || "done"}.`).catch(() => {});
     }
@@ -1132,7 +1169,7 @@ async function startLotteryOnBoot(bot) {
   });
   if (!config?.enabled) return;
   startLotteryTimers(bot);
-  await postLotteryChannel(bot, config, "🎟️ Lottery scheduler is online. Hourly draws remain active.").catch(() => {});
+  await postLotteryLogChannel(bot, config, "🎟️ Lottery scheduler is online. Hourly draws remain active.").catch(() => {});
 }
 
 module.exports = {

@@ -188,8 +188,9 @@ const CATEGORIES = {
     title: "🎟️ HOURLY LOTTERY",
     aliases: ["lottery", "draw", "winner", "claim", "code"],
     lines: [
-      ["!lotterysetup", "Owner-only. Enable hourly lottery and save this channel."],
-      ["!lotterystatus", "Show saved channel, next warning, next draw, and status."],
+      ["!lotterysetup", "Owner-only. Enable hourly lottery and post player info in this channel."],
+      ["!lotterylogsetup", "Owner-only. Save this hidden/admin channel for winner and claim logs."],
+      ["!lotterystatus", "Show player channel, admin log channel, next warning, next draw, and status."],
       ["!lotteryoff", "Owner-only. Pause lottery without deleting codes/history."],
       ["!lotterydraw", "Admin/Owner. Run an extra one-off lottery right now using normal rules."],
       ["Claiming", "Winner types the DM code directly in SCUM chat."],
