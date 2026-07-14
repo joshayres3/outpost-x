@@ -1134,10 +1134,8 @@ async function handleLotteryCommand(message, bot) {
     return true;
   }
 
-  if (!isLotteryCommandChannel(message, config) && action !== "setup" && action !== "logsetup") {
-    await message.reply("Use lottery commands in the saved lottery channel or configured admin channel.").catch(() => {});
-    return true;
-  }
+  // Lottery commands are protected by Discord role checks above.
+  // Do not block valid Owner/Admin commands just because the admin channel ID was not configured.
 
   try {
     if (action === "status") {
