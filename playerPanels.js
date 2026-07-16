@@ -73,10 +73,10 @@ async function getLinkBySteam(guildId, steamId) {
   return Array.isArray(data) ? data[0] || null : null;
 }
 
-async function resolveAdminTarget(message, query) {
+async function resolveAdminTarget(guildId, query) {
   const mentionId = String(query || "").match(/^<@!?(\d+)>$/)?.[1];
   if (mentionId) {
-    const link = await getLinkByDiscord(message.guildId, mentionId);
+    const link = await getLinkByDiscord(guildId, mentionId);
     if (!link?.steam_id) return { type: "none", reason: "That Discord member is not linked to a SCUM account." };
     return getPlayerForLookup(link.steam_id);
   }
@@ -248,7 +248,7 @@ async function handlePlayerPanelCommand(message) {
   const [rawCommand, ...args] = message.content.trim().split(/\s+/);
   const command = rawCommand.toLowerCase();
 
-  if (["!dashboard", "!mydashboard", "!profile"].includes(command)) {
+  if (command === "!dashboard") {
     await message.reply({
       content: "👁️ **Watcher Player Dashboard**\nUse the button below to privately open your linked SCUM profile.",
       components: [selfLauncherRow()],
@@ -256,7 +256,7 @@ async function handlePlayerPanelCommand(message) {
     return true;
   }
 
-  if (!["!manage", "!adminpanel"].includes(command)) return false;
+  if (command !== "!manage") return false;
   if (!isStaff(message)) {
     await message.reply("This control panel is for staff only.").catch(() => {});
     return true;
@@ -268,7 +268,7 @@ async function handlePlayerPanelCommand(message) {
     return true;
   }
 
-  const result = await resolveAdminTarget(message, query);
+  const result = await resolveAdminTarget(message.guildId, query);
   if (result.type === "none") {
     await message.reply(result.reason || `No player found for **${query}**.`).catch(() => {});
     return true;
@@ -279,11 +279,44 @@ async function handlePlayerPanelCommand(message) {
     return true;
   }
 
-  await message.reply(await buildAdminPanel(message.guildId, result.player)).catch(() => {});
+  // Prefix commands cannot reply ephemerally by themselves, so post a harmless
+  // one-use launcher. The actual panel opens privately after the requesting
+  // staff member clicks it. No player details are shown in public chat.
+  const steamId = String(result.player?.userId || "").trim();
+  await message.delete().catch(() => {});
+  const launcher = await message.channel.send({
+    content: `${message.author}, open your private Watcher admin panel.`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`pp:adminopen:${message.author.id}:${steamId}`)
+          .setLabel("Open Admin Panel")
+          .setStyle(ButtonStyle.Primary)
+      ),
+    ],
+    allowedMentions: { users: [message.author.id] },
+  }).catch(() => null);
+
+  // Remove an unused launcher after two minutes. A used launcher deletes itself.
+  if (launcher) setTimeout(() => launcher.delete().catch(() => {}), 120000);
   return true;
 }
 
+async function registerPlayerPanelCommands(client) {
+  // Watcher panels intentionally use prefix-command launchers instead of slash commands.
+  // Remove older Watcher slash commands left over from previous deployments.
+  for (const guild of client.guilds.cache.values()) {
+    const existing = await guild.commands.fetch().catch(() => null);
+    if (!existing) continue;
+    for (const name of ["manage", "dashboard"]) {
+      const current = existing.find((item) => item.name === name);
+      if (current) await guild.commands.delete(current.id).catch(() => {});
+    }
+  }
+}
+
 async function handlePlayerPanelInteraction(interaction) {
+
   if (!interaction.customId?.startsWith("pp:")) return false;
   const parts = interaction.customId.split(":");
 
@@ -310,6 +343,29 @@ async function handlePlayerPanelInteraction(interaction) {
     }
 
     if (!interaction.isButton()) return false;
+
+    if (parts[1] === "adminopen") {
+      const requestingUserId = parts[2];
+      const steamId = parts[3];
+      if (interaction.user.id !== requestingUserId) {
+        await interaction.reply({ content: "This private admin-panel launcher belongs to another staff member.", ephemeral: true });
+        return true;
+      }
+      if (!isStaff(interaction)) {
+        await interaction.reply({ content: "This control panel is for staff only.", ephemeral: true });
+        return true;
+      }
+
+      const result = await getPlayerForLookup(steamId);
+      if (result.type !== "single") {
+        await interaction.reply({ content: "That player could not be loaded. Run `!manage` again.", ephemeral: true });
+        return true;
+      }
+
+      await interaction.reply({ ...(await buildAdminPanel(interaction.guildId, result.player)), ephemeral: true });
+      await interaction.message.delete().catch(() => {});
+      return true;
+    }
 
     if (parts[1] === "self") {
       const action = parts[2];
@@ -378,4 +434,4 @@ async function handlePlayerPanelInteraction(interaction) {
   return false;
 }
 
-module.exports = { handlePlayerPanelCommand, handlePlayerPanelInteraction };
+module.exports = { registerPlayerPanelCommands, handlePlayerPanelCommand, handlePlayerPanelInteraction };

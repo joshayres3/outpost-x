@@ -85,6 +85,7 @@ const {
   startLotteryOnBoot,
 } = require("./lottery");
 const {
+  registerPlayerPanelCommands,
   handlePlayerPanelCommand,
   handlePlayerPanelInteraction,
 } = require("./playerPanels");
@@ -212,6 +213,9 @@ bot.once(Events.ClientReady, async () => {
 
     console.log(`📚 Loaded ${result.ruleCount} rule sections`);
     console.log(`✅ Assistant in ${result.channelCount} channel(s)`);
+
+    await registerPlayerPanelCommands(bot);
+    console.log("✅ Registered private player panel commands");
 
     startEventScheduler(bot, db);
     startGgconStatusOnBoot(bot);
