@@ -6028,4 +6028,14 @@ module.exports = {
   handleGgconCommand,
   handleGgconInteraction,
   startGgconStatusOnBoot,
+  // Shared by the button-driven player/admin panels.
+  buildPlayerDetailsBySteamId,
+  buildVehiclesBySteamId,
+  buildSquadBySteamId,
+  buildNearVehiclesBySteamId,
+  getPlayerForLookup,
+  getPlayerDisplayName,
+  ggconPost,
+  jailPlayerBySteamId,
+  unjailPlayerBySteamId,
 };

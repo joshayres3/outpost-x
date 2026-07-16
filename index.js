@@ -84,6 +84,10 @@ const {
   handleLotteryCommand,
   startLotteryOnBoot,
 } = require("./lottery");
+const {
+  handlePlayerPanelCommand,
+  handlePlayerPanelInteraction,
+} = require("./playerPanels");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -221,6 +225,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handlePlayerPanelInteraction(interaction)) return;
+
     if (await handleMechPackInteraction(interaction)) return;
 
     if (await handleInsuranceInteraction(interaction)) return;
@@ -300,6 +306,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
+
+    if (await handlePlayerPanelCommand(msg)) return;
 
     if (await handleMechPackCommand(msg)) return;
 
