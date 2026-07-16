@@ -51,9 +51,10 @@ const CATEGORIES = {
     aliases: ["register", "steam", "link", "linksteam", "registersetup", "verify"],
     lines: [
       ["!registersetup", "Post/move the player Register Steam panel."],
+      ["!unregister <Steam64/@user/name>", "Owner-only. Remove a Discord ↔ Steam link so a player can re-register."],
       ["Register Steam button", "Player gets a code to type in SCUM chat."],
       ["Verify Code button", "Links Discord to the player’s SCUM character."],
-      ["Used for", "Vehicle insurance and mech hunting packs."],
+      ["Used for", "Vehicle insurance, mech hunting packs, and lottery."],
     ],
   },
   server: {
@@ -194,7 +195,7 @@ const CATEGORIES = {
       ["!lotteryoff", "Owner-only. Pause lottery without deleting codes/history."],
       ["!lotterydraw", "Admin/Owner. Run an extra one-off lottery right now using normal rules."],
       ["Repeat protection", "Recent winners have reduced odds for 6 hours when 4+ players qualify."],
-      ["Claiming", "Winner types the DM code directly in SCUM chat."],
+      ["Claiming", "Winner types the DM code directly in SCUM chat. Codes expire after 7 days by default."],
     ],
   },
   cargo: {

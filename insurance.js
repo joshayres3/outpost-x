@@ -327,6 +327,43 @@ async function getLink(guildId, discordId) {
   return data || null;
 }
 
+async function findPlayerLinksForUnregister(guildId, query) {
+  const raw = String(query || "").trim();
+  const mention = raw.match(/^<@!?(\d+)>$/)?.[1];
+  const db = getSupabase();
+
+  let builder = db
+    .from(PLAYER_LINKS_TABLE)
+    .select("*")
+    .eq("guild_id", String(guildId));
+
+  if (mention) {
+    builder = builder.eq("discord_id", mention);
+  } else if (/^\d{17,20}$/.test(raw)) {
+    builder = builder.eq("steam_id", raw);
+  } else {
+    const clean = raw.replace(/[%_]/g, "").trim();
+    if (!clean) return [];
+    builder = builder.or(`scum_name.ilike.%${clean}%,discord_tag.ilike.%${clean}%`);
+  }
+
+  const { data, error } = await builder.limit(10);
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+async function unregisterPlayerLinkById(linkId) {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(PLAYER_LINKS_TABLE)
+    .delete()
+    .eq("id", linkId)
+    .select("*")
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
 async function savePendingLink(interaction, code) {
   const db = getSupabase();
   const expires = new Date(Date.now() + LINK_CODE_TTL_MINUTES * 60 * 1000).toISOString();
@@ -889,7 +926,7 @@ async function handleInsuranceCommand(message, bot) {
   const parts = message.content.trim().split(/\s+/);
   const command = parts.shift().toLowerCase();
 
-  if (!["!insurancesetup", "!insurance", "!insurancescan", "!insurancestatus", "!wipeinsurance"].includes(command)) return false;
+  if (!["!insurancesetup", "!insurance", "!insurancescan", "!insurancestatus", "!wipeinsurance", "!unregister"].includes(command)) return false;
 
   if (command === "!insurance") {
     await message.reply({ content: buildInsuranceMenuText(), components: buildMainRows() }).catch(() => {});
@@ -898,6 +935,54 @@ async function handleInsuranceCommand(message, bot) {
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
+    return true;
+  }
+
+  if (command === "!unregister") {
+    if (!isOwner(message)) {
+      await message.reply("Only Owners can unregister a linked Steam ID.").catch(() => {});
+      return true;
+    }
+
+    const query = parts.join(" ").trim();
+    if (!query) {
+      await message.reply("Use: `!unregister <Steam64 / @Discord / exact SCUM name>`").catch(() => {});
+      return true;
+    }
+
+    const matches = await findPlayerLinksForUnregister(message.guild.id, query);
+    if (!matches.length) {
+      await message.reply(`No registration link found for **${query}**.`).catch(() => {});
+      return true;
+    }
+
+    if (matches.length > 1) {
+      const rows = matches.map((link, index) => `${index + 1}. ${link.scum_name || "Unknown"} — Steam: \`${link.steam_id || "not linked"}\` — Discord: <@${link.discord_id}>`).join("\n");
+      await message.reply([
+        "Found more than one possible registration. Nothing was removed.",
+        "Use the exact Steam64 ID to unregister the correct player.",
+        "",
+        rows,
+      ].join("\n")).catch(() => {});
+      return true;
+    }
+
+    const link = matches[0];
+    const removed = await unregisterPlayerLinkById(link.id);
+    if (!removed) {
+      await message.reply("I found the registration, but Supabase did not return a removed row. Check the player link table before trying again.").catch(() => {});
+      return true;
+    }
+
+    await message.reply([
+      "✅ **Registration Removed**",
+      `SCUM Player: **${removed.scum_name || "Unknown"}**`,
+      `Steam ID: \`${removed.steam_id || "not linked"}\``,
+      `Discord: <@${removed.discord_id}>`,
+      "",
+      "This only removed the Discord ↔ Steam registration link.",
+      "Insurance policies, lottery history, lottery codes, and player snapshots were not deleted.",
+    ].join("\n")).catch(() => {});
     return true;
   }
 
