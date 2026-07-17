@@ -100,6 +100,7 @@ function adminPanelRows(steamId) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`pp:admin:jail:${steamId}`).setLabel("Jail").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`pp:admin:unjail:${steamId}`).setLabel("Unjail").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`pp:admin:ban:${steamId}`).setLabel("Ban Player").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`pp:admin:refresh:${steamId}`).setLabel("Refresh Panel").setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -118,7 +119,7 @@ async function buildAdminPanel(guildId, player) {
       `**Discord:** ${link?.discord_id ? `<@${link.discord_id}>` : "Not linked"}`,
       `**Status:** ${player?.online === true || player?.ping !== undefined ? "Online" : "Last known/offline"}`,
       "",
-      "Choose an action below. Cash, fame, jail, and unjail actions are restricted to staff and recorded by the existing Watcher tools.",
+      "Choose an action below. The Ban Player action requires a typed confirmation and attempts to ban the linked account from both SCUM and Discord.",
     ].join("\n"),
     components: adminPanelRows(steamId),
     allowedMentions: { parse: [] },
@@ -243,6 +244,104 @@ function buildAmountModal(kind, operation, steamId) {
     );
 }
 
+function buildBanModal(steamId) {
+  return new ModalBuilder()
+    .setCustomId(`pp:banmodal:${steamId}`)
+    .setTitle("Ban Player from SCUM and Discord")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("reason")
+          .setLabel("Ban reason")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMinLength(3)
+          .setMaxLength(500)
+          .setPlaceholder("Explain why this player is being banned")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("confirmation")
+          .setLabel("Type BAN to confirm")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(10)
+          .setPlaceholder("BAN")
+      )
+    );
+}
+
+async function handleBanModal(interaction, steamId) {
+  if (!isStaff(interaction)) {
+    await interaction.reply({ content: "This action is for staff only.", ephemeral: true });
+    return;
+  }
+
+  const confirmation = interaction.fields.getTextInputValue("confirmation")?.trim().toUpperCase();
+  const reason = interaction.fields.getTextInputValue("reason")?.trim();
+  if (confirmation !== "BAN") {
+    await interaction.reply({ content: "Ban cancelled. You must type `BAN` exactly to confirm.", ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const playerResult = await getPlayerForLookup(steamId);
+  if (playerResult.type !== "single") {
+    await interaction.editReply("The player could not be loaded, so no ban was applied.");
+    return;
+  }
+
+  const player = playerResult.player;
+  const realSteamId = String(player?.userId || steamId || "").trim();
+  const displayName = getPlayerDisplayName(player);
+  const link = await getLinkBySteam(interaction.guildId, realSteamId).catch(() => null);
+  const discordId = String(link?.discord_id || "").trim();
+
+  // Never allow this panel to ban the Discord server owner or a staff account.
+  if (discordId) {
+    const targetMember = await interaction.guild.members.fetch(discordId).catch(() => null);
+    if (discordId === interaction.guild.ownerId) {
+      await interaction.editReply("Ban blocked: the linked Discord account owns this server. No SCUM or Discord ban was applied.");
+      return;
+    }
+    if (targetMember?.roles?.cache?.some((role) => STAFF_ROLE_NAMES.has(role.name))) {
+      await interaction.editReply("Ban blocked: the linked Discord account has a Watcher staff role. No SCUM or Discord ban was applied.");
+      return;
+    }
+  }
+
+  await ggconPost(`/players/${encodeURIComponent(realSteamId)}/ban`, {});
+
+  let discordResult;
+  if (!discordId) {
+    discordResult = "⚠️ No linked Discord account was found. Manually remove/ban this player from Discord if they are present.";
+  } else {
+    try {
+      await interaction.guild.members.ban(discordId, {
+        reason: `Outpost X ban by ${interaction.user.tag || interaction.user.username}: ${reason}`,
+      });
+      discordResult = `✅ Discord account <@${discordId}> was banned.`;
+    } catch (err) {
+      console.error("❌ Discord ban failed after SCUM ban:", err);
+      discordResult = `⚠️ SCUM ban succeeded, but Discord could not ban <@${discordId}>. Manually remove/ban them in Discord. Error: ${err.message}`;
+    }
+  }
+
+  await interaction.editReply({
+    content: [
+      "⛔ **Player Banned**",
+      "",
+      `**Player:** ${displayName}`,
+      `**Steam ID:** \`${realSteamId}\``,
+      `**Reason:** ${reason}`,
+      "✅ The player was banned from the SCUM server through ggCON.",
+      discordResult,
+    ].join("\n"),
+    allowedMentions: { parse: [] },
+  });
+}
+
 async function handlePlayerPanelCommand(message) {
   if (!message.guild || !message.content?.startsWith("!")) return false;
   const [rawCommand, ...args] = message.content.trim().split(/\s+/);
@@ -321,6 +420,11 @@ async function handlePlayerPanelInteraction(interaction) {
   const parts = interaction.customId.split(":");
 
   try {
+    if (interaction.isModalSubmit() && parts[1] === "banmodal") {
+      await handleBanModal(interaction, parts[2]);
+      return true;
+    }
+
     if (interaction.isModalSubmit() && parts[1] === "modal") {
       if (!isStaff(interaction)) {
         await interaction.reply({ content: "This action is for staff only.", ephemeral: true });
@@ -404,6 +508,10 @@ async function handlePlayerPanelInteraction(interaction) {
       }
       const action = parts[2];
       const steamId = parts[3];
+      if (action === "ban") {
+        await interaction.showModal(buildBanModal(steamId));
+        return true;
+      }
       if (["cashadd", "cashremove", "fameadd", "fameremove"].includes(action)) {
         const kind = action.startsWith("cash") ? "cash" : "fame";
         const operation = action.endsWith("add") ? "add" : "remove";
