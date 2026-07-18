@@ -343,8 +343,31 @@ async function handleTicketInteraction(interaction, openAdminPanelForSteamId) {
       if (!isStaff(interaction.member)) await interaction.reply({ content: 'Staff only.', ephemeral: true });
       else {
         const ticketId = id.split(':')[2];
-        await dbRef.from(TICKETS_TABLE).update({ claimed_by_id: interaction.user.id }).eq('id', ticketId);
-        await interaction.reply({ content: `Ticket claimed by ${interaction.user}.` });
+        const ticket = await fetchTicket(ticketId);
+        if (!ticket || ticket.status !== 'open') {
+          await interaction.reply({ content: 'This ticket is no longer open.', ephemeral: true });
+        } else if (ticket.claimed_by_id) {
+          await interaction.reply({ content: `This ticket is already claimed by <@${ticket.claimed_by_id}>.`, ephemeral: true });
+        } else {
+          await dbRef.from(TICKETS_TABLE).update({ claimed_by_id: interaction.user.id }).eq('id', ticketId);
+
+          const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+            .addFields({ name: 'Claimed by', value: `<@${interaction.user.id}>`, inline: true });
+
+          const updatedRows = interaction.message.components.map((row) => {
+            const rebuilt = ActionRowBuilder.from(row);
+            rebuilt.components = row.components.map((component) => {
+              const button = ButtonBuilder.from(component);
+              if (component.customId === `ticket:claim:${ticketId}`) {
+                button.setLabel('Claimed').setDisabled(true);
+              }
+              return button;
+            });
+            return rebuilt;
+          });
+
+          await interaction.update({ embeds: [updatedEmbed], components: updatedRows });
+        }
       }
     } else if (id.startsWith('ticket:refresh:') && interaction.isButton()) {
       if (!isStaff(interaction.member)) await interaction.reply({ content: 'Staff only.', ephemeral: true });
