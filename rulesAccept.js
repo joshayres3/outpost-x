@@ -213,9 +213,19 @@ async function handleRulesAcceptInteraction(interaction) {
   try {
     await member.roles.add(role, "Accepted the Outpost X server rules");
 
-    await interaction.editReply(
-      "Rules accepted. Welcome to **Outpost X** — you are now one of **The Exiles**!"
+    const mainChatUrl = `https://discord.com/channels/${interaction.guild.id}/${MAIN_CHAT_CHANNEL_ID}`;
+    const mainChatRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel("Go to Main Chat")
+        .setEmoji("💬")
+        .setStyle(ButtonStyle.Link)
+        .setURL(mainChatUrl)
     );
+
+    await interaction.editReply({
+      content: "Rules accepted! You are now one of **The Exiles**. Head to Main Chat and say hello.",
+      components: [mainChatRow],
+    });
 
     const mainChat = await interaction.guild.channels.fetch(MAIN_CHAT_CHANNEL_ID).catch(() => null);
     if (mainChat?.isTextBased()) {
