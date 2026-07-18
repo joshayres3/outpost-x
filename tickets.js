@@ -343,8 +343,24 @@ async function closeTicket(interaction, ticketId) {
   }).eq('id', ticket.id);
 
   const opener = await interaction.guild.members.fetch(ticket.opener_id).catch(() => null);
-  await opener?.send(`Your Outpost X ticket was closed by ${interaction.user.tag}.\nReason: ${reason}`).catch(() => {});
-  await interaction.editReply('Ticket closed. Transcript saved to the log channel.');
+  let dmDelivered = false;
+  if (opener) {
+    dmDelivered = await opener.send({
+      embeds: [new EmbedBuilder()
+        .setTitle('Outpost X Support Ticket Closed')
+        .setDescription('Your support ticket has been closed.')
+        .addFields(
+          { name: 'Closed by', value: interaction.user.tag, inline: true },
+          { name: 'Ticket', value: `#${ticket.id}`, inline: true },
+          { name: 'Close reason', value: reason },
+        )
+        .setTimestamp(closedAt)],
+    }).then(() => true).catch(() => false);
+  }
+
+  await interaction.editReply(dmDelivered
+    ? 'Ticket closed. Transcript saved, and the close reason was sent to the player by DM.'
+    : 'Ticket closed and transcript saved. I could not DM the player, so they may have DMs disabled.');
   setTimeout(() => interaction.channel.delete(`Ticket closed by ${interaction.user.tag}: ${reason}`).catch(() => {}), 5000);
 }
 
