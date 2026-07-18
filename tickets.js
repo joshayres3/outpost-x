@@ -15,6 +15,8 @@ const {
 const CONFIG_TABLE = 'watcher_ticket_config';
 const TICKETS_TABLE = 'watcher_tickets';
 const RETENTION_DAYS = 30;
+const INACTIVE_AFTER_MS = 2 * 60 * 60 * 1000;
+const REMINDER_REPEAT_MS = 6 * 60 * 60 * 1000;
 const STAFF_ROLE_NAMES = new Set(['Owner', 'Owners', 'Admin', 'Trial Admin']);
 const TICKET_CATEGORIES = [
   { value: 'player-help', label: 'Player Help', emoji: '🧍', description: 'General gameplay or account help' },
@@ -29,6 +31,8 @@ const TICKET_CATEGORIES = [
 let clientRef = null;
 let dbRef = null;
 let cleanupTimer = null;
+let reminderTimer = null;
+const reminderState = new Map();
 
 function isStaff(member) {
   return !!member?.roles?.cache?.some((r) => STAFF_ROLE_NAMES.has(r.name));
@@ -464,12 +468,45 @@ async function cleanupTicketLogs() {
   }
 }
 
+async function checkInactiveTickets() {
+  if (!clientRef || !dbRef) return;
+  const { data: tickets, error } = await dbRef.from(TICKETS_TABLE).select('*').eq('status', 'open');
+  if (error) throw error;
+
+  const now = Date.now();
+  for (const ticket of tickets || []) {
+    const guild = clientRef.guilds.cache.get(String(ticket.guild_id));
+    const channel = guild?.channels.cache.get(String(ticket.channel_id));
+    if (!guild || !channel?.isTextBased()) continue;
+
+    const lastMessage = channel.lastMessageId
+      ? await channel.messages.fetch(channel.lastMessageId).catch(() => null)
+      : null;
+    const lastActivity = lastMessage?.createdTimestamp || new Date(ticket.opened_at).getTime();
+    if (!Number.isFinite(lastActivity) || now - lastActivity < INACTIVE_AFTER_MS) continue;
+
+    const key = String(ticket.id);
+    const lastReminder = reminderState.get(key) || 0;
+    if (now - lastReminder < REMINDER_REPEAT_MS) continue;
+
+    const adminRole = guild.roles.cache.find((role) => role.name === 'Admin');
+    await channel.send({
+      content: `${adminRole ? adminRole.toString() : '@Admin'} ⏰ This ticket has had no activity for over 2 hours.`,
+      allowedMentions: { roles: adminRole ? [adminRole.id] : [] },
+    }).catch(() => {});
+    reminderState.set(key, now);
+  }
+}
+
 function startTicketSystem(client, db) {
   clientRef = client;
   dbRef = db;
   cleanupTicketLogs().catch((e) => console.error('Ticket cleanup failed:', e.message));
   if (cleanupTimer) clearInterval(cleanupTimer);
   cleanupTimer = setInterval(() => cleanupTicketLogs().catch((e) => console.error('Ticket cleanup failed:', e.message)), 6 * 60 * 60 * 1000);
+  checkInactiveTickets().catch((e) => console.error('Ticket reminder check failed:', e.message));
+  if (reminderTimer) clearInterval(reminderTimer);
+  reminderTimer = setInterval(() => checkInactiveTickets().catch((e) => console.error('Ticket reminder check failed:', e.message)), 15 * 60 * 1000);
 }
 
 module.exports = { startTicketSystem, handleTicketCommand, handleTicketInteraction };

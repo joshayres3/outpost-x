@@ -7,7 +7,7 @@ const {
   TextInputStyle,
 } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
-const { openAirliftButton } = require("./airlift");
+const { openAirliftButton, getAirliftCooldownStatus } = require("./airlift");
 const {
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
@@ -102,6 +102,7 @@ function adminPanelRows(steamId) {
       new ButtonBuilder().setCustomId(`pp:admin:jail:${steamId}`).setLabel("Jail").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`pp:admin:unjail:${steamId}`).setLabel("Unjail").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`pp:admin:ban:${steamId}`).setLabel("Ban Player").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`pp:admin:unban:${steamId}`).setLabel("Unban Player").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`pp:admin:refresh:${steamId}`).setLabel("Refresh Panel").setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -162,11 +163,12 @@ async function getSafeSelfSummary(guildId, discordId) {
     .eq("steam_id", String(link.steam_id))
     .maybeSingle();
 
-  return { linked: true, link, player, snapshot: snapshot || null };
+  const airlift = await getAirliftCooldownStatus(guildId, link.steam_id).catch(() => null);
+  return { linked: true, link, player, snapshot: snapshot || null, airlift };
 }
 
 function renderSelfPanel(summary) {
-  const { link, player, snapshot } = summary;
+  const { link, player, snapshot, airlift } = summary;
   const online = !!player && (player.online === true || player.ping !== undefined || player.health !== undefined);
   const name = player ? getPlayerDisplayName(player) : (link.scum_name || snapshot?.character_name || "Unknown");
   const cash = player?.accountBalance ?? snapshot?.cash;
@@ -186,6 +188,7 @@ function renderSelfPanel(summary) {
       `**Gold:** ${formatNumber(gold)}`,
       `**Squad:** ${typeof squad === "string" ? squad : JSON.stringify(squad).slice(0, 100)}`,
       `**Last Seen:** ${online ? "Now" : formatDate(snapshot?.last_seen_online_at)}`,
+      `**Airlift Taxi:** ${!airlift ? "Status unavailable" : airlift.ready ? "Available now" : `Available ${formatDate(airlift.nextRide)}`}`,
       "",
       "Only you can see this dashboard. Sensitive staff-only information such as IP addresses is never shown here.",
     ].join("\n"),
@@ -344,6 +347,74 @@ async function handleBanModal(interaction, steamId) {
   });
 }
 
+function buildUnbanModal(steamId) {
+  return new ModalBuilder()
+    .setCustomId(`pp:unbanmodal:${steamId}`)
+    .setTitle("Unban Player from SCUM and Discord")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("reason")
+          .setLabel("Unban reason")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMinLength(3)
+          .setMaxLength(500)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("confirmation")
+          .setLabel("Type UNBAN to confirm")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(10)
+          .setPlaceholder("UNBAN")
+      )
+    );
+}
+
+async function handleUnbanModal(interaction, steamId) {
+  if (!isStaff(interaction)) {
+    await interaction.reply({ content: "This action is for staff only.", ephemeral: true });
+    return;
+  }
+  const confirmation = interaction.fields.getTextInputValue("confirmation")?.trim().toUpperCase();
+  const reason = interaction.fields.getTextInputValue("reason")?.trim();
+  if (confirmation !== "UNBAN") {
+    await interaction.reply({ content: "Unban cancelled. You must type `UNBAN` exactly to confirm.", ephemeral: true });
+    return;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const realSteamId = String(steamId || "").trim();
+  if (!/^\d{17}$/.test(realSteamId)) {
+    await interaction.editReply("A valid Steam64 ID is required to unban this player.");
+    return;
+  }
+  await ggconPost(`/players/${encodeURIComponent(realSteamId)}/unban`, {});
+  const link = await getLinkBySteam(interaction.guildId, realSteamId).catch(() => null);
+  const discordId = String(link?.discord_id || "").trim();
+  let discordResult = "⚠️ No linked Discord account was found. Check Discord bans manually if needed.";
+  if (discordId) {
+    try {
+      await interaction.guild.bans.remove(discordId, `Outpost X unban by ${interaction.user.tag || interaction.user.username}: ${reason}`);
+      discordResult = `✅ Discord account <@${discordId}> was unbanned.`;
+    } catch (err) {
+      discordResult = `⚠️ SCUM unban succeeded, but Discord could not unban <@${discordId}>. It may not be banned there. Error: ${err.message}`;
+    }
+  }
+  await interaction.editReply({
+    content: [
+      "✅ **Player Unbanned**",
+      "",
+      `**Steam ID:** \`${realSteamId}\``,
+      `**Reason:** ${reason}`,
+      "✅ The player was unbanned from the SCUM server through ggCON.",
+      discordResult,
+    ].join("\n"),
+    allowedMentions: { parse: [] },
+  });
+}
+
 async function handlePlayerPanelCommand(message) {
   if (!message.guild || !message.content?.startsWith("!")) return false;
   const [rawCommand, ...args] = message.content.trim().split(/\s+/);
@@ -354,6 +425,38 @@ async function handlePlayerPanelCommand(message) {
       content: "👁️ **Watcher Player Dashboard**\nUse the button below to privately open your linked SCUM profile.",
       components: [selfLauncherRow()],
     }).catch(() => {});
+    return true;
+  }
+
+  if (command === "!unban") {
+    if (!isStaff(message)) {
+      await message.reply("This command is for staff only.").catch(() => {});
+      return true;
+    }
+    const query = args.join(" ").trim();
+    if (!query) {
+      await message.reply("Use: `!unban <Steam64 ID or @Discord member>`").catch(() => {});
+      return true;
+    }
+    const mentionId = query.match(/^<@!?(\d+)>$/)?.[1];
+    let steamId = /^\d{17}$/.test(query) ? query : null;
+    if (!steamId && mentionId) {
+      const link = await getLinkByDiscord(message.guildId, mentionId).catch(() => null);
+      steamId = link?.steam_id || null;
+    }
+    if (!steamId) {
+      await message.reply("I need a Steam64 ID or a linked Discord mention to unban someone.").catch(() => {});
+      return true;
+    }
+    await message.delete().catch(() => {});
+    const launcher = await message.channel.send({
+      content: `${message.author}, open the private unban confirmation.`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`pp:unbanopen:${message.author.id}:${steamId}`).setLabel("Open Unban Confirmation").setStyle(ButtonStyle.Success)
+      )],
+      allowedMentions: { users: [message.author.id] },
+    });
+    setTimeout(() => launcher.delete().catch(() => {}), 120000);
     return true;
   }
 
@@ -427,6 +530,11 @@ async function handlePlayerPanelInteraction(interaction) {
       return true;
     }
 
+    if (interaction.isModalSubmit() && parts[1] === "unbanmodal") {
+      await handleUnbanModal(interaction, parts[2]);
+      return true;
+    }
+
     if (interaction.isModalSubmit() && parts[1] === "modal") {
       if (!isStaff(interaction)) {
         await interaction.reply({ content: "This action is for staff only.", ephemeral: true });
@@ -449,6 +557,18 @@ async function handlePlayerPanelInteraction(interaction) {
     }
 
     if (!interaction.isButton()) return false;
+
+    if (parts[1] === "unbanopen") {
+      const requestingUserId = parts[2];
+      const steamId = parts[3];
+      if (interaction.user.id !== requestingUserId || !isStaff(interaction)) {
+        await interaction.reply({ content: "This unban launcher belongs to another staff member.", ephemeral: true });
+        return true;
+      }
+      await interaction.showModal(buildUnbanModal(steamId));
+      setTimeout(() => interaction.message.delete().catch(() => {}), 500);
+      return true;
+    }
 
     if (parts[1] === "adminopen") {
       const requestingUserId = parts[2];
@@ -512,6 +632,10 @@ async function handlePlayerPanelInteraction(interaction) {
       const steamId = parts[3];
       if (action === "ban") {
         await interaction.showModal(buildBanModal(steamId));
+        return true;
+      }
+      if (action === "unban") {
+        await interaction.showModal(buildUnbanModal(steamId));
         return true;
       }
       if (["cashadd", "cashremove", "fameadd", "fameremove"].includes(action)) {

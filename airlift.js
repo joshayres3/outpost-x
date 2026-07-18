@@ -363,7 +363,19 @@ async function handleAirliftInteraction(interaction) {
   return false;
 }
 
+async function getAirliftCooldownStatus(guildId, steamId) {
+  const cooldown = await checkCooldown(guildId, steamId);
+  return {
+    ready: cooldown.ready,
+    lastRide: cooldown.lastRide,
+    nextRide: cooldown.nextRide,
+    price: AIRLIFT_PRICE,
+    cooldownMinutes: Math.round(AIRLIFT_COOLDOWN_MS / 60000),
+  };
+}
+
 module.exports = {
   handleAirliftInteraction,
   openAirliftButton,
+  getAirliftCooldownStatus,
 };

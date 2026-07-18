@@ -2,369 +2,221 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  EmbedBuilder,
   MessageFlags,
 } = require("discord.js");
 
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 
 function isStaffMember(member) {
-  if (!member?.roles?.cache) return false;
-  return member.roles.cache.some((role) => STAFF_ROLE_NAMES.has(role.name));
+  return !!member?.roles?.cache?.some((role) => STAFF_ROLE_NAMES.has(role.name));
 }
 
-function replyFlags() {
+function ephemeralFlags() {
   return MessageFlags?.Ephemeral ? MessageFlags.Ephemeral : undefined;
 }
 
-const CATEGORIES = {
-  core: {
-    emoji: "🧠",
-    label: "Core",
-    title: "🧠 WATCHER CORE",
-    aliases: ["core", "watcher", "bot", "mode", "health"],
+const SECTIONS = {
+  essentials: {
+    emoji: "⭐",
+    label: "Essentials",
+    aliases: ["essential", "essentials", "common", "start"],
     lines: [
-      ["!watcherhealth", "Bot health/status."],
-      ["!watcherquiet", "Quiet mode."],
-      ["!watcherlive", "Live mode."],
-      ["!watchermode", "Current mode."],
-      ["!watcherreload", "Reload rules/config."],
-    ],
-  },
-  setup: {
-    emoji: "📜",
-    label: "Setup",
-    title: "📜 RULES / WELCOME / SETUP",
-    aliases: ["setup", "rules", "welcome", "dm", "post", "assistant"],
-    lines: [
-      ["!post", "Post help/rules, enable assistant, or make announcement."],
-      ["!ruleupdate", "Owner rule update flow."],
-      ["!rulesacceptsetup", "Post or refresh the rules acceptance button in the Rules channel."],
-      ["!welcomebackfill [limit]", "Backfill welcome DMs."],
-      ["!watcherdm", "Owner DM broadcast to welcomed users."],
-      ["Ticket helper", "Auto-redirects help/admin/bug/lost vehicle mentions."],
-      ["Rules intelligence", "Answers rule questions from posted rules."],
-    ],
-  },
-  register: {
-    emoji: "🔗",
-    label: "Register",
-    title: "🔗 REGISTER STEAM",
-    aliases: ["register", "steam", "link", "linksteam", "registersetup", "verify"],
-    lines: [
-      ["!registersetup", "Post/move the player Register Steam panel."],
-      ["!unregister <Steam64/@user/name>", "Owner-only. Remove a Discord ↔ Steam link so a player can re-register."],
-      ["Register Steam button", "Player gets a code to type in SCUM chat."],
-      ["Verify Code button", "Links Discord to the player’s SCUM character."],
-      ["Used for", "Vehicle insurance, mech hunting packs, and lottery."],
-    ],
-  },
-  server: {
-    emoji: "📡",
-    label: "Server",
-    title: "📡 SERVER + STATUS",
-    aliases: ["server", "status", "online", "announce"],
-    lines: [
-      ["!poststatus", "Live status panel."],
-      ["!server", "Quick server info."],
-      ["!online", "Online player list."],
-      ["!announce <message>", "In-game announcement."],
+      ["!manage <player>", "Private admin player panel: details, vehicles, squad, money, fame, jail, ban, and unban."],
+      ["!unban <Steam64/@user>", "Private unban confirmation when a banned player cannot be opened with `!manage`."],
+      ["!player <name/Steam64>", "Full player lookup."],
+      ["!online", "Current online player list."],
+      ["!announce <message>", "Send an in-game announcement."],
+      ["!close", "Close the current Watcher ticket and enter a reason."],
     ],
   },
   players: {
     emoji: "👥",
     label: "Players",
-    title: "👥 PLAYERS + SQUADS + ECONOMY",
-    aliases: ["players", "player", "squad", "cash", "fame", "refund", "money", "economy", "econ"],
+    aliases: ["player", "players", "squad", "cash", "fame", "jail", "ban", "unban"],
     lines: [
-      ["!player <name/SteamID>", "Full lookup, Discord registration, recent IP, previous names, and last-known snapshot."],
-      ["!squad <player>", "Squad info."],
-      ["!cash <player> add/remove/set <amount>", "Change cash."],
-      ["!fame <player> add/remove/set <amount>", "Change fame."],
-      ["!refund <player> <amount>", "Refund cash to a player."],
-      ["!manage <player>", "Open the private Admin Player Control Panel."],
-      ["!dashboard", "Post the player dashboard launcher with vehicles, insurance, lottery, and Airlift Taxi."],
-    ],
-  },
-  vehicles: {
-    emoji: "🚗",
-    label: "Vehicles",
-    title: "🚗 VEHICLES",
-    aliases: ["vehicles", "vehicle", "cars", "car", "truck", "trucks", "givevehicle"],
-    lines: [
-      ["!vehicle <player>", "Player/squad vehicles."],
-      ["!nearvehicles <player>", "Vehicles near player."],
-      ["!givevehicle <player> <type>", "Spawn vehicle near player."],
-      ["Vehicle types", "duster, tractor, laika, mariner, rager, ww, wolfswagen."],
-      ["!destroyvehicle <vehicleID>", "Destroy vehicle after confirmation."],
-    ],
-  },
-  bases: {
-    emoji: "🚩",
-    label: "Bases",
-    title: "🚩 FLAGS + BASES",
-    aliases: ["bases", "base", "flags", "flag", "overcap", "destroybase"],
-    lines: [
-      ["!flag <player>", "Player flags/bases."],
-      ["!flag all", "All flags, paged."],
-      ["!overcap", "Over-cap bases."],
-      ["!destroybase <flagID>", "Destroy base by flag after confirmation."],
-    ],
-  },
-  jail: {
-    emoji: "🚔",
-    label: "Jail",
-    title: "🚔 JAIL",
-    aliases: ["jail", "prison", "unjail"],
-    lines: [
-      ["!jail <player>", "Save return point, then jail."],
+      ["!player <name/Steam64>", "Player details, registration, previous names, and snapshot."],
+      ["!squad <player>", "Squad details."],
+      ["!cash <player> add/remove/set <amount>", "Change player cash."],
+      ["!fame <player> add/remove/set <amount>", "Change player fame."],
+      ["!refund <player> <amount>", "Refund cash."],
+      ["!jail <player>", "Save return point and jail."],
       ["!unjail <player>", "Return player from jail."],
-      ["Storage", "Return points save to Supabase."],
+      ["!manage <player>", "Private control panel with Ban Player and Unban Player confirmations."],
+      ["!unban <Steam64/@user>", "Unban from SCUM and linked Discord account."],
     ],
   },
-  logs: {
-    emoji: "👁️",
-    label: "Logs",
-    title: "👁️ LOGS + WATCHERS",
-    aliases: ["logs", "log", "vehiclelog", "vehiclelogs", "killlog", "killlogs", "loginlog", "loginlogs", "watchers"],
+  world: {
+    emoji: "🚗",
+    label: "Vehicles & Bases",
+    aliases: ["vehicle", "vehicles", "base", "bases", "flag", "flags"],
     lines: [
-      ["!vehiclelogsetup", "Start vehicle destruction log."],
-      ["!vehiclelogstatus", "Vehicle log status."],
-      ["!vehiclelogscan", "Force an immediate vehicle scan."],
-      ["!vehiclelogoff", "Stop vehicle log."],
-      ["!killlogsetup", "Start player death log."],
-      ["!killlogstatus", "Kill log status."],
-      ["!killlogscan", "Force an immediate kill scan."],
-      ["!killlogoff", "Stop kill log."],
-      ["!loginlogsetup", "Start player login/logout log with player name, fake name, IP, and location."],
-      ["!loginlogstatus", "Login log status."],
-      ["!loginlogscan", "Force an immediate login scan."],
-      ["!loginlogoff", "Stop login log."],
+      ["!vehicle <player>", "Player or squad vehicles."],
+      ["!nearvehicles <player>", "Vehicles near a player."],
+      ["!givevehicle <player> <type>", "Spawn a supported vehicle near a player."],
+      ["!destroyvehicle <vehicleID>", "Destroy a vehicle after confirmation."],
+      ["!flag <player|all>", "Player flags or all flags."],
+      ["!overcap", "Show bases over the component cap."],
+      ["!destroybase <flagID>", "Destroy a base after confirmation."],
     ],
   },
-
-  insurance: {
-    emoji: "🛡️",
-    label: "Insurance",
-    title: "🛡️ VEHICLE INSURANCE",
-    aliases: ["insurance", "insure", "insured", "vehicleinsurance"],
+  systems: {
+    emoji: "🎮",
+    label: "Player Systems",
+    aliases: ["systems", "dashboard", "insurance", "lottery", "airlift", "mechpacks", "register"],
     lines: [
-      ["!insurancesetup", "Post/move the insurance menu."],
-      ["!registersetup", "Post a standalone Register Steam panel."],
-      ["!insurancestatus", "Insurance system status."],
-      ["!insurancescan", "Force an insurance destruction scan."],
-      ["!wipeinsurance", "Owner-only wipe after server wipe."],
-      ["Player buttons", "Rates, Buy Insurance, My Insurance, Claim Insurance."],
+      ["!dashboard", "Post the private player dashboard launcher."],
+      ["Dashboard", "Profile, vehicles and locations, squad, insurance, lottery, and Airlift Taxi cooldown."],
+      ["Airlift Taxi", "$1,000, once per hour, C0 excluded."],
+      ["!registersetup", "Post the Steam registration panel."],
+      ["!insurancesetup", "Post the vehicle insurance panel."],
+      ["!mechpacksetup", "Post the mech hunting pack shop."],
+      ["!lotterysetup", "Enable and post the hourly lottery."],
+      ["!lotterystatus", "Lottery status and next draw."],
     ],
   },
-
-  mechs: {
-    emoji: "🤖",
-    label: "Mechs",
-    title: "🤖 MECH SCHEDULE",
-    aliases: ["mechs", "mech", "sentry", "sentries", "mechschedule"],
+  server: {
+    emoji: "📡",
+    label: "Server & Logs",
+    aliases: ["server", "logs", "status", "mechs", "cargo"],
     lines: [
-      ["!mechtest", "Test SFTP and read current sentry setting."],
-      ["!mechson", "Set mechs ON after next restart."],
-      ["!mechsoff", "Set mechs OFF after next restart."],
-      ["!mechschedulesetup", "Sunday 11:45 PM ON / Monday 11:45 PM OFF Toronto."],
-      ["!mechschedulestatus", "Mech schedule and current setting status."],
-      ["!mechscheduleoff", "Disable automatic mech schedule."],
-      ["Panel", "Clean player-facing status post that edits itself."],
+      ["!poststatus", "Post live server status."],
+      ["!server", "Quick server information."],
+      ["!watcherhealth", "Watcher and integration status."],
+      ["!watcherquiet / !watcherlive", "Change Watcher response mode."],
+      ["!vehiclelogsetup", "Vehicle destruction log."],
+      ["!killlogsetup", "Player death log."],
+      ["!loginlogsetup", "Player login/logout log."],
+      ["!mechschedulesetup", "Enable the scheduled mech window."],
+      ["!cargoschedulesetup", "Enable scheduled Cargo Frenzy."],
     ],
   },
-
-  mechpacks: {
-    emoji: "🎯",
-    label: "Mech Packs",
-    title: "🎯 MECH HUNTING PACKS",
-    aliases: ["mechpacks", "mechpack", "rpg", "rpg7", "pg7m", "rockets"],
-    lines: [
-      ["!mechpacksetup", "Post/move the player mech hunting pack shop."],
-      ["!mechpackstatus", "Check RPG-7 and Rockets PG-7M item resolution."],
-      ["RPG-7 x1", "$50,000."],
-      ["Rockets PG-7M x10", "$15,000."],
-      ["Register first", "Players must register before buying."],
-    ],
-  },
-  lottery: {
+  support: {
     emoji: "🎟️",
-    label: "Lottery",
-    title: "🎟️ HOURLY LOTTERY",
-    aliases: ["lottery", "draw", "winner", "claim", "code"],
+    label: "Events & Tickets",
+    aliases: ["events", "event", "tickets", "ticket", "support", "transcript"],
     lines: [
-      ["!lotterysetup", "Owner-only. Enable hourly lottery and post player info in this channel."],
-      ["!lotterylogsetup", "Owner-only. Save this hidden/admin channel for winner and claim logs."],
-      ["!lotterystatus", "Show player channel, admin log channel, next warning, next draw, and status."],
-      ["!lotteryoff", "Owner-only. Pause lottery without deleting codes/history."],
-      ["!lotterydraw", "Admin/Owner. Run an extra one-off lottery right now using normal rules."],
-      ["Repeat protection", "Recent winners have reduced odds for 6 hours when 4+ players qualify."],
-      ["Claiming", "Winner types the DM code directly in SCUM chat. Codes expire after 7 days by default."],
+      ["!event", "Create and manage an event."],
+      ["!issue", "Create a staff issue entry."],
+      ["!ticketsetup", "Post or refresh the Open-a-Ticket panel; attach the logo when running it."],
+      ["!ticketlogsetup", "Set the transcript log channel."],
+      ["!ticketstatus", "Show ticket panel, log channel, and retention status."],
+      ["!close", "Close the current ticket with a required reason."],
+      ["Ticket tools", "Claim, Refresh Player Data, Open Player Panel, Close Ticket."],
+      ["Inactive reminder", "Pings @Admin after 2 hours with no ticket activity; repeats no more than every 6 hours."],
+      ["Transcripts", "Close summary plus private Show Transcript button; removed after 30 days."],
     ],
   },
-  cargo: {
-    emoji: "📦",
-    label: "Cargo",
-    title: "📦 CARGO + SCHEDULE",
-    aliases: ["cargo", "cargofrenzy", "drop", "drops", "cargoschedule", "schedule"],
+  setup: {
+    emoji: "🛠️",
+    label: "Setup",
+    aliases: ["setup", "welcome", "rules", "help", "commands"],
     lines: [
-      ["!cargotest", "Test one cargo drop."],
-      ["!cargofrenzy", "Launch 10 safe cargo drops."],
-      ["!cargoschedulesetup", "Enable automatic Cargo Frenzy."],
-      ["!cargoschedulestatus", "Cargo schedule status."],
-      ["!cargoscheduleoff", "Disable automatic Cargo Frenzy."],
-      ["Auto times", "12:30, 4:30, 8:30 AM/PM Eastern."],
-    ],
-  },
-  events: {
-    emoji: "📣",
-    label: "Events",
-    title: "📣 EVENTS + ISSUES",
-    aliases: ["events", "event", "announcement", "announcements", "issues", "issue", "staff"],
-    lines: [
-      ["!event", "Event creation/admin menu."],
-      ["Event buttons", "RSVPs, reminders, recurring events, auto-close."],
-      ["!issue", "Create a staff issue log entry."],
-      ["Issue buttons", "Notify Admin, Notify Owners, Completed, Assign."],
-      ["Announcement formatting", "Use !post → Announcement."],
-    ],
-  },
-  tickets: {
-    emoji: "🎟️",
-    label: "Tickets",
-    title: "🎟️ WATCHER TICKETS",
-    aliases: ["tickets", "ticket", "support", "transcript"],
-    lines: [
-      ["!ticketsetup", "Run in Open-a-Ticket. Attach the Outpost X logo to use it on the panel."],
-      ["!ticketlogsetup", "Run in ticket-logs to save transcripts there."],
-      ["!ticketstatus", "Show panel, log channel, and retention status."],
-      ["Ticket creation", "Pings @Admin and creates a private channel directly below Open-a-Ticket."],
-      ["Staff buttons", "Claim, Refresh Player Data, Open Player Panel, and Close Ticket."],
-      ["Closing", "Requires a reason, DMs the player, saves a transcript, and removes the ticket channel."],
-      ["Transcript logs", "Show opener, closer, close reason, dates, and a Show Transcript button."],
-      ["Retention", "Transcript log entries are automatically removed after 30 days."],
+      ["!helpsetup", "Clean this channel and post one permanent Watcher Admin Help button."],
+      ["!rulesacceptsetup", "Post the Accept Rules button; assigns The Exiles and links to Main Chat."],
+      ["!post", "Post rules/help, enable assistant, or create an announcement."],
+      ["!ruleupdate", "Owner rule update flow."],
+      ["!welcomebackfill [limit]", "Backfill welcome DMs."],
+      ["!watcherdm", "Owner broadcast to welcomed users."],
+      ["!watcherreload", "Reload Watcher rules/config."],
     ],
   },
   safety: {
     emoji: "⚠️",
     label: "Safety",
-    title: "⚠️ SAFETY NOTES",
-    aliases: ["safety", "safe", "notes", "tips"],
+    aliases: ["safety", "safe", "notes"],
     lines: [
-      ["Use singular", "!vehicle and !flag."],
-      ["Partial names", "Multiple matches use buttons."],
-      ["Destroy commands", "Require confirmation."],
-      ["Cargo safety", "Checks live flags before drops."],
-      ["Kill logs", "Ignore puppet/animal farming spam."],
-      ["Player lookup", "Uses SCUM name or Steam ID, not Discord name."],
+      ["Private panels", "`!manage`, `!unban`, and dashboard details open through private button interactions."],
+      ["Ban protection", "Watcher blocks bans against the server owner and linked staff accounts."],
+      ["Destructive actions", "Require confirmation."],
+      ["Player lookup", "Use SCUM name or Steam64; Discord mentions require a linked account."],
+      ["Multiple matches", "Use the Steam64 ID Watcher returns."],
     ],
   },
 };
 
-const ORDER = [
-  "core",
-  "setup",
-  "register",
-  "server",
-  "players",
-  "vehicles",
-  "bases",
-  "jail",
-  "logs",
-  "insurance",
-  "mechs",
-  "mechpacks",
-  "lottery",
-  "cargo",
-  "events",
-  "tickets",
-  "safety",
-];
+const ORDER = ["essentials", "players", "world", "systems", "server", "support", "setup", "safety"];
 
-function categoryFromInput(input) {
-  const raw = String(input || "").trim().toLowerCase();
-  if (!raw) return null;
-  const clean = raw.replace(/^!+/, "").replace(/^help\s+/, "").trim();
-
-  for (const key of ORDER) {
-    const section = CATEGORIES[key];
-    if (key === clean || section.aliases.includes(clean)) return key;
-  }
-
-  return null;
+function sectionFromInput(input) {
+  const clean = String(input || "").toLowerCase().replace(/^!+/, "").replace(/^help\s+/, "").trim();
+  return ORDER.find((key) => key === clean || SECTIONS[key].aliases.includes(clean)) || null;
 }
 
-function buildMenuContent() {
-  const label = (key) => {
-    const section = CATEGORIES[key];
-    return `${section.emoji} **${section.label}**`;
+function menuEmbed() {
+  return new EmbedBuilder()
+    .setTitle("🛰️ Watcher Admin Help")
+    .setDescription([
+      "Clean, private command help for **Owner / Admin / Trial Admin**.",
+      "Choose a section below. Nothing else is posted in the channel.",
+    ].join("\n"))
+    .setFooter({ text: "Outpost X • Watcher Bot" });
+}
+
+function helpPanelPayload() {
+  return {
+    embeds: [new EmbedBuilder()
+      .setTitle("🛰️ Watcher Admin Help")
+      .setDescription("Use the button below to privately open the current Watcher command guide.")
+      .setFooter({ text: "Staff only • Clean and private" })],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("cmdhelp:open").setLabel("Open Watcher Help").setEmoji("🛰️").setStyle(ButtonStyle.Primary)
+    )],
   };
-
-  return [
-    "# 🛰️ Outpost X | Watcher Command Center",
-    "**Staff only:** Owner / Admin / Trial Admin",
-    "Partial player names work. If multiple players match, Watcher shows buttons.",
-    "",
-    "Pick a button below, or type `!help <category>`.",
-    "",
-    "**Player-facing panels**",
-    ["register", "insurance", "mechs", "mechpacks", "lottery", "cargo"].map(label).join("  •  "),
-    "",
-    "**Admin tools**",
-    ["server", "players", "vehicles", "bases", "jail", "logs"].map(label).join("  •  "),
-    "",
-    "**Server management**",
-    ["core", "setup", "events", "tickets", "safety"].map(label).join("  •  "),
-    "",
-    "**Most used setup:** `!ticketsetup` • `!ticketlogsetup` • `!registersetup` • `!insurancesetup` • `!mechschedulesetup` • `!mechpacksetup` • `!lotterysetup` • `!cargoschedulesetup`",
-  ].join("\n");
 }
 
-function buildMenuComponents() {
-  const buttons = ORDER.map((key) => {
-    const section = CATEGORIES[key];
-    return new ButtonBuilder()
-      .setCustomId(`cmdhelp:${key}`)
-      .setLabel(section.label)
-      .setEmoji(section.emoji)
-      .setStyle(key === "safety" ? ButtonStyle.Secondary : ButtonStyle.Primary);
-  });
+function menuComponents() {
+  const buttons = ORDER.map((key) => new ButtonBuilder()
+    .setCustomId(`cmdhelp:${key}`)
+    .setLabel(SECTIONS[key].label)
+    .setEmoji(SECTIONS[key].emoji)
+    .setStyle(key === "safety" ? ButtonStyle.Secondary : ButtonStyle.Primary));
+  return [
+    new ActionRowBuilder().addComponents(buttons.slice(0, 4)),
+    new ActionRowBuilder().addComponents(buttons.slice(4, 8)),
+  ];
+}
 
-  const rows = [];
-  for (let i = 0; i < buttons.length; i += 5) {
-    rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+function sectionEmbed(key) {
+  const section = SECTIONS[key];
+  const description = section.lines.map(([command, description]) => {
+    const commandText = command.startsWith("!") ? `\`${command}\`` : `**${command}**`;
+    return `${commandText}\n${description}`;
+  }).join("\n\n");
+  return new EmbedBuilder().setTitle(`${section.emoji} ${section.label}`).setDescription(description);
+}
+
+function backRow() {
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("cmdhelp:menu").setLabel("Back to Help Menu").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+  )];
+}
+
+async function cleanupOldHelpPosts(channel) {
+  const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+  if (!messages) return;
+  for (const message of messages.values()) {
+    if (!message.author?.bot) continue;
+    const text = [message.content, ...message.embeds.map((embed) => `${embed.title || ""} ${embed.description || ""}`)].join(" ");
+    if (/Watcher (Command Center|Admin Help)|WATCHER CORE|PLAYER SYSTEMS|SERVER \+ STATUS/i.test(text)) {
+      await message.delete().catch(() => {});
+    }
   }
-  return rows;
 }
 
-function buildBackComponent() {
-  return [
-    new ActionRowBuilder().addComponents(
+async function temporaryLauncher(message, target = "open") {
+  await message.delete().catch(() => {});
+  const launcher = await message.channel.send({
+    content: `${message.author}, open your private Watcher help.`,
+    components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId("cmdhelp:menu")
-        .setLabel("Back to Command Menu")
+        .setCustomId(`cmdhelp:launch:${message.author.id}:${target}`)
+        .setLabel("Open Watcher Help")
         .setEmoji("🛰️")
-        .setStyle(ButtonStyle.Secondary)
-    ),
-  ];
-}
-
-function buildCategoryContent(key) {
-  const section = CATEGORIES[key];
-  if (!section) return null;
-
-  const lines = [
-    `## ${section.title}`,
-    "",
-  ];
-
-  for (const [cmd, desc] of section.lines) {
-    const isCommand = String(cmd).startsWith("!");
-    lines.push(`${isCommand ? "•" : "-"} ${isCommand ? `\`${cmd}\`` : `**${cmd}**`} — ${desc}`);
-  }
-
-  lines.push("");
-  lines.push("Use `!commands` to return to the full menu.");
-  return lines.join("\n");
+        .setStyle(ButtonStyle.Primary)
+    )],
+    allowedMentions: { users: [message.author.id] },
+  });
+  setTimeout(() => launcher.delete().catch(() => {}), 120000);
 }
 
 async function handleCommandHelpInteraction(interaction) {
@@ -373,76 +225,67 @@ async function handleCommandHelpInteraction(interaction) {
   if (!customId.startsWith("cmdhelp:")) return false;
 
   if (!isStaffMember(interaction.member)) {
-    await interaction.reply({
-      content: "The Watcher sees the request. This command guide is for staff only.",
-      flags: replyFlags(),
-    }).catch(() => {});
+    await interaction.reply({ content: "This help panel is for Watcher staff only.", flags: ephemeralFlags() }).catch(() => {});
     return true;
   }
 
-  const key = customId.split(":")[1];
+  const parts = customId.split(":");
+  const action = parts[1];
 
-  if (key === "menu") {
-    await interaction.reply({
-      content: buildMenuContent(),
-      components: buildMenuComponents(),
-      flags: replyFlags(),
-    }).catch(() => {});
+  if (action === "launch") {
+    if (interaction.user.id !== parts[2]) {
+      await interaction.reply({ content: "This private help launcher belongs to another staff member.", flags: ephemeralFlags() }).catch(() => {});
+      return true;
+    }
+    const target = parts[3] || "open";
+    if (target !== "open" && SECTIONS[target]) {
+      await interaction.reply({ embeds: [sectionEmbed(target)], components: backRow(), flags: ephemeralFlags() });
+    } else {
+      await interaction.reply({ embeds: [menuEmbed()], components: menuComponents(), flags: ephemeralFlags() });
+    }
+    await interaction.message.delete().catch(() => {});
     return true;
   }
 
-  const content = buildCategoryContent(key);
-  if (!content) {
-    await interaction.reply({ content: "Unknown command category.", flags: replyFlags() }).catch(() => {});
+  if (action === "open") {
+    await interaction.reply({ embeds: [menuEmbed()], components: menuComponents(), flags: ephemeralFlags() });
     return true;
   }
 
-  await interaction.reply({
-    content,
-    components: buildBackComponent(),
-    flags: replyFlags(),
-  }).catch(() => {});
+  if (action === "menu") {
+    await interaction.update({ embeds: [menuEmbed()], components: menuComponents() });
+    return true;
+  }
 
+  if (SECTIONS[action]) {
+    await interaction.update({ embeds: [sectionEmbed(action)], components: backRow() });
+    return true;
+  }
+
+  await interaction.reply({ content: "Unknown help section.", flags: ephemeralFlags() }).catch(() => {});
   return true;
 }
 
 async function handleCommandHelpMessage(message) {
-  if (!message.guild || !message.content) return false;
-  if (!message.content.startsWith("!")) return false;
-
+  if (!message.guild || !message.content?.startsWith("!")) return false;
   const parts = message.content.trim().split(/\s+/);
   const command = parts.shift().toLowerCase();
-  const args = parts;
-
-  if (command !== "!commands" && command !== "!help") return false;
+  if (!["!commands", "!help", "!helpsetup"].includes(command)) return false;
 
   if (!isStaffMember(message.member)) {
-    await message.reply("The Watcher sees the request. This command guide is for staff only.").catch(() => {});
+    await message.reply("This command guide is for Watcher staff only.").catch(() => {});
     return true;
   }
 
-  if (command === "!commands" || args.length === 0 || args[0].toLowerCase() === "all" || args[0].toLowerCase() === "menu") {
-    await message.reply({
-      content: buildMenuContent(),
-      components: buildMenuComponents(),
-    }).catch(() => {});
+  if (command === "!helpsetup") {
+    await cleanupOldHelpPosts(message.channel);
+    await message.delete().catch(() => {});
+    await message.channel.send(helpPanelPayload());
     return true;
   }
 
-  const key = categoryFromInput(args.join(" "));
-  if (!key) {
-    await message.reply([
-      "Unknown help category.",
-      "Use `!commands` to see the menu.",
-      "Try: `!help insurance`, `!help mechs`, `!help mechpacks`, `!help lottery`, `!help cargo`, or `!help logs`.",
-    ].join("\n")).catch(() => {});
-    return true;
-  }
-
-  await message.reply({
-    content: buildCategoryContent(key),
-    components: buildBackComponent(),
-  }).catch(() => {});
+  const requested = sectionFromInput(parts.join(" ")) || "open";
+  await temporaryLauncher(message, requested);
   return true;
 }
 
