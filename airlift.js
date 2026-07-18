@@ -43,6 +43,34 @@ let db = null;
 const pending = new Map();
 const activeLaunches = new Set();
 
+function isStaff(message) {
+  return !!message.member?.roles?.cache?.some((role) => ["Owner", "Owners", "Admin", "Trial Admin"].includes(role.name));
+}
+
+function taxiLauncherRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("airlift:launcher")
+      .setLabel("Open Airlift Taxi")
+      .setEmoji("🚁")
+      .setStyle(ButtonStyle.Primary)
+  );
+}
+
+function taxiLauncherText() {
+  return [
+    "# 🚁 Outpost X Airlift Taxi",
+    "Fast travel by parachute to the center of a selected sector.",
+    "",
+    `**Price:** $${formatMoney(AIRLIFT_PRICE)}`,
+    "**Limit:** 1 completed airlift per hour",
+    "**Unavailable:** Sector C0",
+    "",
+    "You must be registered, online in SCUM, and able to afford the ride.",
+    "Click below to open the private Airlift Taxi menu.",
+  ].join("\n");
+}
+
 function getDb() {
   if (db) return db;
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) throw new Error("Supabase is not configured.");
@@ -203,6 +231,46 @@ async function handleAirliftInteraction(interaction) {
   const steamId = parts[2];
 
   try {
+    if (action === "launcher" && interaction.isButton()) {
+      const linkQuery = await getDb()
+        .from(process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links")
+        .select("steam_id")
+        .eq("guild_id", String(interaction.guildId))
+        .eq("discord_id", String(interaction.user.id))
+        .maybeSingle();
+      if (linkQuery.error) throw linkQuery.error;
+      const linkedSteamId = String(linkQuery.data?.steam_id || "").trim();
+      if (!linkedSteamId) {
+        await interaction.reply({ content: "You need to register your SCUM character before using Airlift Taxi.", ephemeral: true });
+        return true;
+      }
+      const player = await loadEligiblePlayer(interaction, linkedSteamId);
+      const cooldown = await checkCooldown(interaction.guildId, linkedSteamId);
+      if (!cooldown.ready) {
+        await interaction.reply({ content: `🚁 Your Airlift Taxi is on cooldown. You can purchase another ride ${formatCooldown(cooldown.nextRide)}.`, ephemeral: true });
+        return true;
+      }
+      const cash = getCash(player);
+      if (cash === null) throw new Error("Watcher could not verify your current in-game cash balance.");
+      if (cash < AIRLIFT_PRICE) {
+        await interaction.reply({ content: `You need **$${formatMoney(AIRLIFT_PRICE)}** for an Airlift Taxi. Your current balance is **$${formatMoney(cash)}**.`, ephemeral: true });
+        return true;
+      }
+      await interaction.reply({
+        content: [
+          "🚁 **Airlift Taxi**",
+          "",
+          `Price: **$${formatMoney(AIRLIFT_PRICE)}**`,
+          "Limit: **one completed airlift per hour**",
+          "",
+          "Choose the sector where you want to be dropped. Sector **C0 is unavailable**.",
+        ].join("\n"),
+        components: [sectorMenu(linkedSteamId)],
+        ephemeral: true,
+      });
+      return true;
+    }
+
     if (action === "open" && interaction.isButton()) {
       const player = await loadEligiblePlayer(interaction, steamId);
       const cooldown = await checkCooldown(interaction.guildId, steamId);
@@ -363,6 +431,19 @@ async function handleAirliftInteraction(interaction) {
   return false;
 }
 
+async function handleAirliftCommand(message) {
+  if (!message.guild || !message.content?.startsWith("!")) return false;
+  const command = message.content.trim().split(/\s+/)[0].toLowerCase();
+  if (command !== "!taxisetup") return false;
+  if (!isStaff(message)) {
+    await message.reply("This setup command is for staff only.").catch(() => {});
+    return true;
+  }
+  await message.channel.send({ content: taxiLauncherText(), components: [taxiLauncherRow()] });
+  await message.delete().catch(() => {});
+  return true;
+}
+
 async function getAirliftCooldownStatus(guildId, steamId) {
   const cooldown = await checkCooldown(guildId, steamId);
   return {
@@ -375,6 +456,7 @@ async function getAirliftCooldownStatus(guildId, steamId) {
 }
 
 module.exports = {
+  handleAirliftCommand,
   handleAirliftInteraction,
   openAirliftButton,
   getAirliftCooldownStatus,

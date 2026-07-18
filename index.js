@@ -84,7 +84,7 @@ const {
   handleLotteryCommand,
   startLotteryOnBoot,
 } = require("./lottery");
-const { handleAirliftInteraction } = require("./airlift");
+const { handleAirliftCommand, handleAirliftInteraction } = require("./airlift");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
   handleRulesAcceptCommand,
@@ -328,6 +328,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleRulesAcceptCommand(msg)) return;
 
     if (await handleTicketCommand(msg)) return;
+
+    if (await handleAirliftCommand(msg)) return;
 
     if (await handlePlayerPanelCommand(msg)) return;
 

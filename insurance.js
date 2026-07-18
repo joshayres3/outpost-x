@@ -278,7 +278,16 @@ function buildMainRows() {
   ];
 }
 
-function buildInsuranceMenuText() {
+function resolveRegisterChannelId(guild) {
+  const named = guild?.channels?.cache?.find((channel) => {
+    const normalized = String(channel.name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    return normalized === "player-registration";
+  });
+  return named?.id || REGISTER_CHANNEL_ID;
+}
+
+function buildInsuranceMenuText(guild) {
+  const registerChannelId = resolveRegisterChannelId(guild);
   return [
     "# 🛡️ Outpost X Vehicle Insurance",
     "Protect one vehicle of each type from confirmed destruction.",
@@ -291,7 +300,7 @@ function buildInsuranceMenuText() {
     "⚠️ **After locking or claiming a vehicle, give Watcher a few minutes to see it.**",
     "If your vehicle does not show up right away, wait a bit and try **Buy Insurance** again.",
     "",
-    `Need to register first? Use <#${REGISTER_CHANNEL_ID}>.`,
+    `Need to register first? Use <#${registerChannelId}>.`,
     "Use the buttons below to view rates, buy, view, or claim insurance.",
   ].join("\n");
 }
@@ -497,7 +506,7 @@ function buildVehicleBuyRows(vehicles) {
 async function buildBuyMenu(interaction) {
   const link = await getLink(interaction.guildId, interaction.user.id);
   if (!link?.steam_id) {
-    await interaction.reply({ content: `You need to register your SCUM character first here: <#${REGISTER_CHANNEL_ID}>`, ephemeral: true }).catch(() => {});
+    await interaction.reply({ content: `You need to register your SCUM character first here: <#${resolveRegisterChannelId(interaction.guild)}>`, ephemeral: true }).catch(() => {});
     return;
   }
 
@@ -929,7 +938,7 @@ async function handleInsuranceCommand(message, bot) {
   if (!["!insurancesetup", "!insurance", "!insurancescan", "!insurancestatus", "!wipeinsurance", "!unregister"].includes(command)) return false;
 
   if (command === "!insurance") {
-    await message.reply({ content: buildInsuranceMenuText(), components: buildMainRows() }).catch(() => {});
+    await message.reply({ content: buildInsuranceMenuText(message.guild), components: buildMainRows() }).catch(() => {});
     return true;
   }
 
@@ -987,7 +996,7 @@ async function handleInsuranceCommand(message, bot) {
   }
 
   if (command === "!insurancesetup") {
-    const sent = await message.channel.send({ content: buildInsuranceMenuText(), components: buildMainRows() });
+    const sent = await message.channel.send({ content: buildInsuranceMenuText(message.guild), components: buildMainRows() });
     await saveRuntimeValue("insurance_config", {
       guildId: message.guild.id,
       channelId: message.channel.id,

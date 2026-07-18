@@ -66,6 +66,7 @@ const SECTIONS = {
     aliases: ["systems", "dashboard", "insurance", "lottery", "airlift", "mechpacks", "register"],
     lines: [
       ["!dashboard", "Post the private player dashboard launcher."],
+      ["!taxisetup", "Post the dedicated Airlift Taxi panel."],
       ["Dashboard", "Profile, vehicles and locations, squad, insurance, lottery, and Airlift Taxi cooldown."],
       ["Airlift Taxi", "$1,000, once per hour, C0 excluded."],
       ["!registersetup", "Post the Steam registration panel."],
