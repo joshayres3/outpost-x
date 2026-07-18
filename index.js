@@ -85,10 +85,12 @@ const {
   startLotteryOnBoot,
 } = require("./lottery");
 const { handleAirliftInteraction } = require("./airlift");
+const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
   registerPlayerPanelCommands,
   handlePlayerPanelCommand,
   handlePlayerPanelInteraction,
+  openAdminPanelForSteamId,
 } = require("./playerPanels");
 
 const REQUIRED_ENV = ["DISCORD_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"];
@@ -223,6 +225,7 @@ bot.once(Events.ClientReady, async () => {
     startInsuranceOnBoot(bot);
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));
     startLotteryOnBoot(bot).catch((err) => console.error("❌ Lottery startup failed:", err.message));
+    startTicketSystem(bot, db);
   } catch (err) {
     console.error("❌ Startup database load failed:", err);
   }
@@ -230,6 +233,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleTicketInteraction(interaction, openAdminPanelForSteamId)) return;
+
     if (await handleAirliftInteraction(interaction)) return;
 
     if (await handlePlayerPanelInteraction(interaction)) return;
@@ -313,6 +318,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
+
+    if (await handleTicketCommand(msg)) return;
 
     if (await handlePlayerPanelCommand(msg)) return;
 

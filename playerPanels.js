@@ -544,4 +544,17 @@ async function handlePlayerPanelInteraction(interaction) {
   return false;
 }
 
-module.exports = { registerPlayerPanelCommands, handlePlayerPanelCommand, handlePlayerPanelInteraction };
+async function openAdminPanelForSteamId(interaction, steamId) {
+  if (!isStaff(interaction)) {
+    await interaction.reply({ content: "This control panel is for staff only.", ephemeral: true });
+    return;
+  }
+  const result = await getPlayerForLookup(steamId);
+  if (result.type !== "single") {
+    await interaction.reply({ content: "Player could not be found in GGCON.", ephemeral: true });
+    return;
+  }
+  await interaction.reply({ ...(await buildAdminPanel(interaction.guildId, result.player)), ephemeral: true });
+}
+
+module.exports = { registerPlayerPanelCommands, handlePlayerPanelCommand, handlePlayerPanelInteraction, openAdminPanelForSteamId };

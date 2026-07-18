@@ -80,6 +80,8 @@ const CATEGORIES = {
       ["!cash <player> add/remove/set <amount>", "Change cash."],
       ["!fame <player> add/remove/set <amount>", "Change fame."],
       ["!refund <player> <amount>", "Refund cash to a player."],
+      ["!manage <player>", "Open the private Admin Player Control Panel."],
+      ["!dashboard", "Post the player dashboard launcher with vehicles, insurance, lottery, and Airlift Taxi."],
     ],
   },
   vehicles: {
@@ -225,6 +227,22 @@ const CATEGORIES = {
       ["Announcement formatting", "Use !post → Announcement."],
     ],
   },
+  tickets: {
+    emoji: "🎟️",
+    label: "Tickets",
+    title: "🎟️ WATCHER TICKETS",
+    aliases: ["tickets", "ticket", "support", "transcript"],
+    lines: [
+      ["!ticketsetup", "Run in Open-a-Ticket. Attach the Outpost X logo to use it on the panel."],
+      ["!ticketlogsetup", "Run in ticket-logs to save transcripts there."],
+      ["!ticketstatus", "Show panel, log channel, and retention status."],
+      ["Ticket creation", "Pings @Admin and creates a private channel directly below Open-a-Ticket."],
+      ["Staff buttons", "Claim, Refresh Player Data, Open Player Panel, and Close Ticket."],
+      ["Closing", "Requires a reason, DMs the player, saves a transcript, and removes the ticket channel."],
+      ["Transcript logs", "Show opener, closer, close reason, dates, and a Show Transcript button."],
+      ["Retention", "Transcript log entries are automatically removed after 30 days."],
+    ],
+  },
   safety: {
     emoji: "⚠️",
     label: "Safety",
@@ -257,6 +275,7 @@ const ORDER = [
   "lottery",
   "cargo",
   "events",
+  "tickets",
   "safety",
 ];
 
@@ -293,9 +312,9 @@ function buildMenuContent() {
     ["server", "players", "vehicles", "bases", "jail", "logs"].map(label).join("  •  "),
     "",
     "**Server management**",
-    ["core", "setup", "events", "safety"].map(label).join("  •  "),
+    ["core", "setup", "events", "tickets", "safety"].map(label).join("  •  "),
     "",
-    "**Most used setup:** `!registersetup` • `!insurancesetup` • `!mechschedulesetup` • `!mechpacksetup` • `!lotterysetup` • `!cargoschedulesetup`",
+    "**Most used setup:** `!ticketsetup` • `!ticketlogsetup` • `!registersetup` • `!insurancesetup` • `!mechschedulesetup` • `!mechpacksetup` • `!lotterysetup` • `!cargoschedulesetup`",
   ].join("\n");
 }
 
