@@ -87,6 +87,10 @@ const {
 const { handleAirliftInteraction } = require("./airlift");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
+  handleRulesAcceptCommand,
+  handleRulesAcceptInteraction,
+} = require("./rulesAccept");
+const {
   registerPlayerPanelCommands,
   handlePlayerPanelCommand,
   handlePlayerPanelInteraction,
@@ -233,6 +237,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleRulesAcceptInteraction(interaction)) return;
+
     if (await handleTicketInteraction(interaction, openAdminPanelForSteamId)) return;
 
     if (await handleAirliftInteraction(interaction)) return;
@@ -318,6 +324,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
+
+    if (await handleRulesAcceptCommand(msg)) return;
 
     if (await handleTicketCommand(msg)) return;
 

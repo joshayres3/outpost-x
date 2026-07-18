@@ -38,6 +38,7 @@ const CATEGORIES = {
     lines: [
       ["!post", "Post help/rules, enable assistant, or make announcement."],
       ["!ruleupdate", "Owner rule update flow."],
+      ["!rulesacceptsetup", "Post or refresh the rules acceptance button in the Rules channel."],
       ["!welcomebackfill [limit]", "Backfill welcome DMs."],
       ["!watcherdm", "Owner DM broadcast to welcomed users."],
       ["Ticket helper", "Auto-redirects help/admin/bug/lost vehicle mentions."],
