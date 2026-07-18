@@ -84,6 +84,7 @@ const {
   handleLotteryCommand,
   startLotteryOnBoot,
 } = require("./lottery");
+const { handleAirliftInteraction } = require("./airlift");
 const {
   registerPlayerPanelCommands,
   handlePlayerPanelCommand,
@@ -229,6 +230,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleAirliftInteraction(interaction)) return;
+
     if (await handlePlayerPanelInteraction(interaction)) return;
 
     if (await handleMechPackInteraction(interaction)) return;

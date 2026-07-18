@@ -7,6 +7,7 @@ const {
   TextInputStyle,
 } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
+const { openAirliftButton } = require("./airlift");
 const {
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
@@ -143,6 +144,7 @@ function selfPanelRows(steamId) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`pp:self:insurance:${steamId}`).setLabel("Insurance").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`pp:self:lottery:${steamId}`).setLabel("Lottery").setStyle(ButtonStyle.Secondary),
+      openAirliftButton(steamId).components[0],
       new ButtonBuilder().setCustomId(`pp:self:refresh:${steamId}`).setLabel("Refresh").setStyle(ButtonStyle.Secondary)
     ),
   ];
