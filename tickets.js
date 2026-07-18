@@ -7,6 +7,7 @@ const {
   EmbedBuilder,
   ModalBuilder,
   PermissionFlagsBits,
+  StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
 } = require('discord.js');
@@ -15,6 +16,15 @@ const CONFIG_TABLE = 'watcher_ticket_config';
 const TICKETS_TABLE = 'watcher_tickets';
 const RETENTION_DAYS = 30;
 const STAFF_ROLE_NAMES = new Set(['Owner', 'Owners', 'Admin', 'Trial Admin']);
+const TICKET_CATEGORIES = [
+  { value: 'player-help', label: 'Player Help', emoji: '🧍', description: 'General gameplay or account help' },
+  { value: 'bug-technical', label: 'Bug / Technical Issue', emoji: '🛠️', description: 'Game, server, or bot problem' },
+  { value: 'vehicle', label: 'Vehicle Issue', emoji: '🚗', description: 'Missing, stuck, or damaged vehicle' },
+  { value: 'base', label: 'Base Issue', emoji: '🏠', description: 'Building, flag, or base problem' },
+  { value: 'purchase-reward', label: 'Purchase / Reward Issue', emoji: '🎁', description: 'Lottery, insurance, or reward help' },
+  { value: 'staff-contact', label: 'Staff Contact', emoji: '🛡️', description: 'Private matter for the admin team' },
+  { value: 'other', label: 'Other', emoji: '❓', description: 'Anything not listed above' },
+];
 
 let clientRef = null;
 let dbRef = null;
@@ -108,11 +118,56 @@ async function getOpenTicket(guildId, userId) {
 
 async function linkedPlayer(guildId, userId) {
   const { data } = await dbRef.from(process.env.WATCHER_PLAYER_LINKS_TABLE || 'watcher_player_links')
-    .select('*').eq('guild_id', guildId).eq('discord_user_id', userId).maybeSingle();
+    .select('*').eq('guild_id', String(guildId)).eq('discord_id', String(userId)).maybeSingle();
   return data || null;
 }
 
-async function createTicket(interaction) {
+function categoryPickerPayload() {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('ticket:category')
+    .setPlaceholder('Choose what you need help with')
+    .addOptions(TICKET_CATEGORIES.map((category) => ({
+      label: category.label,
+      value: category.value,
+      description: category.description,
+      emoji: category.emoji,
+    })));
+
+  return {
+    content: '**What do you need help with?**',
+    components: [new ActionRowBuilder().addComponents(menu)],
+    ephemeral: true,
+  };
+}
+
+function ticketDetailsModal(categoryValue) {
+  const category = TICKET_CATEGORIES.find((entry) => entry.value === categoryValue) || TICKET_CATEGORIES.at(-1);
+  return new ModalBuilder()
+    .setCustomId(`ticket:create:${category.value}`)
+    .setTitle(`${category.label} Ticket`)
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('subject')
+          .setLabel('Short summary')
+          .setPlaceholder('Example: My vehicle disappeared after restart')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(100)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('details')
+          .setLabel('Tell us what happened')
+          .setPlaceholder('Include anything the admins need to know.')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(1500)
+      )
+    );
+}
+
+async function createTicket(interaction, categoryValue, subject, description) {
   await interaction.deferReply({ ephemeral: true });
   const cfg = await getConfig(interaction.guildId);
   if (!cfg?.panel_channel_id || !cfg?.log_channel_id) {
@@ -126,13 +181,14 @@ async function createTicket(interaction) {
     return;
   }
 
+  const category = TICKET_CATEGORIES.find((entry) => entry.value === categoryValue) || TICKET_CATEGORIES.at(-1);
   const adminRole = interaction.guild.roles.cache.find((r) => r.name === 'Admin');
   const botMember = interaction.guild.members.me;
   const channel = await interaction.guild.channels.create({
-    name: `ticket-${safeName(interaction.user.displayName || interaction.user.username)}`,
+    name: `ticket-${safeName(category.value)}-${safeName(interaction.user.displayName || interaction.user.username)}`.slice(0, 95),
     type: ChannelType.GuildText,
     parent: cfg.category_id || interaction.channel.parentId || null,
-    topic: `Outpost X ticket opened by ${interaction.user.tag} (${interaction.user.id})`,
+    topic: `${category.label} ticket opened by ${interaction.user.tag} (${interaction.user.id})`,
     permissionOverwrites: [
       { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
       { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
@@ -148,19 +204,25 @@ async function createTicket(interaction) {
 
   const link = await linkedPlayer(interaction.guildId, interaction.user.id);
   const { data, error } = await dbRef.from(TICKETS_TABLE).insert({
-    guild_id: interaction.guildId,
-    channel_id: channel.id,
-    opener_id: interaction.user.id,
+    guild_id: String(interaction.guildId),
+    channel_id: String(channel.id),
+    opener_id: String(interaction.user.id),
     opener_tag: interaction.user.tag,
     steam_id: link?.steam_id || null,
-    scum_name: link?.player_name || link?.scum_name || null,
+    scum_name: link?.scum_name || link?.player_name || null,
+    category: category.value,
+    subject,
+    description,
     status: 'open',
     opened_at: new Date().toISOString(),
   }).select('*').single();
-  if (error) throw error;
+  if (error) {
+    await channel.delete('Ticket database insert failed').catch(() => {});
+    throw error;
+  }
 
   const details = link
-    ? `**Linked SCUM:** ${link.player_name || link.scum_name || 'Unknown'}\n**Steam ID:** \`${link.steam_id}\``
+    ? `**Linked SCUM:** ${link.scum_name || link.player_name || 'Unknown'}\n**Steam ID:** \`${link.steam_id || 'Unknown'}\``
     : '**Linked SCUM:** Not registered';
 
   const row = new ActionRowBuilder().addComponents(
@@ -173,8 +235,8 @@ async function createTicket(interaction) {
   await channel.send({
     content: `${adminRole ? adminRole.toString() : '@Admin'} ${interaction.user}`,
     embeds: [new EmbedBuilder()
-      .setTitle('Outpost X Support Ticket')
-      .setDescription(`Thanks for opening a ticket. Please explain what you need help with.\n\n${details}`)
+      .setTitle(`${category.emoji} ${category.label}`)
+      .setDescription(`**${subject}**\n\n${description}\n\n${details}`)
       .setFooter({ text: `Ticket ID ${data.id}` })],
     components: [row],
     allowedMentions: { roles: adminRole ? [adminRole.id] : [], users: [interaction.user.id] },
@@ -263,7 +325,15 @@ async function handleTicketInteraction(interaction, openAdminPanelForSteamId) {
   const id = String(interaction.customId || '');
   if (!id.startsWith('ticket:')) return false;
   try {
-    if (id === 'ticket:open' && interaction.isButton()) await createTicket(interaction);
+    if (id === 'ticket:open' && interaction.isButton()) await interaction.reply(categoryPickerPayload());
+    else if (id === 'ticket:category' && interaction.isStringSelectMenu()) {
+      await interaction.showModal(ticketDetailsModal(interaction.values[0]));
+    } else if (id.startsWith('ticket:create:') && interaction.isModalSubmit()) {
+      const categoryValue = id.split(':')[2];
+      const subject = interaction.fields.getTextInputValue('subject').trim();
+      const description = interaction.fields.getTextInputValue('details').trim();
+      await createTicket(interaction, categoryValue, subject, description);
+    }
     else if (id.startsWith('ticket:close:') && interaction.isButton()) {
       if (!isStaff(interaction.member)) await interaction.reply({ content: 'Staff only.', ephemeral: true });
       else await interaction.showModal(closeModal(id.split(':')[2]));
