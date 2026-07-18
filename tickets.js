@@ -70,13 +70,40 @@ function ticketPanelPayload(imageUrl) {
 async function handleTicketCommand(message) {
   if (!message.guild || !message.content?.startsWith('!')) return false;
   const command = message.content.trim().split(/\s+/)[0].toLowerCase();
-  if (!['!ticketsetup', '!ticketlogsetup', '!ticketstatus'].includes(command)) return false;
+  if (!['!ticketsetup', '!ticketlogsetup', '!ticketstatus', '!close'].includes(command)) return false;
   if (!isStaff(message.member)) {
-    await message.reply('This ticket setup command is for staff only.').catch(() => {});
+    await message.reply(command === '!close' ? 'Only staff can close tickets.' : 'This ticket setup command is for staff only.').catch(() => {});
     return true;
   }
 
   try {
+    if (command === '!close') {
+      const { data: ticket, error } = await dbRef.from(TICKETS_TABLE)
+        .select('*')
+        .eq('guild_id', String(message.guildId))
+        .eq('channel_id', String(message.channelId))
+        .eq('status', 'open')
+        .maybeSingle();
+      if (error) throw error;
+      if (!ticket) {
+        await message.reply('This command only works inside an open Watcher ticket.').catch(() => {});
+        return true;
+      }
+
+      await message.delete().catch(() => {});
+      const launcher = await message.channel.send({
+        content: `${message.author}, confirm that you want to close this ticket.`,
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`ticket:closecmd:${ticket.id}:${message.author.id}`)
+            .setLabel('Enter Close Reason')
+            .setStyle(ButtonStyle.Danger)
+        )],
+        allowedMentions: { users: [message.author.id] },
+      });
+      setTimeout(() => launcher.delete().catch(() => {}), 60_000);
+      return true;
+    }
     if (command === '!ticketsetup') {
       const imageUrl = message.attachments.first()?.url || null;
       const panel = await message.channel.send(ticketPanelPayload(imageUrl));
@@ -334,7 +361,15 @@ async function handleTicketInteraction(interaction, openAdminPanelForSteamId) {
       const description = interaction.fields.getTextInputValue('details').trim();
       await createTicket(interaction, categoryValue, subject, description);
     }
-    else if (id.startsWith('ticket:close:') && interaction.isButton()) {
+    else if (id.startsWith('ticket:closecmd:') && interaction.isButton()) {
+      const [, , ticketId, requesterId] = id.split(':');
+      if (!isStaff(interaction.member)) await interaction.reply({ content: 'Staff only.', ephemeral: true });
+      else if (interaction.user.id !== requesterId) await interaction.reply({ content: 'Only the admin who typed `!close` can use this button.', ephemeral: true });
+      else {
+        await interaction.showModal(closeModal(ticketId));
+        setTimeout(() => interaction.message.delete().catch(() => {}), 500);
+      }
+    } else if (id.startsWith('ticket:close:') && interaction.isButton()) {
       if (!isStaff(interaction.member)) await interaction.reply({ content: 'Staff only.', ephemeral: true });
       else await interaction.showModal(closeModal(id.split(':')[2]));
     } else if (id.startsWith('ticket:closemodal:') && interaction.isModalSubmit()) {
