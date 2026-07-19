@@ -194,7 +194,8 @@ async function buyPackage(interaction, pkg) {
   try {
     const link = await getLink(interaction.guildId, interaction.user.id);
     if (!link?.steam_id) throw new Error("You must register your SCUM character before using the shop.");
-    const player = await getPlayerForLookup(link.steam_id);
+    const playerResult = await getPlayerForLookup(link.steam_id);
+    const player = playerResult?.type === "single" ? playerResult.player : null;
     if (!player || !isOnline(player)) throw new Error("You must be online in SCUM to receive a shop purchase.");
     const cash = getCash(player);
     if (cash === null) throw new Error("Watcher could not verify your current in-game cash.");
