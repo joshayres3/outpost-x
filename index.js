@@ -86,6 +86,7 @@ const {
 } = require("./lottery");
 const { handleAirliftCommand, handleAirliftInteraction } = require("./airlift");
 const { handleRentalCommand, handleRentalInteraction, startRentalSystem } = require("./rentals");
+const { handleShopCommand, handleShopInteraction } = require("./shop");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
   handleRulesAcceptCommand,
@@ -247,6 +248,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
 
     if (await handleRentalInteraction(interaction)) return;
 
+    if (await handleShopInteraction(interaction)) return;
+
     if (await handlePlayerPanelInteraction(interaction)) return;
 
     if (await handleMechPackInteraction(interaction)) return;
@@ -336,6 +339,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleAirliftCommand(msg)) return;
 
     if (await handleRentalCommand(msg)) return;
+
+    if (await handleShopCommand(msg)) return;
 
     if (await handlePlayerPanelCommand(msg)) return;
 
