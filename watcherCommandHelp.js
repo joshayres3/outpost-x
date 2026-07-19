@@ -67,8 +67,10 @@ const SECTIONS = {
     lines: [
       ["!dashboard", "Post the private player dashboard launcher."],
       ["!taxisetup", "Post the dedicated Airlift Taxi panel."],
+      ["!dirtbikerentalsetup", "Post the automated 30-minute dirtbike rental panel."],
       ["Dashboard", "Profile, vehicles and locations, squad, insurance, lottery, and Airlift Taxi cooldown."],
       ["Airlift Taxi", "$1,000, once per hour, C0 excluded."],
+      ["Dirtbike Rental", "$500 for 30 minutes; 5-minute in-game warning; automatic removal; cannot be insured."],
       ["!registersetup", "Post the Steam registration panel."],
       ["!insurancesetup", "Post the vehicle insurance panel."],
       ["!mechpacksetup", "Post the mech hunting pack shop."],

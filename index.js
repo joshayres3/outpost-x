@@ -85,6 +85,7 @@ const {
   startLotteryOnBoot,
 } = require("./lottery");
 const { handleAirliftCommand, handleAirliftInteraction } = require("./airlift");
+const { handleRentalCommand, handleRentalInteraction, startRentalSystem } = require("./rentals");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
   handleRulesAcceptCommand,
@@ -230,6 +231,7 @@ bot.once(Events.ClientReady, async () => {
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));
     startLotteryOnBoot(bot).catch((err) => console.error("❌ Lottery startup failed:", err.message));
     startTicketSystem(bot, db);
+    startRentalSystem(bot);
   } catch (err) {
     console.error("❌ Startup database load failed:", err);
   }
@@ -242,6 +244,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
     if (await handleTicketInteraction(interaction, openAdminPanelForSteamId)) return;
 
     if (await handleAirliftInteraction(interaction)) return;
+
+    if (await handleRentalInteraction(interaction)) return;
 
     if (await handlePlayerPanelInteraction(interaction)) return;
 
@@ -330,6 +334,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleTicketCommand(msg)) return;
 
     if (await handleAirliftCommand(msg)) return;
+
+    if (await handleRentalCommand(msg)) return;
 
     if (await handlePlayerPanelCommand(msg)) return;
 

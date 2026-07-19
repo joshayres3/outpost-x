@@ -8,6 +8,7 @@ const {
 } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
 const { openAirliftButton, getAirliftCooldownStatus } = require("./airlift");
+const { getRentalStatus } = require("./rentals");
 const {
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
@@ -163,12 +164,15 @@ async function getSafeSelfSummary(guildId, discordId) {
     .eq("steam_id", String(link.steam_id))
     .maybeSingle();
 
-  const airlift = await getAirliftCooldownStatus(guildId, link.steam_id).catch(() => null);
-  return { linked: true, link, player, snapshot: snapshot || null, airlift };
+  const [airlift, rental] = await Promise.all([
+    getAirliftCooldownStatus(guildId, link.steam_id).catch(() => null),
+    getRentalStatus(guildId, link.steam_id).catch(() => null),
+  ]);
+  return { linked: true, link, player, snapshot: snapshot || null, airlift, rental };
 }
 
 function renderSelfPanel(summary) {
-  const { link, player, snapshot, airlift } = summary;
+  const { link, player, snapshot, airlift, rental } = summary;
   const online = !!player && (player.online === true || player.ping !== undefined || player.health !== undefined);
   const name = player ? getPlayerDisplayName(player) : (link.scum_name || snapshot?.character_name || "Unknown");
   const cash = player?.accountBalance ?? snapshot?.cash;
@@ -189,6 +193,7 @@ function renderSelfPanel(summary) {
       `**Squad:** ${typeof squad === "string" ? squad : JSON.stringify(squad).slice(0, 100)}`,
       `**Last Seen:** ${online ? "Now" : formatDate(snapshot?.last_seen_online_at)}`,
       `**Airlift Taxi:** ${!airlift ? "Status unavailable" : airlift.ready ? "Available now" : `Available ${formatDate(airlift.nextRide)}`}`,
+      `**Dirtbike Rental:** ${!rental ? "Status unavailable" : rental.active ? `Active until ${formatDate(rental.expires_at)}` : "No active rental"}`,
       "",
       "Only you can see this dashboard. Sensitive staff-only information such as IP addresses is never shown here.",
     ].join("\n"),

@@ -480,6 +480,24 @@ async function getAvailableClaims(guildId, discordId) {
   return data || [];
 }
 
+
+async function isRentalVehicle(guildId, vehicleId) {
+  if (!vehicleId) return false;
+  const table = process.env.WATCHER_DIRTBIKE_RENTAL_TABLE || "watcher_dirtbike_rentals";
+  const { data, error } = await getSupabase()
+    .from(table)
+    .select("id")
+    .eq("guild_id", String(guildId))
+    .eq("vehicle_id", String(vehicleId))
+    .in("status", ["active", "removal_pending"])
+    .limit(1);
+  if (error) {
+    if (String(error.message || "").toLowerCase().includes("does not exist")) return false;
+    throw error;
+  }
+  return !!data?.length;
+}
+
 async function getVehicleById(vehicleId) {
   const data = await serverGet("/vehicles.json");
   const vehicles = Array.isArray(data.vehicles) ? data.vehicles : [];
@@ -516,11 +534,13 @@ async function buildBuyMenu(interaction) {
   ]);
   const activeTypes = new Set(policies.map((policy) => policy.vehicle_type));
   const vehicles = Array.isArray(vehicleData.vehicles) ? vehicleData.vehicles : [];
-  const ownedInsurable = vehicles
+  const mappedOwned = vehicles
     .filter((vehicle) => String(vehicle.ownerSteamId || "") === String(link.steam_id))
     .map((vehicle) => ({ vehicle, vehicleId: getVehicleId(vehicle), config: getInsuranceVehicleType(vehicle) }))
     .filter((entry) => entry.vehicleId && entry.config)
     .filter((entry) => !activeTypes.has(entry.config.type));
+  const rentalChecks = await Promise.all(mappedOwned.map((entry) => isRentalVehicle(interaction.guildId, entry.vehicleId)));
+  const ownedInsurable = mappedOwned.filter((entry, index) => !rentalChecks[index]);
 
   if (!ownedInsurable.length) {
     await interaction.reply({
@@ -554,6 +574,10 @@ async function showBuyConfirm(interaction, vehicleId) {
   }
 
   const vehicle = await getVehicleById(vehicleId);
+  if (await isRentalVehicle(interaction.guildId, vehicleId)) {
+    await interaction.reply({ content: "Rented dirtbikes cannot be insured.", ephemeral: true }).catch(() => {});
+    return;
+  }
   if (!vehicle) {
     await interaction.reply({ content: "That vehicle is not currently visible in the live vehicle list. Try again when it is visible.", ephemeral: true }).catch(() => {});
     return;
@@ -609,6 +633,10 @@ async function confirmBuy(interaction, vehicleId) {
   }
 
   const vehicle = await getVehicleById(vehicleId);
+  if (await isRentalVehicle(interaction.guildId, vehicleId)) {
+    await interaction.update({ content: "Rented dirtbikes cannot be insured.", components: [] }).catch(() => {});
+    return;
+  }
   if (!vehicle || String(vehicle.ownerSteamId || "") !== String(link.steam_id)) {
     await interaction.update({ content: "That vehicle is no longer eligible for insurance.", components: [] }).catch(() => {});
     return;
