@@ -1,9 +1,11 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
+const crypto = require("crypto");
 
 const DEFAULT_SERVER_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const RUNTIME_STATE_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || "watcher_runtime_state";
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
+const USED_CODES_TABLE = process.env.WATCHER_USED_CODES_TABLE || "watcher_used_codes";
 const REGISTER_CHANNEL_ID = process.env.WATCHER_REGISTER_CHANNEL_ID || "1517255357888466964";
 const INSURANCE_TABLE = process.env.WATCHER_VEHICLE_INSURANCE_TABLE || "watcher_vehicle_insurance";
 const INSURANCE_CLAIMS_TABLE = process.env.WATCHER_INSURANCE_CLAIMS_TABLE || "watcher_insurance_claims";
@@ -411,8 +413,57 @@ async function saveVerifiedLink(interaction, parsed) {
   if (error) throw error;
 }
 
-function generateCode() {
-  return `OX-${Math.floor(100000 + Math.random() * 900000)}`;
+function sharedCodeHash(guildId, code) {
+  const normalized = String(code || "").trim().toUpperCase();
+  return crypto.createHash("sha256").update(`${guildId}:${normalized}`).digest("hex");
+}
+
+async function codeWasEverUsed(guildId, code) {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(USED_CODES_TABLE)
+    .select("id")
+    .eq("guild_id", String(guildId))
+    .eq("code_hash", sharedCodeHash(guildId, code))
+    .maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
+async function registrationCodeIsPending(guildId, code) {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(PLAYER_LINKS_TABLE)
+    .select("id")
+    .eq("guild_id", String(guildId))
+    .ilike("pending_code", String(code))
+    .limit(1);
+  if (error) throw error;
+  return Array.isArray(data) && data.length > 0;
+}
+
+async function generateCode(guildId) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const code = `REG-${Math.floor(100000 + Math.random() * 900000)}`;
+    if (await codeWasEverUsed(guildId, code)) continue;
+    if (await registrationCodeIsPending(guildId, code)) continue;
+    return code;
+  }
+  throw new Error("Could not generate a unique registration code. Try again.");
+}
+
+async function markCodeUsed(guildId, code, codeType, discordId, steamId = null) {
+  const db = getSupabase();
+  const { error } = await db.from(USED_CODES_TABLE).upsert({
+    guild_id: String(guildId),
+    code_hash: sharedCodeHash(guildId, code),
+    code_hint: `${String(code).slice(0, 3)}-******`,
+    code_type: String(codeType),
+    discord_id: discordId ? String(discordId) : null,
+    steam_id: steamId ? String(steamId) : null,
+    used_at: new Date().toISOString(),
+  }, { onConflict: "guild_id,code_hash" });
+  if (error) throw error;
 }
 
 function parsePlayerIdentityFromLine(line) {
@@ -451,6 +502,7 @@ async function verifyPendingLink(interaction) {
     return { ok: false, message: "I found the code, but could not read the Steam ID from that chat line. Paste the raw log dump to Josh/dev chat." };
   }
 
+  await markCodeUsed(interaction.guildId, link.pending_code, "registration", interaction.user.id, parsed.steamId);
   await saveVerifiedLink(interaction, parsed);
   return { ok: true, parsed };
 }
@@ -1100,7 +1152,7 @@ async function handleInsuranceInteraction(interaction) {
     }
 
     if (action === "register") {
-      const code = generateCode();
+      const code = await generateCode(interaction.guildId);
       const expires = await savePendingLink(interaction, code);
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("insurance:verify").setLabel("Verify Code").setEmoji("✅").setStyle(ButtonStyle.Success)

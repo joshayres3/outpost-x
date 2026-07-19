@@ -9,6 +9,7 @@ const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_pl
 const SNAPSHOTS_TABLE = process.env.WATCHER_PLAYER_SNAPSHOTS_TABLE || "watcher_player_snapshots";
 const DRAWS_TABLE = process.env.WATCHER_LOTTERY_DRAWS_TABLE || "watcher_lottery_draws";
 const CODES_TABLE = process.env.WATCHER_LOTTERY_CODES_TABLE || "watcher_lottery_codes";
+const USED_CODES_TABLE = process.env.WATCHER_USED_CODES_TABLE || "watcher_used_codes";
 const STATE_KEY = "lottery_config";
 
 const REGISTER_CHANNEL_ID = process.env.WATCHER_REGISTER_CHANNEL_ID || "1517255357888466964";
@@ -457,12 +458,56 @@ function codeHint(code) {
   return `${clean.slice(0, 3)}****${clean.slice(-2)}`;
 }
 
-function generateClaimCode() {
+async function codeWasEverUsed(guildId, code) {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(USED_CODES_TABLE)
+    .select("id")
+    .eq("guild_id", String(guildId))
+    .eq("code_hash", codeHash(guildId, code))
+    .maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
+async function lotteryCodeExists(guildId, code) {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(CODES_TABLE)
+    .select("id")
+    .eq("guild_id", String(guildId))
+    .eq("code_hash", codeHash(guildId, code))
+    .maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
+async function generateClaimCode(guildId) {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let token = "";
-  const bytes = crypto.randomBytes(6);
-  for (const byte of bytes) token += alphabet[byte % alphabet.length];
-  return `OX-${token.slice(0, 6)}`;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    let token = "";
+    const bytes = crypto.randomBytes(6);
+    for (const byte of bytes) token += alphabet[byte % alphabet.length];
+    const code = `OX-${token.slice(0, 6)}`;
+    if (await codeWasEverUsed(guildId, code)) continue;
+    if (await lotteryCodeExists(guildId, code)) continue;
+    return code;
+  }
+  throw new Error("Could not generate a unique lottery code. Try again.");
+}
+
+async function markCodeUsed(guildId, code, codeType, discordId, steamId) {
+  const db = getSupabase();
+  const { error } = await db.from(USED_CODES_TABLE).upsert({
+    guild_id: String(guildId),
+    code_hash: codeHash(guildId, code),
+    code_hint: codeHint(code),
+    code_type: String(codeType),
+    discord_id: discordId ? String(discordId) : null,
+    steam_id: steamId ? String(steamId) : null,
+    used_at: new Date().toISOString(),
+  }, { onConflict: "guild_id,code_hash" });
+  if (error) throw error;
 }
 
 function randomChoice(items) {
@@ -883,7 +928,7 @@ async function runLotteryDraw(bot, config, options = {}) {
       const winnerIndex = remaining.findIndex((entry) => String(entry.steamId) === String(winner?.steamId));
       if (winnerIndex >= 0) remaining.splice(winnerIndex, 1);
       const pack = randomChoice(LOTTERY_PACKS);
-      const code = generateClaimCode();
+      const code = await generateClaimCode(guildId);
       const expiresAt = DateTime.now().plus({ hours: CLAIM_EXPIRY_HOURS }).toISO();
       const codeRow = await createCodeRecord({ guildId, drawId: draw.id, code, winner, pack, expiresAt });
 
@@ -1028,10 +1073,28 @@ async function findCodeByInput(guildId, code) {
   return data || null;
 }
 
+async function isPendingRegistrationCode(guildId, code) {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(PLAYER_LINKS_TABLE)
+    .select("pending_code,pending_expires_at")
+    .eq("guild_id", String(guildId))
+    .ilike("pending_code", String(code))
+    .limit(1);
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row?.pending_code) return false;
+  if (row.pending_expires_at && Date.parse(row.pending_expires_at) < Date.now()) return false;
+  return true;
+}
+
 async function handleClaimAttempt(bot, config, identity, code, rawLine) {
   const guildId = String(config.guildId || "");
   const codeRow = await findCodeByInput(guildId, code);
   if (!codeRow) {
+    // Registration codes used to share the OX-###### format with lottery codes.
+    // Ignore active registration codes so the lottery scanner does not reject them in-game.
+    if (await isPendingRegistrationCode(guildId, code).catch(() => false)) return false;
     await sendGameMessage("❌ That lottery code is invalid, expired, already used, or does not belong to you.", identity.steamId).catch(() => {});
     return false;
   }
@@ -1054,6 +1117,7 @@ async function handleClaimAttempt(bot, config, identity, code, rawLine) {
     claimed_by_name: identity.name,
     claim_line: String(rawLine || "").slice(0, 1200),
   });
+  await markCodeUsed(guildId, code, "lottery", codeRow.discord_id, identity.steamId);
 
   try {
     const delivery = await deliverPack(identity.steamId, codeRow.pack_payload || LOTTERY_PACKS.find((pack) => pack.id === codeRow.pack_id));
