@@ -101,28 +101,56 @@ async function loadCatalog() {
 }
 
 function catalogNames(item) {
-  return [item?.name, item?.label, item?.displayName, item?.display_name, item?.item, item?.class, item?.itemClass, item?.id]
-    .filter(Boolean)
-    .map(String);
+  return [
+    item?.i,
+    item?.dn,
+    item?.c,
+    item?.name,
+    item?.label,
+    item?.displayName,
+    item?.display_name,
+    item?.item,
+    item?.class,
+    item?.itemClass,
+    item?.id,
+  ].filter(Boolean).map(String);
 }
 
 function catalogClass(item) {
-  return String(item?.itemClass || item?.class || item?.item || item?.id || item?.name || "").trim();
+  return String(item?.i || item?.itemClass || item?.class || item?.item || item?.id || item?.name || "").trim();
+}
+
+function itemMatchScore(item, config) {
+  const itemClass = normalize(item?.i || item?.itemClass || item?.class || item?.item || item?.id);
+  const display = normalize(item?.dn || item?.displayName || item?.display_name || item?.name || item?.label);
+  const combined = catalogNames(item).map(normalize).join(" ");
+  let best = 0;
+
+  for (const alias of config.aliases || [config.label]) {
+    const wanted = normalize(alias);
+    if (!wanted) continue;
+    if (itemClass === wanted) best = Math.max(best, 3000);
+    else if (itemClass.includes(wanted) || wanted.includes(itemClass)) best = Math.max(best, 2100);
+    if (display === wanted) best = Math.max(best, 1800);
+    else if (display.includes(wanted) || wanted.includes(display)) best = Math.max(best, 1300);
+    else if (combined.includes(wanted)) best = Math.max(best, 700);
+  }
+  return best;
 }
 
 async function resolveItemClass(config) {
   if (config.itemClass) return config.itemClass;
   const catalog = await loadCatalog();
-  const wanted = (config.aliases || [config.label]).map(normalize).filter(Boolean);
-  let match = catalog.find((item) => catalogNames(item).some((name) => wanted.includes(normalize(name))));
-  if (!match) {
-    match = catalog.find((item) => {
-      const names = catalogNames(item).map(normalize);
-      return wanted.some((alias) => names.some((name) => name.includes(alias) || alias.includes(name)));
-    });
-  }
+  const match = catalog
+    .map((item) => ({ item, score: itemMatchScore(item, config) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || catalogClass(a.item).localeCompare(catalogClass(b.item)))[0]?.item;
+
   const itemClass = catalogClass(match);
-  if (!itemClass) throw new Error(`Could not find ${config.label} in the GGCON item catalog.`);
+  if (!itemClass) {
+    const examples = catalog.slice(0, 3).map((item) => `${item?.dn || item?.name || "Unknown"} [${item?.i || item?.itemClass || item?.class || "no class"}]`).join(", ");
+    throw new Error(`Could not find ${config.label} in the GGCON item catalog.${examples ? ` Catalog sample: ${examples}` : ""}`);
+  }
   return itemClass;
 }
 
