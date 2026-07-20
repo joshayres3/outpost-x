@@ -5603,6 +5603,312 @@ async function fetchRawServerLogs(range, sources) {
   return ggconGet(`/logs?${params.toString()}`);
 }
 
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseLogExportArgs(args, defaultRange = "30m") {
+  const values = [...(args || [])].map((v) => String(v || "").trim()).filter(Boolean);
+  let range = parseRawLogRangeToken(defaultRange) || { label: "30m", since: Date.now() - (30 * 60 * 1000), ms: 30 * 60 * 1000 };
+  let sources = "";
+
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    const lower = values[i].toLowerCase();
+    if (lower.startsWith("sources:") || lower.startsWith("source:")) {
+      sources = values[i].slice(values[i].indexOf(":") + 1).trim();
+      values.splice(i, 1);
+      continue;
+    }
+  }
+
+  if (values.length) {
+    const maybeRange = parseRawLogRangeToken(values[values.length - 1]);
+    if (maybeRange) range = maybeRange;
+  }
+
+  if (range.ms !== null && range.ms > 24 * 60 * 60 * 1000) {
+    range = { label: "24h", since: Date.now() - (24 * 60 * 60 * 1000), ms: 24 * 60 * 60 * 1000 };
+  }
+
+  return { range, sources };
+}
+
+function rawLogEntryKey(entry) {
+  return `${Number(entry?.t || 0)}|${String(entry?.src || "")}|${String(entry?.line || "")}`;
+}
+
+async function fetchAllRawServerLogs(range, sources, options = {}) {
+  const maxPages = Math.max(1, Math.min(250, Number(options.maxPages || process.env.GGCON_LOG_EXPORT_MAX_PAGES || 100)));
+  const delayMs = Math.max(0, Number(options.delayMs ?? process.env.GGCON_LOG_EXPORT_DELAY_MS ?? 100));
+  const originalSince = Number(range?.since || 0);
+  let cursor = originalSince;
+  let previousCursor = null;
+  let pages = 0;
+  let apiEnded = false;
+  let repeatedCursor = false;
+  let pageLimitReached = false;
+  const seenEntries = new Set();
+  const allLines = [];
+  const cursorTrail = [];
+
+  while (pages < maxPages) {
+    const pageRange = { ...range, since: cursor };
+    const data = await fetchRawServerLogs(pageRange, sources);
+    pages += 1;
+    const pageLines = Array.isArray(data?.lines) ? data.lines : [];
+
+    for (const entry of pageLines) {
+      const key = rawLogEntryKey(entry);
+      if (seenEntries.has(key)) continue;
+      seenEntries.add(key);
+      allLines.push(entry);
+    }
+
+    const next = Number(data?.next || 0);
+    cursorTrail.push({ page: pages, requestedSince: cursor, returned: pageLines.length, next: next || null });
+
+    if (!pageLines.length || !next) {
+      apiEnded = true;
+      break;
+    }
+
+    if (next <= cursor || next === previousCursor) {
+      repeatedCursor = true;
+      break;
+    }
+
+    previousCursor = cursor;
+    cursor = next;
+
+    if (range?.ms !== null && cursor >= Date.now()) {
+      apiEnded = true;
+      break;
+    }
+
+    if (delayMs) await sleep(delayMs);
+  }
+
+  if (pages >= maxPages && !apiEnded && !repeatedCursor) pageLimitReached = true;
+
+  allLines.sort((a, b) => Number(a?.t || 0) - Number(b?.t || 0));
+  return {
+    lines: allLines,
+    pages,
+    startCursor: originalSince,
+    finalCursor: cursor,
+    cursorTrail,
+    apiEnded,
+    repeatedCursor,
+    pageLimitReached,
+    maxPages,
+  };
+}
+
+function summarizeRawLogSources(lines) {
+  const bySource = new Map();
+  for (const entry of lines || []) {
+    const src = String(entry?.src || "Unknown");
+    const current = bySource.get(src) || { source: src, count: 0, first: null, last: null, samples: [] };
+    const t = Number(entry?.t || 0);
+    current.count += 1;
+    if (t && (!current.first || t < current.first)) current.first = t;
+    if (t && (!current.last || t > current.last)) current.last = t;
+    if (current.samples.length < 3) current.samples.push(entry);
+    bySource.set(src, current);
+  }
+  return Array.from(bySource.values()).sort((a, b) => b.count - a.count || a.source.localeCompare(b.source));
+}
+
+function formatIsoOrUnknown(value) {
+  const n = Number(value || 0);
+  return n ? new Date(n).toISOString() : "unknown";
+}
+
+function buildLogSourceInventoryText(result, range, sources) {
+  const rows = summarizeRawLogSources(result.lines);
+  const header = [
+    "Outpost X log source inventory",
+    `Generated: ${new Date().toISOString()}`,
+    `Requested range: ${range.label}`,
+    `Source filter: ${sources || "all visible sources"}`,
+    `Pages fetched: ${result.pages}`,
+    `Unique lines collected: ${result.lines.length}`,
+    `API ended normally: ${result.apiEnded ? "yes" : "no"}`,
+    result.repeatedCursor ? "Warning: API returned a repeated/non-advancing cursor." : null,
+    result.pageLimitReached ? `Warning: stopped at page safety limit (${result.maxPages}).` : null,
+    "",
+    "SOURCE | LINES | FIRST SEEN | LAST SEEN",
+  ].filter(Boolean);
+
+  const body = rows.length
+    ? rows.map((row) => `${row.source} | ${row.count} | ${formatIsoOrUnknown(row.first)} | ${formatIsoOrUnknown(row.last)}`)
+    : ["No log sources were returned."];
+
+  return `${header.join("\n")}\n${body.join("\n")}\n`;
+}
+
+function buildCompleteLogExportText(result, range, sources) {
+  const header = [
+    "Outpost X complete paginated log export",
+    `Generated: ${new Date().toISOString()}`,
+    `Requested range: ${range.label}`,
+    `Source filter: ${sources || "all visible sources"}`,
+    `Pages fetched: ${result.pages}`,
+    `Unique lines collected: ${result.lines.length}`,
+    `Start cursor: ${result.startCursor}`,
+    `Final cursor: ${result.finalCursor}`,
+    result.repeatedCursor ? "WARNING: API cursor stopped advancing; export ended to prevent a loop." : null,
+    result.pageLimitReached ? `WARNING: export stopped at the ${result.maxPages}-page safety limit.` : null,
+    "",
+    "Format: [time] [source] line",
+    "",
+  ].filter(Boolean).join("\n");
+
+  const body = result.lines.map((entry) => {
+    const t = entry?.t ? new Date(Number(entry.t)).toISOString() : "unknown-time";
+    const src = entry?.src || "Unknown";
+    const line = String(entry?.line || "").replace(/\r?\n/g, " ").trim();
+    return `[${t}] [${src}] ${line}`;
+  }).join("\n");
+
+  return `${header}${body || "No log lines were returned."}\n`;
+}
+
+function buildLogSampleText(result, range, sources) {
+  const rows = summarizeRawLogSources(result.lines);
+  const out = [
+    "Outpost X log source samples",
+    `Generated: ${new Date().toISOString()}`,
+    `Requested range: ${range.label}`,
+    `Source filter: ${sources || "all visible sources"}`,
+    `Pages fetched: ${result.pages}`,
+    `Unique lines collected: ${result.lines.length}`,
+    "",
+  ];
+
+  for (const row of rows) {
+    out.push(`===== ${row.source} (${row.count} lines) =====`);
+    const sourceLines = result.lines.filter((entry) => String(entry?.src || "Unknown") === row.source);
+    const samples = [];
+    if (sourceLines.length) samples.push(sourceLines[0]);
+    if (sourceLines.length > 2) samples.push(sourceLines[Math.floor(sourceLines.length / 2)]);
+    if (sourceLines.length > 1) samples.push(sourceLines[sourceLines.length - 1]);
+    const unique = [];
+    const seen = new Set();
+    for (const entry of samples) {
+      const key = rawLogEntryKey(entry);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(entry);
+    }
+    for (const entry of unique) {
+      out.push(`[${formatIsoOrUnknown(entry?.t)}] ${String(entry?.line || "").replace(/\r?\n/g, " ").trim()}`);
+    }
+    out.push("");
+  }
+
+  if (!rows.length) out.push("No log sources were returned.");
+  return `${out.join("\n")}\n`;
+}
+
+function splitUtf8Text(text, maxBytes = 7_500_000) {
+  const lines = String(text || "").split("\n");
+  const chunks = [];
+  let current = "";
+  for (const line of lines) {
+    const candidate = current ? `${current}\n${line}` : line;
+    if (Buffer.byteLength(candidate, "utf8") > maxBytes && current) {
+      chunks.push(current);
+      current = line;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function makeTextAttachments(text, baseName) {
+  const chunks = splitUtf8Text(text);
+  return chunks.slice(0, 10).map((chunk, index) => new AttachmentBuilder(Buffer.from(chunk, "utf8"), {
+    name: chunks.length === 1 ? `${baseName}.txt` : `${baseName}-part-${index + 1}-of-${chunks.length}.txt`,
+  }));
+}
+
+async function handleLogSources(message, args) {
+  const { range, sources } = parseLogExportArgs(args, "30m");
+  const result = await fetchAllRawServerLogs(range, sources);
+  const rows = summarizeRawLogSources(result.lines);
+  const inventory = buildLogSourceInventoryText(result, range, sources);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const attachment = new AttachmentBuilder(Buffer.from(inventory, "utf8"), { name: `outpost-x-log-sources-${stamp}.txt` });
+  const preview = rows.slice(0, 20).map((row) => `• **${row.source}** — ${row.count}`).join("\n") || "No sources returned.";
+  await message.reply({
+    content: clampDiscord([
+      "📚 **Available Server Log Sources**",
+      `Range: ${range.label}`,
+      `Pages Fetched: ${result.pages}`,
+      `Unique Lines: ${result.lines.length}`,
+      `Sources Found: ${rows.length}`,
+      "",
+      preview,
+      rows.length > 20 ? `\nShowing 20 of ${rows.length} sources. Full inventory attached.` : "",
+      result.repeatedCursor ? "\n⚠️ The API cursor stopped advancing, so the export ended safely." : "",
+      result.pageLimitReached ? `\n⚠️ Reached the ${result.maxPages}-page safety limit.` : "",
+    ].filter(Boolean).join("\n")),
+    files: [attachment],
+  });
+}
+
+async function handleLogSample(message, args) {
+  const { range, sources } = parseLogExportArgs(args, "30m");
+  const result = await fetchAllRawServerLogs(range, sources);
+  const sampleText = buildLogSampleText(result, range, sources);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const attachments = makeTextAttachments(sampleText, `outpost-x-log-samples-${stamp}`);
+  await message.reply({
+    content: [
+      "🔬 **Server Log Samples Created**",
+      `Range: ${range.label}`,
+      `Pages Fetched: ${result.pages}`,
+      `Unique Lines: ${result.lines.length}`,
+      `Sources Found: ${summarizeRawLogSources(result.lines).length}`,
+      "A beginning, middle, and ending sample from each visible source is attached.",
+    ].join("\n"),
+    files: attachments,
+  });
+}
+
+async function handleLogExport(message, args, includeInventory = false) {
+  const { range, sources } = parseLogExportArgs(args, includeInventory ? "30m" : "30m");
+  await message.reply(`⏳ Pulling every available log page for **${range.label}**${sources ? ` from **${sources}**` : ""}. This may take a moment...`).catch(() => {});
+  const result = await fetchAllRawServerLogs(range, sources);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const exportText = buildCompleteLogExportText(result, range, sources);
+  const attachments = makeTextAttachments(exportText, `outpost-x-complete-log-${stamp}`);
+  if (includeInventory && attachments.length < 10) {
+    const inventory = buildLogSourceInventoryText(result, range, sources);
+    attachments.push(new AttachmentBuilder(Buffer.from(inventory, "utf8"), { name: `outpost-x-log-inventory-${stamp}.txt` }));
+  }
+  const rows = summarizeRawLogSources(result.lines);
+  await message.reply({
+    content: clampDiscord([
+      includeInventory ? "🗂️ **Complete Log Inventory & Export**" : "🧾 **Complete Paginated Log Export**",
+      `Range: ${range.label}`,
+      sources ? `Source Filter: ${sources}` : "Source Filter: All visible sources",
+      `Pages Fetched: ${result.pages}`,
+      `Unique Lines Collected: ${result.lines.length}`,
+      `Sources Found: ${rows.length}`,
+      `Attachments: ${attachments.length}`,
+      result.repeatedCursor ? "⚠️ The API cursor stopped advancing; export ended safely." : null,
+      result.pageLimitReached ? `⚠️ Reached the ${result.maxPages}-page safety limit.` : null,
+      attachments.length >= 10 && splitUtf8Text(exportText).length > 10 ? "⚠️ Export exceeded Discord's 10-file limit; only the first 10 parts are attached." : null,
+    ].filter(Boolean).join("\n")),
+    files: attachments,
+  });
+}
+
 async function handleNpcLogPull(message, args) {
   const values = [...(args || [])];
   const hasRange = values.some((value) => !!parseRawLogRangeToken(value));
@@ -5957,7 +6263,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!killlogpull", "!rawlogpull", "!npclogpull", "!loginlogsetup", "!loginlogoff", "!loginlogstatus", "!loginlogscan", "!rawlogdump", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!refund", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!killlogpull", "!rawlogpull", "!npclogpull", "!logsources", "!logexport", "!logsample", "!loginventory", "!loginlogsetup", "!loginlogoff", "!loginlogstatus", "!loginlogscan", "!rawlogdump", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!refund", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -6112,6 +6418,27 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!npclogpull") {
       await handleNpcLogPull(message, args);
+      return true;
+    }
+
+
+    if (command === "!logsources") {
+      await handleLogSources(message, args);
+      return true;
+    }
+
+    if (command === "!logsample") {
+      await handleLogSample(message, args);
+      return true;
+    }
+
+    if (command === "!logexport") {
+      await handleLogExport(message, args, false);
+      return true;
+    }
+
+    if (command === "!loginventory") {
+      await handleLogExport(message, args, true);
       return true;
     }
 
