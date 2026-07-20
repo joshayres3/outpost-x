@@ -357,16 +357,16 @@ async function startQuickEvent({ forceType = null } = {}) {
   if (type === "multiple_choice") {
     const question = pick(QUICK_QUESTIONS);
     event.correct = question.correct;
-    event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), 45_000);
-    await sendGame(`RAPID ASSESSMENT: ${question.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. 45 seconds.`);
+    event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), 120_000);
+    await sendGame(`RAPID ASSESSMENT: ${question.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes to answer.`);
   } else if (type === "text_answer") {
     const question = pick(TEXT_QUESTIONS);
     event.answers = question.answers.map(normalizeAnswer);
-    event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), 45_000);
-    await sendGame(`ITEM IDENTIFICATION: ${question.prompt}. Reply with !answer followed by your answer. Example: !answer screwdriver. First correct answer wins. 45 seconds.`);
+    event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), 120_000);
+    await sendGame(`ITEM IDENTIFICATION: ${question.prompt}. Reply with !answer followed by your answer. Example: !answer screwdriver. First correct answer wins. You have 2 minutes to answer.`);
   } else {
-    event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), 30_000);
-    await sendGame("THREE SIGNALS DETECTED: 1) Signal One 2) Signal Two 3) Signal Three. Choose with !1, !2 or !3. !one, !two or !three also work. One choice per player. 30 seconds.");
+    event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), 120_000);
+    await sendGame("THREE SIGNALS DETECTED: 1) Signal One 2) Signal Two 3) Signal Three. Choose with !1, !2 or !3. !one, !two or !three also work. One choice per player. You have 2 minutes to choose.");
   }
 
   return event;
@@ -384,12 +384,12 @@ async function startTaskEvent({ forceType = null } = {}) {
   activeEvent = event;
 
   if (type === "community_kills") {
-    await sendGame(`COMMUNITY DIRECTIVE: Registered players must eliminate ${event.target} puppets in ${durationMinutes} minutes. Type !join within 60 seconds. One contributor will be randomly rewarded if the target is completed.`);
+    await sendGame(`COMMUNITY DIRECTIVE: Registered players must eliminate ${event.target} puppets in ${durationMinutes} minutes. Type !join within 2 minutes. One contributor will be randomly rewarded if the target is completed.`);
   } else {
-    await sendGame(`EXTERMINATION WINDOW: The registered player with the most puppet kills in ${durationMinutes} minutes wins. Type !join within 60 seconds.`);
+    await sendGame(`EXTERMINATION WINDOW: The registered player with the most puppet kills in ${durationMinutes} minutes wins. Type !join within 2 minutes.`);
   }
 
-  event.registrationTimeout = setTimeout(() => beginTask().catch(console.error), 60_000);
+  event.registrationTimeout = setTimeout(() => beginTask().catch(console.error), 120_000);
   return event;
 }
 
