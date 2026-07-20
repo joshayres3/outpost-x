@@ -5516,6 +5516,14 @@ function getRawLogNeedles(query) {
     ["duster", "kinglet", "plane", "airplane", "vehicle"].forEach((term) => needles.add(term));
   }
 
+  if (tokens.includes("puppet") || tokens.includes("zombie")) {
+    ["puppet", "zombie", "npc", "bp_", "beeper", "suicide", "razor", "brenner", "brener"].forEach((term) => needles.add(term));
+  }
+
+  if (tokens.includes("npc") || tokens.includes("hostile")) {
+    ["npc", "guard", "drifter", "armednpc", "armed npc", "razor", "brenner", "brener", "sentry", "drone", "beeper", "suicide"].forEach((term) => needles.add(term));
+  }
+
   return Array.from(needles).filter(Boolean);
 }
 
@@ -5565,6 +5573,16 @@ async function fetchRawServerLogs(range, sources) {
   params.set("since", String(range?.since ?? 0));
   if (sources) params.set("sources", sources);
   return ggconGet(`/logs?${params.toString()}`);
+}
+
+async function handleNpcLogPull(message, args) {
+  const values = [...(args || [])];
+  const hasRange = values.some((value) => !!parseRawLogRangeToken(value));
+  const queryParts = values.filter((value) => !parseRawLogRangeToken(value));
+  const rangeParts = values.filter((value) => !!parseRawLogRangeToken(value));
+  const query = queryParts.join(" ").trim() || "npc";
+  const range = hasRange ? rangeParts[rangeParts.length - 1] : "2h";
+  await handleRawLogPull(message, [query, range, "sources:kill,gameplay"]);
 }
 
 async function handleRawLogPull(message, args) {
@@ -5880,7 +5898,7 @@ async function handleGgconCommand(message, bot) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!loginlogsetup", "!loginlogoff", "!loginlogstatus", "!loginlogscan", "!rawlogdump", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!refund", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
+  if (!["!poststatus", "!server", "!player", "!vehicle", "!flag", "!squad", "!overcap", "!vehiclelogsetup", "!vehiclelogoff", "!vehiclelogstatus", "!vehiclelogscan", "!killlogsetup", "!killlogoff", "!killlogstatus", "!killlogscan", "!killlogpull", "!rawlogpull", "!npclogpull", "!loginlogsetup", "!loginlogoff", "!loginlogstatus", "!loginlogscan", "!rawlogdump", "!destroyvehicle", "!destroybase", "!announce", "!cargofrenzy", "!cargotest", "!cargoschedulesetup", "!cargoscheduleoff", "!cargoschedulestatus", "!cash", "!fame", "!refund", "!online", "!nearvehicles", "!jail", "!unjail", "!givevehicle"].includes(command)) return false;
 
   if (!isStaff(message)) {
     await message.reply("The Watcher sees the request. This command is for staff only.").catch(() => {});
@@ -6020,6 +6038,21 @@ async function handleGgconCommand(message, bot) {
 
     if (command === "!killlogscan") {
       await handleKillLogScan(message, bot);
+      return true;
+    }
+
+    if (command === "!killlogpull") {
+      await handleKillLogPull(message, args);
+      return true;
+    }
+
+    if (command === "!rawlogpull") {
+      await handleRawLogPull(message, args);
+      return true;
+    }
+
+    if (command === "!npclogpull") {
+      await handleNpcLogPull(message, args);
       return true;
     }
 
