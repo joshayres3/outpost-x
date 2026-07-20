@@ -16,6 +16,8 @@ const SHARED_QUIET_MS = Math.max(0, Number(process.env.POPUP_SHARED_QUIET_MINUTE
 const RESTART_BLOCK_MINUTES = Math.max(0, Number(process.env.POPUP_RESTART_BLOCK_MINUTES || "20"));
 const QUICK_CHANCE = clampProbability(process.env.POPUP_QUICK_CHANCE || "0.20");
 const TASK_CHANCE = clampProbability(process.env.POPUP_TASK_CHANCE || "0.10");
+const PUPPET_KILL_FAME_VALUE = Math.max(0.000001, Number(process.env.POPUP_PUPPET_KILL_FAME_VALUE || "0.1225"));
+const FAME_SETTLEMENT_MINUTES = Math.max(1, Number(process.env.POPUP_FAME_SETTLEMENT_MINUTES || "11"));
 const STAFF_ROLE_NAMES = new Set(["owner", "owners", "admin", "trial admin"]);
 
 let dbClient = null;
@@ -133,7 +135,8 @@ function normalizeState(value) {
     lastTaskEndedAt: Number(value.lastTaskEndedAt || 0),
     lastAnyEndedAt: Number(value.lastAnyEndedAt || 0),
     chatCursor: Number(value.chatCursor || 0),
-    killCursor: Number(value.killCursor || 0),
+    killCursor: Number(value.killCursor || value.fameCursor || 0),
+    fameCursor: Number(value.fameCursor || value.killCursor || 0),
     lastResult: value.lastResult || null,
   };
 }
@@ -286,6 +289,8 @@ async function finishEvent(result = {}) {
   const event = activeEvent;
   if (!event) return;
   if (event.timeout) clearTimeout(event.timeout);
+  if (event.registrationTimeout) clearTimeout(event.registrationTimeout);
+  if (event.settlementTimeout) clearTimeout(event.settlementTimeout);
   activeEvent = null;
 
   const state = await loadState();
@@ -404,16 +409,30 @@ async function beginTask() {
   }
   event.phase = "active";
   event.taskStartedAt = Date.now();
+  event.taskEndsAt = event.taskStartedAt + event.durationMinutes * 60_000;
+  event.lastFamePlayer = null;
+  event.fameReportsSeen = 0;
   const baselineState = await loadState();
-  await saveState({ ...baselineState, killCursor: event.taskStartedAt });
+  await saveState({ ...baselineState, fameCursor: event.taskStartedAt, killCursor: event.taskStartedAt });
   await sendGame(`Registration closed. ${event.participants.size} player${event.participants.size === 1 ? "" : "s"} joined. The task is now active for ${event.durationMinutes} minutes.`);
-  event.timeout = setTimeout(() => finishTask().catch(console.error), event.durationMinutes * 60_000);
+  event.timeout = setTimeout(() => beginTaskSettlement().catch(console.error), event.durationMinutes * 60_000);
+}
+
+async function beginTaskSettlement() {
+  const event = activeEvent;
+  if (!event || event.category !== "task" || event.finished || event.phase !== "active") return;
+  event.phase = "settlement";
+  event.settlementEndsAt = Date.now() + FAME_SETTLEMENT_MINUTES * 60_000;
+  await sendGame(`The ${event.durationMinutes}-minute killing window is closed. Final puppet-kill credit is being processed.`);
+  event.settlementTimeout = setTimeout(() => finishTask().catch(console.error), FAME_SETTLEMENT_MINUTES * 60_000);
 }
 
 async function finishTask() {
   const event = activeEvent;
   if (!event || event.category !== "task" || event.finished) return;
   event.finished = true;
+  if (event.timeout) clearTimeout(event.timeout);
+  if (event.settlementTimeout) clearTimeout(event.settlementTimeout);
   const scores = [...event.participants.values()].map((entry) => ({ ...entry, kills: event.scores.get(entry.steamId) || 0 }));
 
   if (event.type === "community_kills") {
@@ -421,25 +440,25 @@ async function finishTask() {
     const contributors = scores.filter((entry) => entry.kills > 0);
     if (total < event.target || contributors.length === 0) {
       await sendGame(`Community directive failed. Final progress: ${total}/${event.target} puppet kills.`);
-      await finishEvent({ status: "failed", total, target: event.target });
+      await finishEvent({ status: "failed", total, target: event.target, source: "famepoints" });
       return;
     }
     event.finished = false;
-    await completeWithWinner(pick(contributors), { total, target: event.target });
+    await completeWithWinner(pick(contributors), { total, target: event.target, source: "famepoints" });
     return;
   }
 
   const high = Math.max(0, ...scores.map((entry) => entry.kills));
   if (high <= 0) {
     await sendGame("Extermination window closed. No qualifying puppet kills were recorded.");
-    await finishEvent({ status: "no_kills" });
+    await finishEvent({ status: "no_kills", source: "famepoints" });
     return;
   }
   const tied = scores.filter((entry) => entry.kills === high);
   const winner = pick(tied);
   event.finished = false;
   await sendGame(tied.length > 1 ? `The task ended in a ${tied.length}-way tie at ${high} kills. The Watcher selected ${winner.name}.` : `${winner.name} recorded the most puppet kills: ${high}.`);
-  await completeWithWinner(winner, { highScore: high, tied: tied.length });
+  await completeWithWinner(winner, { highScore: high, tied: tied.length, source: "famepoints" });
 }
 
 async function fetchChatLogsSince(since) {
@@ -507,14 +526,24 @@ async function scanChat() {
   }
 }
 
-function isQualifyingPuppetKill(event) {
-  const type = String(event?.type || "").toLowerCase();
-  const killerSteam = String(event?.killer?.sid || event?.killer?.steamId || event?.killer?.steam_id || "");
-  const victimSteam = String(event?.victim?.sid || event?.victim?.steamId || event?.victim?.steam_id || "");
-  if (!killerSteam || victimSteam) return false;
-  if (type === "npc") return true;
-  const victim = `${event?.victim?.name || ""} ${event?.cat || ""}`.toLowerCase();
-  return /puppet|zombie|razor|brener|beeper/.test(victim);
+function parseFamePlayer(line) {
+  const match = String(line || "").match(/Player\s+(.+?)\((\d{15,20})\)\s+was awarded/i);
+  if (!match) return null;
+  return { name: match[1].trim(), steamId: match[2] };
+}
+
+function puppetKillsFromFame(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return Math.max(0, Math.round(amount / PUPPET_KILL_FAME_VALUE));
+}
+
+async function fetchFameLogsSince(since) {
+  const params = new URLSearchParams({
+    since: String(Math.max(0, Number(since || 0))),
+    sources: "famepoints",
+  });
+  return serverGet(`/logs?${params.toString()}`);
 }
 
 async function scanKills() {
@@ -522,23 +551,42 @@ async function scanKills() {
   killRunning = true;
   try {
     const event = activeEvent;
-    if (!event || event.category !== "task" || event.phase !== "active" || event.finished) return;
+    if (!event || event.category !== "task" || !["active", "settlement"].includes(event.phase) || event.finished) return;
     const state = await loadState();
-    const cursor = state.killCursor || Math.max(0, event.taskStartedAt - 5000);
-    const data = await serverGet(`/kill-feed/events.json?since=${encodeURIComponent(String(cursor))}`);
-    const events = Array.isArray(data?.events) ? data.events : [];
-    const next = Number(data?.next || events.reduce((max, row) => Math.max(max, Number(row?.t || 0)), cursor));
+    const cursor = state.fameCursor || state.killCursor || Math.max(0, event.taskStartedAt - 5000);
+    const data = await fetchFameLogsSince(cursor);
+    const lines = Array.isArray(data?.lines)
+      ? data.lines.slice().sort((a, b) => Number(a?.t || 0) - Number(b?.t || 0))
+      : [];
+    const next = Number(data?.next || lines.reduce((max, row) => Math.max(max, Number(row?.t || 0)), cursor) || Date.now());
     let totalChanged = false;
 
-    for (const kill of events) {
-      if (!isQualifyingPuppetKill(kill)) continue;
-      const steamId = String(kill?.killer?.sid || kill?.killer?.steamId || kill?.killer?.steam_id || "");
-      if (!event.participants.has(steamId)) continue;
-      event.scores.set(steamId, (event.scores.get(steamId) || 0) + 1);
+    for (const row of lines) {
+      const rowTime = Number(row?.t || 0);
+      const line = String(row?.line || "");
+      const player = parseFamePlayer(line);
+      if (player) {
+        event.lastFamePlayer = player;
+        continue;
+      }
+      if (/^-{5,}\s*$/.test(line.trim()) || /:\s*-{5,}\s*$/.test(line.trim())) {
+        event.lastFamePlayer = null;
+        continue;
+      }
+      const puppetMatch = line.match(/PuppetKill:\s*([0-9]+(?:\.[0-9]+)?)/i);
+      if (!puppetMatch || !event.lastFamePlayer) continue;
+      if (rowTime && rowTime < event.taskStartedAt) continue;
+      if (!event.participants.has(event.lastFamePlayer.steamId)) continue;
+
+      const kills = puppetKillsFromFame(puppetMatch[1]);
+      if (kills <= 0) continue;
+      const steamId = event.lastFamePlayer.steamId;
+      event.scores.set(steamId, (event.scores.get(steamId) || 0) + kills);
+      event.fameReportsSeen = (event.fameReportsSeen || 0) + 1;
       totalChanged = true;
     }
 
-    await saveState({ ...state, killCursor: next });
+    await saveState({ ...state, fameCursor: next, killCursor: next });
 
     if (event.type === "community_kills" && totalChanged) {
       const total = [...event.scores.values()].reduce((sum, n) => sum + n, 0);
@@ -555,7 +603,7 @@ async function scanKills() {
       }
     }
   } catch (err) {
-    console.error("❌ Pop-up kill scan failed:", err.message);
+    console.error("❌ Pop-up fame scan failed:", err.message);
   } finally {
     killRunning = false;
   }
@@ -630,6 +678,7 @@ async function cancelActiveEvent(reason = "Cancelled by staff") {
   const event = activeEvent;
   if (event.timeout) clearTimeout(event.timeout);
   if (event.registrationTimeout) clearTimeout(event.registrationTimeout);
+  if (event.settlementTimeout) clearTimeout(event.settlementTimeout);
   await sendGame(`Event cancelled. ${reason}`);
   await finishEvent({ status: "cancelled", reason });
   return true;
