@@ -5305,15 +5305,40 @@ function formatKillDiagnosticEvent(event, index) {
   return lines.join("\n");
 }
 
+function buildKillLogPullText(events, range, query, data, state) {
+  const sorted = (events || []).slice().sort((a, b) => Number(b.t || 0) - Number(a.t || 0));
+  const header = [
+    "Outpost X kill log pull",
+    `Generated: ${new Date().toISOString()}`,
+    `Range: ${range}`,
+    `Player filter: ${query || "None"}`,
+    `Events returned: ${events.length}`,
+    data?.capped ? "Result was capped by the server feed." : null,
+    `Saved cursor: ${state?.cursor ?? "None"}`,
+    "",
+  ].filter(Boolean).join("\n");
+
+  const body = sorted.length
+    ? sorted.map((event, index) => formatKillDiagnosticEvent(event, index).replace(/\*\*/g, "").replace(/`/g, "")).join("\n\n")
+    : "No death/kill events were returned for that filter.";
+
+  return `${header}${body}\n`;
+}
+
 async function handleKillLogPull(message, args) {
   const { range, query } = parsePullRangeAndQuery(args);
   const data = await fetchKillHistory(range, query);
   const events = Array.isArray(data.events) ? data.events : [];
   const sorted = events.slice().sort((a, b) => Number(b.t || 0) - Number(a.t || 0));
   const state = await loadKillStatePersistent();
-  const shown = sorted.slice(0, 6);
+  const shown = sorted.slice(0, 3);
+  const fullText = buildKillLogPullText(events, range, query, data, state);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const attachment = new AttachmentBuilder(Buffer.from(fullText, "utf8"), {
+    name: `outpost-x-kill-log-${stamp}.txt`,
+  });
 
-  const header = [
+  const summary = [
     "☠️ **Kill Log Pull**",
     `Range: ${range}`,
     `Player Filter: ${query || "None"}`,
@@ -5322,11 +5347,14 @@ async function handleKillLogPull(message, args) {
     `Saved Cursor: ${state?.cursor ?? "None"}`,
     "",
     shown.length ? shown.map(formatKillDiagnosticEvent).join("\n\n") : "No death/kill events were returned for that filter.",
+    events.length > shown.length ? `\nPreviewing ${shown.length} of ${events.length} events.` : null,
     "",
-    "Tip: after a missed death, run `!killlogpull <player name or SteamID> 24h` and paste the result to Josh/dev chat.",
+    "The complete uncut result is attached as a text file.",
   ].filter(Boolean).join("\n");
 
-  await message.reply(clampDiscord(header)).catch(() => {});
+  await message.reply({ content: clampDiscord(summary), files: [attachment] }).catch(async () => {
+    await message.reply(clampDiscord(summary)).catch(() => {});
+  });
 }
 
 function isLikelyVehicleEntityId(value) {
@@ -5585,15 +5613,45 @@ async function handleNpcLogPull(message, args) {
   await handleRawLogPull(message, [query, range, "sources:kill,gameplay"]);
 }
 
+function buildRawLogPullText(matches, range, query, sources, data, lines) {
+  const header = [
+    "Outpost X raw server log pull",
+    `Generated: ${new Date().toISOString()}`,
+    `Range: ${range.label}`,
+    `Filter: ${query || "None"}`,
+    `Source filter: ${sources || "all visible log sources"}`,
+    `Raw lines returned: ${lines.length}`,
+    `Matches found: ${matches.length}`,
+    data?.next ? `Next cursor: ${data.next}` : null,
+    "",
+    "Format: [time] [source] line",
+    "",
+  ].filter(Boolean).join("\n");
+
+  const body = matches.length ? matches.map((entry) => {
+    const t = entry?.t ? new Date(Number(entry.t)).toISOString() : "unknown-time";
+    const src = entry?.src || "Unknown";
+    const line = String(entry?.line || "").replace(/\r?\n/g, " ").trim();
+    return `[${t}] [${src}] ${line}`;
+  }).join("\n") : "No matching raw log lines were found.";
+
+  return `${header}${body}\n`;
+}
+
 async function handleRawLogPull(message, args) {
   const { query, range, sources } = parseRawLogPullArgs(args);
   const data = await fetchRawServerLogs(range, sources);
   const lines = Array.isArray(data.lines) ? data.lines : [];
   const sorted = lines.slice().sort((a, b) => Number(b.t || 0) - Number(a.t || 0));
   const matches = sorted.filter((entry) => rawLogLineMatches(entry, query));
-  const shown = matches.slice(0, 10);
+  const shown = matches.slice(0, 3);
   const sourceSummary = buildRawLogSourceSummary(lines);
   const matchSourceSummary = buildRawLogSourceSummary(matches);
+  const fullText = buildRawLogPullText(matches, range, query, sources, data, lines);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const attachment = new AttachmentBuilder(Buffer.from(fullText, "utf8"), {
+    name: `outpost-x-raw-log-${stamp}.txt`,
+  });
 
   const output = [
     "🧾 **Raw Server Log Pull**",
@@ -5607,13 +5665,14 @@ async function handleRawLogPull(message, args) {
     matchSourceSummary && query ? `Match Sources: ${matchSourceSummary}` : null,
     "",
     shown.length ? shown.map(formatRawLogLine).join("\n\n") : "No matching raw log lines were found in the visible server log buffer.",
-    matches.length > shown.length ? `\nShowing ${shown.length} of ${matches.length} matches.` : null,
+    matches.length > shown.length ? `\nPreviewing ${shown.length} of ${matches.length} matches.` : null,
     "",
-    "Tips: try `!rawlogpull death 2h`, `!rawlogpull destroyed 2h`, `!rawlogpull duster 2h`, or `!rawlogpull 3046182 2h` right after a missed incident.",
-    "Optional source filter example: `!rawlogpull death 2h sources:kill,vehicle_destruction,gameplay`",
+    "The complete uncut result, including full log lines, is attached as a text file.",
   ].filter(Boolean).join("\n");
 
-  await message.reply(clampDiscord(output)).catch(() => {});
+  await message.reply({ content: clampDiscord(output), files: [attachment] }).catch(async () => {
+    await message.reply(clampDiscord(output)).catch(() => {});
+  });
 }
 
 function parseRawLogDumpArgs(args) {
