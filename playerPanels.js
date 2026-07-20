@@ -12,6 +12,7 @@ const { getRentalStatus } = require("./rentals");
 const {
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
+  buildVehiclePagesBySteamId,
   buildSquadBySteamId,
   buildNearVehiclesBySteamId,
   getPlayerForLookup,
@@ -24,6 +25,37 @@ const {
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
 const PLAYER_SNAPSHOTS_TABLE = process.env.WATCHER_PLAYER_SNAPSHOTS_TABLE || "watcher_player_snapshots";
 const VEHICLE_INSURANCE_TABLE = process.env.WATCHER_VEHICLE_INSURANCE_TABLE || "watcher_vehicle_insurance";
+
+function buildVehiclePageComponents(scope, steamId, pageIndex, pageCount) {
+  if (pageCount <= 1) return [];
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`pp:${scope}:vehiclepage:${steamId}:${Math.max(0, pageIndex - 1)}`)
+        .setLabel("Previous")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(pageIndex <= 0),
+      new ButtonBuilder()
+        .setCustomId(`pp:${scope}:vehiclepage:${steamId}:${Math.min(pageCount - 1, pageIndex + 1)}`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(pageIndex >= pageCount - 1)
+    )
+  ];
+}
+
+async function sendVehiclePages(interaction, scope, steamId, pageIndex = 0, update = false) {
+  const pages = await buildVehiclePagesBySteamId(steamId, 5);
+  const safeIndex = Math.max(0, Math.min(Number(pageIndex) || 0, pages.length - 1));
+  const payload = {
+    content: pages[safeIndex],
+    components: buildVehiclePageComponents(scope, steamId, safeIndex, pages.length),
+    allowedMentions: { parse: [] },
+  };
+  if (!update) payload.ephemeral = true;
+  if (update) await interaction.update(payload);
+  else await interaction.reply(payload);
+}
 const INSURANCE_CLAIMS_TABLE = process.env.WATCHER_INSURANCE_CLAIMS_TABLE || "watcher_insurance_claims";
 const LOTTERY_CODES_TABLE = process.env.WATCHER_LOTTERY_CODES_TABLE || "watcher_lottery_codes";
 const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
@@ -617,7 +649,9 @@ async function handlePlayerPanelInteraction(interaction) {
       } else if (action === "profile") {
         await interaction.reply({ content: renderSelfPanel(summary).content, ephemeral: true, allowedMentions: { parse: [] } });
       } else if (action === "vehicles" || action === "locations") {
-        await interaction.reply({ content: await buildVehiclesBySteamId(steamId), ephemeral: true, allowedMentions: { parse: [] } });
+        await sendVehiclePages(interaction, "self", steamId, 0, false);
+      } else if (action === "vehiclepage") {
+        await sendVehiclePages(interaction, "self", steamId, parts[4], true);
       } else if (action === "squad") {
         await interaction.reply({ content: await buildSquadBySteamId(steamId), ephemeral: true, allowedMentions: { parse: [] } });
       } else if (action === "insurance") {
@@ -650,7 +684,8 @@ async function handlePlayerPanelInteraction(interaction) {
         return true;
       }
       if (action === "details") await interaction.reply({ content: await buildPlayerDetailsBySteamId(steamId, interaction.guildId), ephemeral: true, allowedMentions: { parse: [] } });
-      else if (action === "vehicles") await interaction.reply({ content: await buildVehiclesBySteamId(steamId), ephemeral: true, allowedMentions: { parse: [] } });
+      else if (action === "vehicles") await sendVehiclePages(interaction, "admin", steamId, 0, false);
+      else if (action === "vehiclepage") await sendVehiclePages(interaction, "admin", steamId, parts[4], true);
       else if (action === "squad") await interaction.reply({ content: await buildSquadBySteamId(steamId), ephemeral: true, allowedMentions: { parse: [] } });
       else if (action === "nearby") await interaction.reply({ content: await buildNearVehiclesBySteamId(steamId), ephemeral: true, allowedMentions: { parse: [] } });
       else if (action === "jail") await jailPlayerBySteamId(interaction, steamId);

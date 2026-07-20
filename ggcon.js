@@ -1879,11 +1879,85 @@ async function buildPlayerDetailsBySteamId(steamId, guildId = "default") {
   });
 }
 
-async function buildVehiclesBySteamId(steamId) {
-  const playerResult = await getPlayerForLookup(String(steamId || ""));
-  if (playerResult.type !== "single") return `No player found for \`${steamId}\`.`;
+async function buildVehicleReportPagesForPlayer(player, fallbackLabel, perPage = 5) {
+  const playerSteamId = String(player.userId || "").trim();
+  const vehicleData = await ggconGet("/vehicles.json");
+  const vehicles = Array.isArray(vehicleData.vehicles) ? vehicleData.vehicles : [];
 
-  return buildVehicleReportForPlayer(playerResult.player, String(steamId || ""));
+  const squad = await getSquadForSteamId(playerSteamId);
+  const squadMemberSteamIds = getSquadMemberSteamIds(squad);
+  const hasSquad = squad && squadMemberSteamIds.size > 0;
+
+  const matchingVehicles = hasSquad
+    ? vehicles.filter((vehicle) => squadMemberSteamIds.has(String(vehicle.ownerSteamId || "")))
+    : vehicles.filter((vehicle) => String(vehicle.ownerSteamId || "") === playerSteamId);
+
+  const targetName = player.characterName || player.steamName || fallbackLabel || "Unknown";
+  const ownershipNote = vehicleData.ownershipResolved === false
+    ? "\n\n⚠️ Vehicle ownership is not fully resolved right now. Live ownership data may require at least one player online."
+    : "";
+
+  if (matchingVehicles.length === 0) {
+    const empty = hasSquad
+      ? [
+          `No vehicles found for squad **${squad.name || "Unknown Squad"}**.`,
+          `Searched because **${targetName}** is in that squad.`,
+          `Squad Members Checked: ${squadMemberSteamIds.size}`,
+          ownershipNote,
+        ].join("\n")
+      : `No vehicles found for **${targetName}** / \`${playerSteamId || "unknown Steam ID"}\`.${ownershipNote}`;
+    return [empty];
+  }
+
+  const sorted = matchingVehicles.sort((a, b) => {
+    const ownerA = String(a.owner || "").localeCompare(String(b.owner || ""));
+    if (ownerA !== 0) return ownerA;
+    return String(a.name || a.class || "").localeCompare(String(b.name || b.class || ""));
+  });
+
+  const pageSize = Math.max(1, Math.min(8, Number(perPage) || 5));
+  const pageCount = Math.ceil(sorted.length / pageSize);
+  const pages = [];
+
+  for (let page = 0; page < pageCount; page += 1) {
+    const start = page * pageSize;
+    const rows = sorted.slice(start, start + pageSize).map((vehicle, index) => buildVehicleLine(vehicle, start + index));
+    const header = hasSquad
+      ? [
+          `🚗 **Squad Vehicles: ${squad.name || "Unknown Squad"}**`,
+          `Looked up from: **${targetName}**`,
+          `Squad Members Checked: ${squadMemberSteamIds.size}`,
+          `Total Vehicles Found: ${sorted.length}`,
+        ]
+      : [
+          `🚗 **Vehicles for ${targetName}**`,
+          `Steam ID: \`${playerSteamId || "Unknown"}\``,
+          "Squad: None found, showing only this player's vehicles.",
+          `Total: ${sorted.length}`,
+        ];
+
+    pages.push(clampDiscord([
+      ...header,
+      `Page ${page + 1} of ${pageCount}`,
+      "",
+      rows.join("\n\n"),
+      ownershipNote,
+    ].filter(Boolean).join("\n")));
+  }
+
+  return pages;
+}
+
+async function buildVehiclePagesBySteamId(steamId, perPage = 5) {
+  const playerResult = await getPlayerForLookup(String(steamId || ""));
+  if (playerResult.type !== "single") return [`No player found for \`${steamId}\`.`];
+
+  return buildVehicleReportPagesForPlayer(playerResult.player, String(steamId || ""), perPage);
+}
+
+async function buildVehiclesBySteamId(steamId) {
+  const pages = await buildVehiclePagesBySteamId(steamId, 5);
+  return pages[0];
 }
 
 async function buildSquadBySteamId(steamId) {
@@ -6031,6 +6105,7 @@ module.exports = {
   // Shared by the button-driven player/admin panels.
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
+  buildVehiclePagesBySteamId,
   buildSquadBySteamId,
   buildNearVehiclesBySteamId,
   getPlayerForLookup,
