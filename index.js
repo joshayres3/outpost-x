@@ -85,6 +85,10 @@ const {
   startLotteryOnBoot,
 } = require("./lottery");
 const { handleAirliftCommand, handleAirliftInteraction } = require("./airlift");
+const {
+  handlePopupEventCommand,
+  startPopupEventsOnBoot,
+} = require("./popupEvents");
 const { handleRentalCommand, handleRentalInteraction, startRentalSystem } = require("./rentals");
 const { handleShopCommand, handleShopInteraction } = require("./shop");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
@@ -231,6 +235,7 @@ bot.once(Events.ClientReady, async () => {
     startInsuranceOnBoot(bot);
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));
     startLotteryOnBoot(bot).catch((err) => console.error("❌ Lottery startup failed:", err.message));
+    startPopupEventsOnBoot(bot).catch((err) => console.error("❌ Pop-up event startup failed:", err.message));
     startTicketSystem(bot, db);
     startRentalSystem(bot);
   } catch (err) {
@@ -349,6 +354,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleInsuranceCommand(msg, bot)) return;
 
     if (await handleLotteryCommand(msg, bot)) return;
+
+    if (await handlePopupEventCommand(msg, bot)) return;
 
     if (await handleMechCommand(msg, bot)) return;
 

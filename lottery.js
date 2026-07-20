@@ -1474,6 +1474,19 @@ async function handleLotteryCommand(message, bot) {
   return true;
 }
 
+
+async function triggerBonusLottery(bot, guildId) {
+  const config = await loadConfig();
+  if (!config?.enabled) throw new Error("Lottery is not enabled.");
+  const active = {
+    ...config,
+    enabled: true,
+    guildId: String(guildId || config.guildId || ""),
+  };
+  if (!active.guildId) throw new Error("Lottery guild is not configured.");
+  return runLotteryDraw(bot, active, { manual: true, bonus: true, guildId: active.guildId });
+}
+
 async function startLotteryOnBoot(bot) {
   const config = await loadConfig().catch((err) => {
     console.error("❌ Lottery startup read failed:", err.message);
@@ -1487,4 +1500,5 @@ async function startLotteryOnBoot(bot) {
 module.exports = {
   handleLotteryCommand,
   startLotteryOnBoot,
+  triggerBonusLottery,
 };
