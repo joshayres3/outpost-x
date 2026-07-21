@@ -48,7 +48,7 @@ async function saveConfig(guildId, patch) {
   const { error } = await getDb().from(CONFIG_TABLE).upsert({ guild_id: String(guildId), ...patch, updated_at: new Date().toISOString() }, { onConflict: 'guild_id' });
   if (error) throw error;
 }
-function playerId(p) { return String(p?.steamId || p?.steam_id || p?.id || p?.playerId || '').trim(); }
+function playerId(p) { return String(p?.userId || p?.steamId || p?.steamID || p?.steam_id || p?.playerId || p?.id || '').trim(); }
 async function observeOnline(guild) {
   const [players, server] = await Promise.all([
     getOnlinePlayers().catch(() => []),
