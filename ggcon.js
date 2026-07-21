@@ -6528,6 +6528,7 @@ module.exports = {
   buildSquadBySteamId,
   buildNearVehiclesBySteamId,
   getPlayerForLookup,
+  getOnlinePlayers,
   getPlayerDisplayName,
   ggconPost,
   jailPlayerBySteamId,

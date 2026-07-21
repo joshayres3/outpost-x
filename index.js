@@ -91,6 +91,7 @@ const {
 } = require("./popupEvents");
 const { handleRentalCommand, handleRentalInteraction, startRentalSystem } = require("./rentals");
 const { handleShopCommand, handleShopInteraction } = require("./shop");
+const { startAnalyticsOnBoot, handleAnalyticsCommand } = require("./analytics");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
   handleRulesAcceptCommand,
@@ -238,6 +239,7 @@ bot.once(Events.ClientReady, async () => {
     startPopupEventsOnBoot(bot).catch((err) => console.error("❌ Pop-up event startup failed:", err.message));
     startTicketSystem(bot, db);
     startRentalSystem(bot);
+    startAnalyticsOnBoot(bot);
   } catch (err) {
     console.error("❌ Startup database load failed:", err);
   }
@@ -346,6 +348,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleRentalCommand(msg)) return;
 
     if (await handleShopCommand(msg)) return;
+
+    if (await handleAnalyticsCommand(msg)) return;
 
     if (await handlePlayerPanelCommand(msg)) return;
 
