@@ -173,6 +173,7 @@ async function getTodayPulseStats(guild) {
 
   return {
     peakToday: Number(activity?.peak_online || 0),
+    totalPlayersToday: Array.isArray(activity?.observed_player_ids) ? activity.observed_player_ids.length : 0,
     registeredToday: Number(registrations || 0),
     lotteryStatus,
   };
@@ -181,7 +182,7 @@ async function getTodayPulseStats(guild) {
 function stripLiveStatusFields(fields = []) {
   const liveNames = new Set([
     '👁️ Live Server Status',
-    'Players Online', 'Peak Today', 'Registered Today',
+    'Players Online', 'Peak Today', 'Total Players Today', 'Registered Today',
     'Lottery Status', 'Open Tickets', 'Active Rentals',
     'Next Restart', 'Watcher Services', 'Last Updated',
   ]);
@@ -215,7 +216,7 @@ async function updatePulse(guild) {
       observeOnline(guild).catch(()=>({count:0})),
       safeRows('watcher_tickets','id',[['eq','guild_id',guild.id],['eq','status','open']]),
       safeRows(process.env.WATCHER_DIRTBIKE_RENTAL_TABLE || 'watcher_dirtbike_rentals','id',[['eq','guild_id',guild.id],['in','status',['active','removal_pending']]]),
-      getTodayPulseStats(guild).catch(() => ({ peakToday: 0, registeredToday: 0, lotteryStatus: 'Unavailable' })),
+      getTodayPulseStats(guild).catch(() => ({ peakToday: 0, totalPlayersToday: 0, registeredToday: 0, lotteryStatus: 'Unavailable' })),
     ]);
 
     const base = message.embeds?.[0]?.toJSON?.() || {};
@@ -229,6 +230,7 @@ async function updatePulse(guild) {
       { name:'👁️ Live Server Status', value:'Updated automatically by The Watcher.', inline:false },
       { name:'Players Online', value:`**${online.count}**`, inline:true },
       { name:'Peak Today', value:`**${todayStats.peakToday}**`, inline:true },
+      { name:'Total Players Today', value:`**${todayStats.totalPlayersToday}**`, inline:true },
       { name:'Registered Today', value:`**${todayStats.registeredToday}**`, inline:true },
       { name:'Lottery Status', value:todayStats.lotteryStatus, inline:true },
       { name:'Open Tickets', value:`**${openTickets.length}**`, inline:true },
