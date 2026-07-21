@@ -11,48 +11,59 @@ const CHECK_MINUTES = Math.max(1, Number(process.env.POPUP_ELIGIBILITY_CHECK_MIN
 const CHAT_SCAN_SECONDS = Math.max(5, Number(process.env.POPUP_CHAT_SCAN_SECONDS || "10"));
 const MIN_ELIGIBLE = Math.max(1, Number(process.env.POPUP_MIN_ELIGIBLE_PLAYERS || "4"));
 const QUICK_COOLDOWN_MS = Math.max(1, Number(process.env.POPUP_QUICK_COOLDOWN_MINUTES || "60")) * 60_000;
-const TASK_COOLDOWN_MS = Math.max(1, Number(process.env.POPUP_TASK_COOLDOWN_MINUTES || "120")) * 60_000;
 const SHARED_QUIET_MS = Math.max(0, Number(process.env.POPUP_SHARED_QUIET_MINUTES || "10")) * 60_000;
 const RESTART_BLOCK_MINUTES = Math.max(0, Number(process.env.POPUP_RESTART_BLOCK_MINUTES || "20"));
 const QUICK_CHANCE = clampProbability(process.env.POPUP_QUICK_CHANCE || "0.20");
-const TASK_CHANCE = clampProbability(process.env.POPUP_TASK_CHANCE || "0.10");
-const PUPPET_KILL_FAME_VALUE = Math.max(0.000001, Number(process.env.POPUP_PUPPET_KILL_FAME_VALUE || "0.1225"));
-const FAME_SETTLEMENT_MINUTES = Math.max(1, Number(process.env.POPUP_FAME_SETTLEMENT_MINUTES || "11"));
 const STAFF_ROLE_NAMES = new Set(["owner", "owners", "admin", "trial admin"]);
+const EVENT_DURATION_MS = 120_000;
 
 let dbClient = null;
 let schedulerTimer = null;
 let chatTimer = null;
-let killTimer = null;
 let tickRunning = false;
 let chatRunning = false;
-let killRunning = false;
 let activeEvent = null;
 let botRef = null;
 
-const QUICK_QUESTIONS = [
-  {
-    prompt: "What is required for the admin screwdriver trade? 1) 35 red screwdrivers 2) 25 toolboxes 3) 50 batteries",
-    correct: 1,
-  },
-  {
-    prompt: "Which role is the normal Outpost X player role? 1) Fresh Meat 2) The Exiles 3) Survivors",
-    correct: 2,
-  },
-  {
-    prompt: "What is the Outpost X server type? 1) PvE 2) PvP only 3) Battle Royale",
-    correct: 1,
-  },
-  {
-    prompt: "What should players open when they need staff help? 1) A ticket 2) A public argument 3) A vehicle claim",
-    correct: 1,
-  },
+const MULTIPLE_CHOICE = [
+  { prompt: "What is required for the admin screwdriver trade? 1) 35 red screwdrivers 2) 25 toolboxes 3) 50 batteries", correct: 1 },
+  { prompt: "Which role is the normal Outpost X player role? 1) Fresh Meat 2) The Exiles 3) Survivors", correct: 2 },
+  { prompt: "What is the Outpost X server type? 1) PvE 2) PvP only 3) Battle Royale", correct: 1 },
+  { prompt: "What should players open when they need staff help? 1) A ticket 2) A public argument 3) A vehicle claim", correct: 1 },
+  { prompt: "Which item is used during lockpicking? 1) Screwdriver 2) Crowbar 3) Wrench", correct: 1 },
+  { prompt: "Which command joins a Watcher event when registration is requested? 1) !shop 2) !join 3) !ticket", correct: 2 },
 ];
 
 const TEXT_QUESTIONS = [
   { prompt: "Unscramble this SCUM item: RIRWECSDREV", answers: ["screwdriver"] },
   { prompt: "Unscramble this SCUM item: XOLTOOB", answers: ["toolbox", "tool box"] },
+  { prompt: "Unscramble this SCUM item: TABYTER", answers: ["battery"] },
+  { prompt: "Unscramble this SCUM item: WROCRAB", answers: ["crowbar"] },
   { prompt: "I open locks, have limited uses, and come in several colors. What am I?", answers: ["screwdriver", "a screwdriver"] },
+  { prompt: "I repair damaged tires and fit inside your inventory. What am I?", answers: ["tire repair kit", "tire kit"] },
+  { prompt: "Complete the Outpost X slogan: Survive Together, Die ____.", answers: ["stupid"] },
+];
+
+const TRUE_FALSE = [
+  { prompt: "Outpost X is a PvE server.", correct: true },
+  { prompt: "Staff members can win Watcher pop-up events.", correct: false },
+  { prompt: "A red screwdriver can have different remaining uses.", correct: true },
+  { prompt: "Players need Discord open to answer Watcher pop-up events.", correct: false },
+  { prompt: "The normal player role is called The Exiles.", correct: true },
+];
+
+const ODD_ONE_OUT = [
+  { prompt: "Which one does NOT belong with lockpicking supplies? 1) Screwdriver 2) Lockpick 3) Gas canister", correct: 3 },
+  { prompt: "Which one is NOT a vehicle? 1) Laika 2) Rager 3) Toolbox", correct: 3 },
+  { prompt: "Which one is NOT an accepted answer command? 1) !1 2) !a 3) just typing the number in a sentence", correct: 3 },
+  { prompt: "Which one is NOT a small Watcher reward? 1) 25 fame 2) $1,000 bank credit 3) A fully loaded vehicle", correct: 3 },
+];
+
+const HIGHER_LOWER = [
+  { prompt: "Is 35 higher or lower than the number of red screwdrivers needed for the admin trade?", correct: "same", allowSame: true },
+  { prompt: "Is 50 higher or lower than the 35 red screwdrivers needed for the admin trade?", correct: "higher" },
+  { prompt: "Is 20 higher or lower than the 35 red screwdrivers needed for the admin trade?", correct: "lower" },
+  { prompt: "Is 4 higher or lower than the minimum number of non-staff players needed for a pop-up event?", correct: "same", allowSame: true },
 ];
 
 function clampProbability(value) {
@@ -79,9 +90,7 @@ function serverPassword() {
 }
 
 async function serverGet(path) {
-  const res = await fetch(`${serverBaseUrl()}${path}`, {
-    headers: { Accept: "application/json", "X-Password": serverPassword() },
-  });
+  const res = await fetch(`${serverBaseUrl()}${path}`, { headers: { Accept: "application/json", "X-Password": serverPassword() } });
   const text = await res.text();
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
@@ -98,9 +107,7 @@ async function serverPost(path, body = {}) {
   const text = await res.text();
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-  if (!res.ok || data?.ok === false || data?.accepted === false) {
-    throw new Error(data?.message || data?.error || `Server POST failed: ${res.status}`);
-  }
+  if (!res.ok || data?.ok === false || data?.accepted === false) throw new Error(data?.message || data?.error || `Server POST failed: ${res.status}`);
   return data || { ok: true };
 }
 
@@ -132,22 +139,14 @@ function normalizeState(value) {
     guildId: value.guildId || null,
     logChannelId: value.logChannelId || null,
     lastQuickEndedAt: Number(value.lastQuickEndedAt || 0),
-    lastTaskEndedAt: Number(value.lastTaskEndedAt || 0),
     lastAnyEndedAt: Number(value.lastAnyEndedAt || 0),
     chatCursor: Number(value.chatCursor || 0),
-    killCursor: Number(value.killCursor || value.fameCursor || 0),
-    fameCursor: Number(value.fameCursor || value.killCursor || 0),
     lastResult: value.lastResult || null,
   };
 }
 
-function playerSteamId(player) {
-  return String(player?.userId || player?.steamId || player?.steam_id || player?.id || "").trim();
-}
-
-function playerName(player) {
-  return String(player?.characterName || player?.name || player?.steamName || playerSteamId(player) || "Unknown").trim();
-}
+function playerSteamId(player) { return String(player?.userId || player?.steamId || player?.steam_id || player?.id || "").trim(); }
+function playerName(player) { return String(player?.characterName || player?.name || player?.steamName || playerSteamId(player) || "Unknown").trim(); }
 
 async function getOnlinePlayers() {
   const data = await serverGet("/players.json");
@@ -159,28 +158,21 @@ async function getStaffSteamIds(bot, guildId) {
   if (!guildId) return staff;
   const guild = await bot.guilds.fetch(String(guildId)).catch(() => null);
   if (!guild) return staff;
-  const { data, error } = await getDb()
-    .from(PLAYER_LINKS_TABLE)
-    .select("steam_id,discord_id")
-    .eq("guild_id", String(guildId))
-    .not("steam_id", "is", null)
-    .not("discord_id", "is", null)
-    .limit(2500);
+  const { data, error } = await getDb().from(PLAYER_LINKS_TABLE)
+    .select("steam_id,discord_id").eq("guild_id", String(guildId))
+    .not("steam_id", "is", null).not("discord_id", "is", null).limit(2500);
   if (error) throw error;
-
   for (const row of data || []) {
     const member = await guild.members.fetch(String(row.discord_id)).catch(() => null);
     if (!member) continue;
-    const isStaff = member.roles?.cache?.some((role) => STAFF_ROLE_NAMES.has(String(role.name || "").toLowerCase()));
-    if (isStaff) staff.add(String(row.steam_id));
+    if (member.roles?.cache?.some((role) => STAFF_ROLE_NAMES.has(String(role.name || "").toLowerCase()))) staff.add(String(row.steam_id));
   }
   return staff;
 }
 
 async function getEligibleOnline(bot, guildId) {
   const [players, staffIds] = await Promise.all([getOnlinePlayers(), getStaffSteamIds(bot, guildId)]);
-  return players
-    .map((player) => ({ player, steamId: playerSteamId(player), name: playerName(player) }))
+  return players.map((player) => ({ player, steamId: playerSteamId(player), name: playerName(player) }))
     .filter((entry) => entry.steamId && !staffIds.has(entry.steamId));
 }
 
@@ -188,68 +180,46 @@ function isStaffMember(member) {
   return !!member?.roles?.cache?.some((role) => STAFF_ROLE_NAMES.has(String(role.name || "").toLowerCase()));
 }
 
-function pick(values) {
-  return values[Math.floor(Math.random() * values.length)];
-}
-
-function randomId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
-function normalizeAnswer(value) {
-  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/g, "");
-}
+function pick(values) { return values[Math.floor(Math.random() * values.length)]; }
+function randomId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`; }
+function normalizeAnswer(value) { return String(value || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/g, ""); }
 
 function parseChatIdentity(line) {
-  const text = String(line || "");
-  const match = text.match(/'?(\d{15,20}):([^('\n]+)\((\d+)\)'?/);
+  const match = String(line || "").match(/'?(\d{15,20}):([^('\n]+)\((\d+)\)'?/);
   if (!match) return null;
   return { steamId: match[1], name: match[2].trim(), profileId: match[3] };
 }
 
 function parseCommand(line) {
-  const text = String(line || "");
-  const match = text.match(/(?:^|\s)!(answer|join|a|b|c|one|two|three|1|2|3)(?:\s+([^\r\n]*))?/i);
+  const match = String(line || "").match(/(?:^|\s)!(answer|guess|join|a|b|c|one|two|three|1|2|3|true|false|t|f|higher|lower|same)(?:\s+([^\r\n]*))?/i);
   if (!match) return null;
   return { command: match[1].toLowerCase(), value: String(match[2] || "").trim() };
 }
 
 function answerNumber(command) {
-  const map = { "1": 1, a: 1, one: 1, "2": 2, b: 2, two: 2, "3": 3, c: 3, three: 3 };
-  return map[command] || null;
+  return ({ "1": 1, a: 1, one: 1, "2": 2, b: 2, two: 2, "3": 3, c: 3, three: 3 })[command] || null;
 }
 
 function restartHours() {
-  return String(process.env.GGCON_CARGO_SCHEDULE_HOURS || "0,4,8,12,16,20")
-    .split(/[\s,]+/)
-    .map((v) => Number(v))
-    .filter((v) => Number.isInteger(v) && v >= 0 && v <= 23);
+  return String(process.env.GGCON_CARGO_SCHEDULE_HOURS || "0,4,8,12,16,20").split(/[\s,]+/)
+    .map(Number).filter((v) => Number.isInteger(v) && v >= 0 && v <= 23);
 }
 
 function minutesToNearestRestart(now = new Date()) {
   const hours = restartHours();
   if (!hours.length) return null;
   const timeZone = process.env.WATCHER_LOTTERY_TIMEZONE || "America/Toronto";
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
-  }).formatToParts(now).reduce((out, part) => ({ ...out, [part.type]: part.value }), {});
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone, hour: "2-digit", minute: "2-digit", hour12: false })
+    .formatToParts(now).reduce((out, part) => ({ ...out, [part.type]: part.value }), {});
   const currentMinutes = Number(parts.hour) * 60 + Number(parts.minute);
-  let best = Infinity;
-  for (const hour of hours) {
-    const target = hour * 60;
-    const forward = (target - currentMinutes + 1440) % 1440;
-    best = Math.min(best, forward);
-  }
-  return best;
+  return Math.min(...hours.map((hour) => (hour * 60 - currentMinutes + 1440) % 1440));
 }
 
-function cooldownRemaining(state, type) {
+function cooldownRemaining(state) {
   const now = Date.now();
-  const category = type === "quick"
-    ? Math.max(0, QUICK_COOLDOWN_MS - (now - state.lastQuickEndedAt))
-    : Math.max(0, TASK_COOLDOWN_MS - (now - state.lastTaskEndedAt));
+  const quick = Math.max(0, QUICK_COOLDOWN_MS - (now - state.lastQuickEndedAt));
   const shared = Math.max(0, SHARED_QUIET_MS - (now - state.lastAnyEndedAt));
-  return Math.max(category, shared);
+  return Math.max(quick, shared);
 }
 
 function formatRemaining(ms) {
@@ -275,13 +245,9 @@ function chooseReward() {
 
 async function deliverReward(event, winner, state) {
   const reward = event.reward || chooseReward();
-  if (reward.type === "fame") {
-    await serverPost(`/players/${encodeURIComponent(winner.steamId)}/fame`, { action: "change", amount: reward.amount });
-  } else if (reward.type === "cash") {
-    await serverPost(`/players/${encodeURIComponent(winner.steamId)}/currency`, { action: "change", amount: reward.amount });
-  } else if (reward.type === "bonus_lottery") {
-    await triggerBonusLottery(botRef, state.guildId);
-  }
+  if (reward.type === "fame") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/fame`, { action: "change", amount: reward.amount });
+  else if (reward.type === "cash") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/currency`, { action: "change", amount: reward.amount });
+  else if (reward.type === "bonus_lottery") await triggerBonusLottery(botRef, state.guildId);
   return reward;
 }
 
@@ -289,14 +255,10 @@ async function finishEvent(result = {}) {
   const event = activeEvent;
   if (!event) return;
   if (event.timeout) clearTimeout(event.timeout);
-  if (event.registrationTimeout) clearTimeout(event.registrationTimeout);
-  if (event.settlementTimeout) clearTimeout(event.settlementTimeout);
   activeEvent = null;
-
   const state = await loadState();
   const now = Date.now();
-  if (event.category === "quick") state.lastQuickEndedAt = now;
-  if (event.category === "task") state.lastTaskEndedAt = now;
+  state.lastQuickEndedAt = now;
   state.lastAnyEndedAt = now;
   state.lastResult = { eventId: event.id, type: event.type, endedAt: new Date(now).toISOString(), ...result };
   await saveState(state);
@@ -307,158 +269,88 @@ async function completeWithWinner(winner, extra = {}) {
   if (!event || event.finished) return;
   event.finished = true;
   const state = await loadState();
-  let reward;
   try {
-    reward = await deliverReward(event, winner, state);
-    if (reward.type === "bonus_lottery") {
-      await sendGame(`${winner.name} selected the signal that triggered an extra lottery.`);
-    } else if (reward.type === "none") {
-      await sendGame(`${winner.name} was selected. Reward: nothing. The choice was statistically valid.`);
-    } else {
-      await sendGame(`${winner.name} wins ${reward.label}.`);
-    }
-    await logToDiscord(botRef, state, `✅ **Pop-Up Event Completed**\nType: ${event.type}\nWinner: **${winner.name}** (${winner.steamId})\nReward: ${reward.label}`);
+    const reward = await deliverReward(event, winner, state);
+    if (reward.type === "bonus_lottery") await sendGame(`${winner.name} triggered an extra lottery.`);
+    else if (reward.type === "none") await sendGame(`${winner.name} was selected. Reward: nothing. The choice was statistically valid.`);
+    else await sendGame(`${winner.name} wins ${reward.label}.`);
+    await logToDiscord(botRef, state, `✅ **Chat Event Completed**\nType: ${event.type}\nWinner: **${winner.name}** (${winner.steamId})\nReward: ${reward.label}`);
     await finishEvent({ status: "completed", winner, reward, ...extra });
   } catch (err) {
     await sendGame(`${winner.name} won, but reward delivery failed. Staff has been notified.`).catch(() => {});
-    await logToDiscord(botRef, state, `⚠️ **Pop-Up Reward Failed**\nType: ${event.type}\nWinner: **${winner.name}** (${winner.steamId})\nIntended reward: ${event.reward?.label || "random reward"}\nError: ${err.message}`);
+    await logToDiscord(botRef, state, `⚠️ **Pop-Up Reward Failed**\nType: ${event.type}\nWinner: **${winner.name}** (${winner.steamId})\nError: ${err.message}`);
     await finishEvent({ status: "reward_failed", winner, error: err.message, ...extra });
   }
 }
 
 async function expireQuickEvent() {
   const event = activeEvent;
-  if (!event || event.category !== "quick" || event.finished) return;
+  if (!event || event.finished) return;
   event.finished = true;
 
   if (event.type === "mystery") {
-    const choices = [1, 2, 3];
-    const winningChoice = pick(choices);
+    const winningChoice = pick([1, 2, 3]);
     const candidates = [...event.entries.values()].filter((entry) => entry.choice === winningChoice);
     if (!candidates.length) {
-      await sendGame(`Signal ${winningChoice} contained the reward, but nobody selected it. The reward was left unclaimed.`);
+      await sendGame(`Signal ${winningChoice} held the reward, but nobody selected it. The reward was left unclaimed.`);
       await finishEvent({ status: "unclaimed", winningChoice, entries: event.entries.size });
       return;
     }
-    const winner = pick(candidates);
     event.finished = false;
-    await completeWithWinner(winner, { winningChoice, entries: event.entries.size });
+    await completeWithWinner(pick(candidates), { winningChoice, entries: event.entries.size });
     return;
   }
 
-  await sendGame("Time expired. No acceptable answer was received.");
+  if (event.type === "number_guess") {
+    const guesses = [...event.entries.values()];
+    if (!guesses.length) {
+      await sendGame(`The number was ${event.target}. No valid guesses were received.`);
+      await finishEvent({ status: "expired", target: event.target });
+      return;
+    }
+    const closestDistance = Math.min(...guesses.map((g) => Math.abs(g.guess - event.target)));
+    const closest = guesses.filter((g) => Math.abs(g.guess - event.target) === closestDistance);
+    const winner = pick(closest);
+    event.finished = false;
+    await sendGame(`The number was ${event.target}. ${winner.name} had the closest guess: ${winner.guess}.`);
+    await completeWithWinner(winner, { target: event.target, guess: winner.guess, tied: closest.length });
+    return;
+  }
+
+  await sendGame("Time expired. No correct answer was received.");
   await finishEvent({ status: "expired" });
 }
 
 async function startQuickEvent({ forceType = null } = {}) {
   if (activeEvent) throw new Error("Another pop-up event is already active.");
-  const type = forceType || pick(["multiple_choice", "text_answer", "mystery"]);
-  const event = {
-    id: randomId(), category: "quick", type, startedAt: Date.now(), finished: false,
-    entries: new Map(), answered: new Set(), reward: chooseReward(),
-  };
+  const type = forceType || pick(["multiple_choice", "text_answer", "true_false", "odd_one_out", "higher_lower", "number_guess", "mystery"]);
+  const event = { id: randomId(), category: "quick", type, startedAt: Date.now(), finished: false, entries: new Map(), answered: new Set(), reward: chooseReward() };
   activeEvent = event;
+  event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), EVENT_DURATION_MS);
 
   if (type === "multiple_choice") {
-    const question = pick(QUICK_QUESTIONS);
-    event.correct = question.correct;
-    event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), 120_000);
-    await sendGame(`RAPID ASSESSMENT: ${question.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes to answer.`);
+    const q = pick(MULTIPLE_CHOICE); event.correct = q.correct;
+    await sendGame(`RAPID ASSESSMENT: ${q.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes.`);
   } else if (type === "text_answer") {
-    const question = pick(TEXT_QUESTIONS);
-    event.answers = question.answers.map(normalizeAnswer);
-    event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), 120_000);
-    await sendGame(`ITEM IDENTIFICATION: ${question.prompt}. Reply with !answer followed by your answer. Example: !answer screwdriver. First correct answer wins. You have 2 minutes to answer.`);
+    const q = pick(TEXT_QUESTIONS); event.answers = q.answers.map(normalizeAnswer);
+    await sendGame(`IDENTIFY IT: ${q.prompt}. Reply with !answer followed by your answer. Example: !answer screwdriver. First correct answer wins. You have 2 minutes.`);
+  } else if (type === "true_false") {
+    const q = pick(TRUE_FALSE); event.correct = q.correct;
+    await sendGame(`TRUE OR FALSE: ${q.prompt} Reply !true or !false. !t or !f also work. First correct answer wins. You have 2 minutes.`);
+  } else if (type === "odd_one_out") {
+    const q = pick(ODD_ONE_OUT); event.correct = q.correct;
+    await sendGame(`ODD ONE OUT: ${q.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes.`);
+  } else if (type === "higher_lower") {
+    const q = pick(HIGHER_LOWER); event.correct = q.correct;
+    const formats = q.allowSame ? "!higher, !lower or !same" : "!higher or !lower";
+    await sendGame(`HIGHER OR LOWER: ${q.prompt} Reply ${formats}. First correct answer wins. You have 2 minutes.`);
+  } else if (type === "number_guess") {
+    event.target = 1 + Math.floor(Math.random() * 20);
+    await sendGame("NUMBER SIGNAL: The Watcher selected a number from 1 to 20. Reply with !guess followed by one number. Example: !guess 12. Exact or closest guess wins. One guess each. You have 2 minutes.");
   } else {
-    event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), 120_000);
-    await sendGame("THREE SIGNALS DETECTED: 1) Signal One 2) Signal Two 3) Signal Three. Choose with !1, !2 or !3. !one, !two or !three also work. One choice per player. You have 2 minutes to choose.");
+    await sendGame("THREE SIGNALS DETECTED: 1) Signal One 2) Signal Two 3) Signal Three. Choose with !1, !2 or !3. !one, !two or !three also work. One choice each. A winner is drawn from the rewarding signal after 2 minutes.");
   }
-
   return event;
-}
-
-async function startTaskEvent({ forceType = null } = {}) {
-  if (activeEvent) throw new Error("Another pop-up event is already active.");
-  const type = forceType || pick(["most_kills", "community_kills"]);
-  const durationMinutes = type === "community_kills" ? 20 : 15;
-  const event = {
-    id: randomId(), category: "task", type, phase: "registration", startedAt: Date.now(), finished: false,
-    participants: new Map(), scores: new Map(), target: type === "community_kills" ? 40 : null,
-    durationMinutes, reward: chooseReward(),
-  };
-  activeEvent = event;
-
-  if (type === "community_kills") {
-    await sendGame(`COMMUNITY DIRECTIVE: Registered players must eliminate ${event.target} puppets in ${durationMinutes} minutes. Type !join within 2 minutes. One contributor will be randomly rewarded if the target is completed.`);
-  } else {
-    await sendGame(`EXTERMINATION WINDOW: The registered player with the most puppet kills in ${durationMinutes} minutes wins. Type !join within 2 minutes.`);
-  }
-
-  event.registrationTimeout = setTimeout(() => beginTask().catch(console.error), 120_000);
-  return event;
-}
-
-async function beginTask() {
-  const event = activeEvent;
-  if (!event || event.category !== "task" || event.finished || event.phase !== "registration") return;
-  if (event.registrationTimeout) clearTimeout(event.registrationTimeout);
-  if (event.participants.size === 0) {
-    await sendGame("Task cancelled. No eligible players joined.");
-    await finishEvent({ status: "no_participants" });
-    return;
-  }
-  event.phase = "active";
-  event.taskStartedAt = Date.now();
-  event.taskEndsAt = event.taskStartedAt + event.durationMinutes * 60_000;
-  event.lastFamePlayer = null;
-  event.fameReportsSeen = 0;
-  const baselineState = await loadState();
-  await saveState({ ...baselineState, fameCursor: event.taskStartedAt, killCursor: event.taskStartedAt });
-  await sendGame(`Registration closed. ${event.participants.size} player${event.participants.size === 1 ? "" : "s"} joined. The task is now active for ${event.durationMinutes} minutes.`);
-  event.timeout = setTimeout(() => beginTaskSettlement().catch(console.error), event.durationMinutes * 60_000);
-}
-
-async function beginTaskSettlement() {
-  const event = activeEvent;
-  if (!event || event.category !== "task" || event.finished || event.phase !== "active") return;
-  event.phase = "settlement";
-  event.settlementEndsAt = Date.now() + FAME_SETTLEMENT_MINUTES * 60_000;
-  await sendGame(`The ${event.durationMinutes}-minute killing window is closed. Final puppet-kill credit is being processed.`);
-  event.settlementTimeout = setTimeout(() => finishTask().catch(console.error), FAME_SETTLEMENT_MINUTES * 60_000);
-}
-
-async function finishTask() {
-  const event = activeEvent;
-  if (!event || event.category !== "task" || event.finished) return;
-  event.finished = true;
-  if (event.timeout) clearTimeout(event.timeout);
-  if (event.settlementTimeout) clearTimeout(event.settlementTimeout);
-  const scores = [...event.participants.values()].map((entry) => ({ ...entry, kills: event.scores.get(entry.steamId) || 0 }));
-
-  if (event.type === "community_kills") {
-    const total = scores.reduce((sum, entry) => sum + entry.kills, 0);
-    const contributors = scores.filter((entry) => entry.kills > 0);
-    if (total < event.target || contributors.length === 0) {
-      await sendGame(`Community directive failed. Final progress: ${total}/${event.target} puppet kills.`);
-      await finishEvent({ status: "failed", total, target: event.target, source: "famepoints" });
-      return;
-    }
-    event.finished = false;
-    await completeWithWinner(pick(contributors), { total, target: event.target, source: "famepoints" });
-    return;
-  }
-
-  const high = Math.max(0, ...scores.map((entry) => entry.kills));
-  if (high <= 0) {
-    await sendGame("Extermination window closed. No qualifying puppet kills were recorded.");
-    await finishEvent({ status: "no_kills", source: "famepoints" });
-    return;
-  }
-  const tied = scores.filter((entry) => entry.kills === high);
-  const winner = pick(tied);
-  event.finished = false;
-  await sendGame(tied.length > 1 ? `The task ended in a ${tied.length}-way tie at ${high} kills. The Watcher selected ${winner.name}.` : `${winner.name} recorded the most puppet kills: ${high}.`);
-  await completeWithWinner(winner, { highScore: high, tied: tied.length, source: "famepoints" });
 }
 
 async function fetchChatLogsSince(since) {
@@ -479,45 +371,48 @@ async function scanChat() {
     const event = activeEvent;
 
     if (event) {
-      const [staffIds, onlinePlayers] = await Promise.all([
-        getStaffSteamIds(botRef, state.guildId),
-        getOnlinePlayers().catch(() => []),
-      ]);
+      const [staffIds, onlinePlayers] = await Promise.all([getStaffSteamIds(botRef, state.guildId), getOnlinePlayers().catch(() => [])]);
       const onlineIds = new Set(onlinePlayers.map(playerSteamId).filter(Boolean));
       for (const row of lines) {
         if (!activeEvent || activeEvent.id !== event.id || event.finished) break;
         const identity = parseChatIdentity(row?.line);
         const parsed = parseCommand(row?.line);
-        if (!identity || !parsed || staffIds.has(identity.steamId)) continue;
-        if (!onlineIds.has(identity.steamId)) continue;
+        if (!identity || !parsed || staffIds.has(identity.steamId) || !onlineIds.has(identity.steamId)) continue;
 
-        if (event.category === "quick") {
-          if (event.type === "multiple_choice") {
-            const choice = answerNumber(parsed.command);
-            if (!choice || event.answered.has(identity.steamId)) continue;
-            event.answered.add(identity.steamId);
-            if (choice === event.correct) await completeWithWinner(identity);
-          } else if (event.type === "text_answer") {
-            if (parsed.command !== "answer" || event.answered.has(identity.steamId)) continue;
-            event.answered.add(identity.steamId);
-            if (event.answers.includes(normalizeAnswer(parsed.value))) await completeWithWinner(identity);
-          } else if (event.type === "mystery") {
-            const choice = answerNumber(parsed.command);
-            if (!choice || event.entries.has(identity.steamId)) continue;
-            event.entries.set(identity.steamId, { ...identity, choice });
+        if (["multiple_choice", "odd_one_out"].includes(event.type)) {
+          const choice = answerNumber(parsed.command);
+          if (!choice || event.answered.has(identity.steamId)) continue;
+          event.answered.add(identity.steamId);
+          if (choice === event.correct) await completeWithWinner(identity);
+        } else if (event.type === "text_answer") {
+          if (parsed.command !== "answer" || event.answered.has(identity.steamId)) continue;
+          event.answered.add(identity.steamId);
+          if (event.answers.includes(normalizeAnswer(parsed.value))) await completeWithWinner(identity);
+        } else if (event.type === "true_false") {
+          if (!["true", "false", "t", "f"].includes(parsed.command) || event.answered.has(identity.steamId)) continue;
+          event.answered.add(identity.steamId);
+          const answer = parsed.command === "true" || parsed.command === "t";
+          if (answer === event.correct) await completeWithWinner(identity);
+        } else if (event.type === "higher_lower") {
+          if (!["higher", "lower", "same"].includes(parsed.command) || event.answered.has(identity.steamId)) continue;
+          event.answered.add(identity.steamId);
+          if (parsed.command === event.correct) await completeWithWinner(identity);
+        } else if (event.type === "number_guess") {
+          if (parsed.command !== "guess" || event.entries.has(identity.steamId)) continue;
+          const guess = Number.parseInt(parsed.value, 10);
+          if (!Number.isInteger(guess) || guess < 1 || guess > 20) {
+            await sendGame(`${identity.name}, use !guess followed by a number from 1 to 20.`, identity.steamId).catch(() => {});
+            continue;
           }
-        } else if (event.category === "task" && event.phase === "registration" && parsed.command === "join") {
-          if (event.participants.has(identity.steamId)) {
-            await sendGame(`${identity.name}, you are already registered.`, identity.steamId).catch(() => {});
-          } else {
-            event.participants.set(identity.steamId, identity);
-            event.scores.set(identity.steamId, 0);
-            await sendGame(`${identity.name} joined the task.`).catch(() => {});
-          }
+          event.entries.set(identity.steamId, { ...identity, guess });
+          if (guess === event.target) await completeWithWinner({ ...identity, guess }, { target: event.target, exact: true });
+        } else if (event.type === "mystery") {
+          const choice = answerNumber(parsed.command);
+          if (!choice || event.entries.has(identity.steamId)) continue;
+          event.entries.set(identity.steamId, { ...identity, choice });
         }
       }
     }
-
     await saveState({ ...state, chatCursor: next });
   } catch (err) {
     console.error("❌ Pop-up chat scan failed:", err.message);
@@ -526,94 +421,11 @@ async function scanChat() {
   }
 }
 
-function parseFamePlayer(line) {
-  const match = String(line || "").match(/Player\s+(.+?)\((\d{15,20})\)\s+was awarded/i);
-  if (!match) return null;
-  return { name: match[1].trim(), steamId: match[2] };
-}
-
-function puppetKillsFromFame(value) {
-  const amount = Number(value);
-  if (!Number.isFinite(amount) || amount <= 0) return 0;
-  return Math.max(0, Math.round(amount / PUPPET_KILL_FAME_VALUE));
-}
-
-async function fetchFameLogsSince(since) {
-  const params = new URLSearchParams({
-    since: String(Math.max(0, Number(since || 0))),
-    sources: "famepoints",
-  });
-  return serverGet(`/logs?${params.toString()}`);
-}
-
-async function scanKills() {
-  if (killRunning) return;
-  killRunning = true;
-  try {
-    const event = activeEvent;
-    if (!event || event.category !== "task" || !["active", "settlement"].includes(event.phase) || event.finished) return;
-    const state = await loadState();
-    const cursor = state.fameCursor || state.killCursor || Math.max(0, event.taskStartedAt - 5000);
-    const data = await fetchFameLogsSince(cursor);
-    const lines = Array.isArray(data?.lines)
-      ? data.lines.slice().sort((a, b) => Number(a?.t || 0) - Number(b?.t || 0))
-      : [];
-    const next = Number(data?.next || lines.reduce((max, row) => Math.max(max, Number(row?.t || 0)), cursor) || Date.now());
-    let totalChanged = false;
-
-    for (const row of lines) {
-      const rowTime = Number(row?.t || 0);
-      const line = String(row?.line || "");
-      const player = parseFamePlayer(line);
-      if (player) {
-        event.lastFamePlayer = player;
-        continue;
-      }
-      if (/^-{5,}\s*$/.test(line.trim()) || /:\s*-{5,}\s*$/.test(line.trim())) {
-        event.lastFamePlayer = null;
-        continue;
-      }
-      const puppetMatch = line.match(/PuppetKill:\s*([0-9]+(?:\.[0-9]+)?)/i);
-      if (!puppetMatch || !event.lastFamePlayer) continue;
-      if (rowTime && rowTime < event.taskStartedAt) continue;
-      if (!event.participants.has(event.lastFamePlayer.steamId)) continue;
-
-      const kills = puppetKillsFromFame(puppetMatch[1]);
-      if (kills <= 0) continue;
-      const steamId = event.lastFamePlayer.steamId;
-      event.scores.set(steamId, (event.scores.get(steamId) || 0) + kills);
-      event.fameReportsSeen = (event.fameReportsSeen || 0) + 1;
-      totalChanged = true;
-    }
-
-    await saveState({ ...state, fameCursor: next, killCursor: next });
-
-    if (event.type === "community_kills" && totalChanged) {
-      const total = [...event.scores.values()].reduce((sum, n) => sum + n, 0);
-      const milestones = [0.25, 0.5, 0.75].map((ratio) => Math.ceil(event.target * ratio));
-      event.postedMilestones ||= new Set();
-      for (const milestone of milestones) {
-        if (total >= milestone && !event.postedMilestones.has(milestone)) {
-          event.postedMilestones.add(milestone);
-          await sendGame(`Community directive progress: ${Math.min(total, event.target)}/${event.target} puppet kills.`);
-        }
-      }
-      if (total >= event.target && !event.finished) {
-        await finishTask();
-      }
-    }
-  } catch (err) {
-    console.error("❌ Pop-up fame scan failed:", err.message);
-  } finally {
-    killRunning = false;
-  }
-}
-
-async function canLaunch(bot, state, category, { force = false } = {}) {
+async function canLaunch(bot, state, { force = false } = {}) {
   if (!state.enabled && !force) return { ok: false, reason: "disabled" };
   if (!state.guildId) return { ok: false, reason: "not configured" };
   if (activeEvent) return { ok: false, reason: "another event is active" };
-  if (!force && cooldownRemaining(state, category) > 0) return { ok: false, reason: "cooldown" };
+  if (!force && cooldownRemaining(state) > 0) return { ok: false, reason: "cooldown" };
   const restartMinutes = minutesToNearestRestart();
   if (!force && restartMinutes !== null && restartMinutes <= RESTART_BLOCK_MINUTES) return { ok: false, reason: "restart window" };
   const eligible = await getEligibleOnline(bot, state.guildId);
@@ -626,22 +438,14 @@ async function schedulerTick(bot) {
   tickRunning = true;
   try {
     const state = await loadState();
-    if (!state.enabled || !state.guildId || activeEvent) return;
-    const quickReady = cooldownRemaining(state, "quick") <= 0;
-    const taskReady = cooldownRemaining(state, "task") <= 0;
-    if (!quickReady && !taskReady) return;
+    if (!state.enabled || !state.guildId || activeEvent || cooldownRemaining(state) > 0) return;
     const eligible = await getEligibleOnline(bot, state.guildId);
     if (eligible.length < MIN_ELIGIBLE) return;
     const restartMinutes = minutesToNearestRestart();
     if (restartMinutes !== null && restartMinutes <= RESTART_BLOCK_MINUTES) return;
-
-    const roll = Math.random();
-    if (taskReady && roll < TASK_CHANCE) {
-      await startTaskEvent();
-      await logToDiscord(bot, state, `🎯 **Timed Task Event Started**\nEligible non-staff online: ${eligible.length}`);
-    } else if (quickReady && roll < TASK_CHANCE + QUICK_CHANCE) {
-      await startQuickEvent();
-      await logToDiscord(bot, state, `💬 **Quick Chat Event Started**\nEligible non-staff online: ${eligible.length}`);
+    if (Math.random() < QUICK_CHANCE) {
+      const event = await startQuickEvent();
+      await logToDiscord(bot, state, `💬 **In-Game Chat Event Started**\nType: ${event.type}\nEligible non-staff online: ${eligible.length}`);
     }
   } catch (err) {
     console.error("❌ Pop-up event scheduler failed:", err.message);
@@ -654,31 +458,23 @@ function startTimers(bot) {
   botRef = bot;
   if (schedulerTimer) clearInterval(schedulerTimer);
   if (chatTimer) clearInterval(chatTimer);
-  if (killTimer) clearInterval(killTimer);
   schedulerTimer = setInterval(() => schedulerTick(bot), CHECK_MINUTES * 60_000);
   chatTimer = setInterval(() => scanChat(), CHAT_SCAN_SECONDS * 1000);
-  killTimer = setInterval(() => scanKills(), 15_000);
   schedulerTick(bot).catch(() => {});
   scanChat().catch(() => {});
 }
 
 async function startPopupEventsOnBoot(bot) {
   botRef = bot;
-  const state = await loadState().catch((err) => {
-    console.error("❌ Pop-up event startup read failed:", err.message);
-    return null;
-  });
+  const state = await loadState().catch((err) => { console.error("❌ Pop-up event startup read failed:", err.message); return null; });
   if (!state?.enabled) return;
   startTimers(bot);
-  await logToDiscord(bot, state, "👁️ Watcher Pop-Up Events scheduler is online.").catch(() => {});
+  await logToDiscord(bot, state, "👁️ Watcher in-game chat event scheduler is online.").catch(() => {});
 }
 
 async function cancelActiveEvent(reason = "Cancelled by staff") {
   if (!activeEvent) return false;
-  const event = activeEvent;
-  if (event.timeout) clearTimeout(event.timeout);
-  if (event.registrationTimeout) clearTimeout(event.registrationTimeout);
-  if (event.settlementTimeout) clearTimeout(event.settlementTimeout);
+  if (activeEvent.timeout) clearTimeout(activeEvent.timeout);
   await sendGame(`Event cancelled. ${reason}`);
   await finishEvent({ status: "cancelled", reason });
   return true;
@@ -696,49 +492,50 @@ async function handlePopupEventCommand(message, bot) {
 
   const action = command === "!popupeventsetup" ? "setup" : String(parts.shift() || "status").toLowerCase();
   const force = parts.some((part) => part.toLowerCase() === "force");
+  const requestedType = parts.find((part) => ["multiple_choice", "text_answer", "true_false", "odd_one_out", "higher_lower", "number_guess", "mystery"].includes(part.toLowerCase()));
 
   try {
     let state = await loadState();
     if (action === "setup" || action === "enable") {
       state = await saveState({ ...state, enabled: true, guildId: message.guild.id, logChannelId: message.channel.id });
       startTimers(bot);
-      await message.reply("✅ Watcher Pop-Up Events are enabled. This channel is now the private event log channel.").catch(() => {});
+      await message.reply("✅ Watcher in-game chat events are enabled. This channel is the private event log channel.").catch(() => {});
       return true;
     }
     if (action === "disable") {
-      state = await saveState({ ...state, enabled: false });
-      await cancelActiveEvent("Automatic pop-up events were disabled by staff.").catch(() => {});
-      await message.reply("⛔ Watcher Pop-Up Events are disabled. Cooldown history was preserved.").catch(() => {});
+      await saveState({ ...state, enabled: false });
+      await cancelActiveEvent("Automatic chat events were disabled by staff.").catch(() => {});
+      await message.reply("⛔ Watcher in-game chat events are disabled. Cooldown history was preserved.").catch(() => {});
       return true;
     }
     if (action === "cancel") {
       const cancelled = await cancelActiveEvent();
-      await message.reply(cancelled ? "Active pop-up event cancelled." : "No pop-up event is active.").catch(() => {});
+      await message.reply(cancelled ? "Active chat event cancelled." : "No chat event is active.").catch(() => {});
       return true;
     }
-    if (action === "quick" || action === "task") {
-      const check = await canLaunch(bot, state, action === "quick" ? "quick" : "task", { force });
+    if (action === "quick" || action === "chat") {
+      const check = await canLaunch(bot, state, { force });
       if (!check.ok) {
         await message.reply(`Cannot launch: ${check.reason}.${force ? "" : " Add `force` to bypass player minimum, cooldown, and restart-window checks for testing."}`).catch(() => {});
         return true;
       }
-      if (action === "quick") await startQuickEvent(); else await startTaskEvent();
-      await message.reply(`${action === "quick" ? "Quick Chat" : "Timed Task"} event launched in SCUM chat.`).catch(() => {});
+      const event = await startQuickEvent({ forceType: requestedType ? requestedType.toLowerCase() : null });
+      await message.reply(`In-game chat event launched: **${event.type}**.`).catch(() => {});
       return true;
     }
 
     const eligible = state.guildId ? await getEligibleOnline(bot, state.guildId).catch(() => []) : [];
     const restartMinutes = minutesToNearestRestart();
     await message.reply([
-      "👁️ **Watcher Pop-Up Events**",
+      "👁️ **Watcher In-Game Chat Events**",
       `Status: **${state.enabled ? "Enabled" : "Disabled"}**`,
-      `Active Event: **${activeEvent ? `${activeEvent.type} (${activeEvent.category})` : "None"}**`,
+      `Active Event: **${activeEvent ? activeEvent.type : "None"}**`,
       `Eligible Non-Staff Online: **${eligible.length}** / ${MIN_ELIGIBLE} required`,
-      `Quick Chat Cooldown: **${formatRemaining(cooldownRemaining(state, "quick"))}**`,
-      `Timed Task Cooldown: **${formatRemaining(cooldownRemaining(state, "task"))}**`,
-      `Restart Check: **${restartMinutes === null ? "Not configured" : `${restartMinutes} minutes` }**`,
-      "Commands: `!popupevent quick`, `!popupevent task`, `!popupevent cancel`, `!popupevent enable`, `!popupevent disable`",
-      "Testing: add `force` to quick/task.",
+      `Chat Event Cooldown: **${formatRemaining(cooldownRemaining(state))}**`,
+      `Restart Check: **${restartMinutes === null ? "Not configured" : `${restartMinutes} minutes`}**`,
+      "Event Pool: multiple choice, item identification, true/false, odd-one-out, higher/lower, number guess, mystery signals",
+      "Commands: `!popupevent quick`, `!popupevent cancel`, `!popupevent enable`, `!popupevent disable`",
+      "Testing: `!popupevent quick force` or add an event type, such as `!popupevent quick force number_guess`.",
     ].join("\n")).catch(() => {});
   } catch (err) {
     console.error("❌ Pop-up event command failed:", err);
@@ -747,7 +544,4 @@ async function handlePopupEventCommand(message, bot) {
   return true;
 }
 
-module.exports = {
-  handlePopupEventCommand,
-  startPopupEventsOnBoot,
-};
+module.exports = { handlePopupEventCommand, startPopupEventsOnBoot };

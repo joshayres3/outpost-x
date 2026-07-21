@@ -79,8 +79,8 @@ const SECTIONS = {
       ["!lotterysetup", "Enable and post the hourly lottery."],
       ["!lotterystatus", "Lottery status and next draw."],
       ["!popupeventsetup", "Enable in-game Watcher Pop-Up Events and use this channel for private event logs."],
-      ["!popupevent status", "Show eligible players, active event, and both cooldowns."],
-      ["!popupevent quick/task", "Manually launch an in-game event; add `force` for testing."],
+      ["!popupevent status", "Show eligible players, active event, and chat-event cooldown."],
+      ["!popupevent quick", "Manually launch an in-game chat event; add `force` for testing."],
     ],
   },
   server: {
