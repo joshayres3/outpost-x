@@ -153,26 +153,95 @@ async function nextRestartText() {
     : `${minutesLeft}m`;
   return `**${next.toFormat('h:mm a')} ET** — in **${countdown}**`;
 }
+
+async function getTodayPulseStats(guild) {
+  const now = nowEt();
+  const day = now.toISODate();
+  const { start, end } = rangeForDay(now);
+  const [{ data: activity }, registrations, lotteryConfig] = await Promise.all([
+    getDb().from(DAILY_TABLE).select('*').eq('guild_id', guild.id).eq('activity_date', day).maybeSingle(),
+    countRows(process.env.WATCHER_PLAYER_LINKS_TABLE || 'watcher_player_links', 'created_at', start, end, [['eq','guild_id',guild.id]]),
+    stateGet('lottery_config').catch(() => null),
+  ]);
+
+  let lotteryStatus = 'Disabled';
+  if (lotteryConfig?.enabled) {
+    let nextDraw = now.set({ minute: 45, second: 0, millisecond: 0 });
+    if (now > nextDraw) nextDraw = nextDraw.plus({ hours: 1 });
+    lotteryStatus = `Enabled • next ${nextDraw.toFormat('h:mm a')}`;
+  }
+
+  return {
+    peakToday: Number(activity?.peak_online || 0),
+    registeredToday: Number(registrations || 0),
+    lotteryStatus,
+  };
+}
+
+function stripLiveStatusFields(fields = []) {
+  const liveNames = new Set([
+    '👁️ Live Server Status',
+    'Players Online', 'Peak Today', 'Registered Today',
+    'Lottery Status', 'Open Tickets', 'Active Rentals',
+    'Next Restart', 'Watcher Services', 'Last Updated',
+  ]);
+  return fields.filter(field => !liveNames.has(field?.name));
+}
+
+async function findServerInfoMessage(channel, botUserId) {
+  const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+  if (!messages) return null;
+  return messages.find(message => {
+    if (message.author?.id !== botUserId || !message.embeds?.length) return false;
+    const embed = message.embeds[0];
+    const footer = embed.footer?.text || '';
+    const title = embed.title || '';
+    const description = embed.description || '';
+    return footer.includes('Outpost X Rules') && (
+      /server info/i.test(title) ||
+      /direct connect/i.test(description) ||
+      /server restarts/i.test(description)
+    );
+  }) || null;
+}
+
 async function updatePulse(guild) {
   if (pulseBusy) return; pulseBusy = true;
   try {
     const cfg = await getConfig(guild.id); if (!cfg?.pulse_channel_id || !cfg?.pulse_message_id) return;
     const channel = await guild.channels.fetch(cfg.pulse_channel_id).catch(()=>null); if (!channel?.isTextBased()) return;
     const message = await channel.messages.fetch(cfg.pulse_message_id).catch(()=>null); if (!message) return;
-    const online = await observeOnline(guild).catch(()=>({count:0}));
-    const openTickets = await safeRows('watcher_tickets','id',[['eq','guild_id',guild.id],['eq','status','open']]);
-    const activeRentals = await safeRows(process.env.WATCHER_DIRTBIKE_RENTAL_TABLE || 'watcher_dirtbike_rentals','id',[['eq','guild_id',guild.id],['in','status',['active','removal_pending']]]);
-    const embed = new EmbedBuilder().setTitle('👁️ Watcher Activity Pulse').setDescription('Live Outpost X service status.').addFields(
+    const [online, openTickets, activeRentals, todayStats] = await Promise.all([
+      observeOnline(guild).catch(()=>({count:0})),
+      safeRows('watcher_tickets','id',[['eq','guild_id',guild.id],['eq','status','open']]),
+      safeRows(process.env.WATCHER_DIRTBIKE_RENTAL_TABLE || 'watcher_dirtbike_rentals','id',[['eq','guild_id',guild.id],['in','status',['active','removal_pending']]]),
+      getTodayPulseStats(guild).catch(() => ({ peakToday: 0, registeredToday: 0, lotteryStatus: 'Unavailable' })),
+    ]);
+
+    const base = message.embeds?.[0]?.toJSON?.() || {};
+    const isLegacyPulse = /Watcher Activity Pulse/i.test(base.title || '');
+    const embed = isLegacyPulse
+      ? new EmbedBuilder().setTitle('👁️ Watcher Activity Pulse').setDescription('Live Outpost X service status.')
+      : EmbedBuilder.from(base);
+
+    embed.setFields(...stripLiveStatusFields(base.fields || []));
+    embed.addFields(
+      { name:'👁️ Live Server Status', value:'Updated automatically by The Watcher.', inline:false },
       { name:'Players Online', value:`**${online.count}**`, inline:true },
+      { name:'Peak Today', value:`**${todayStats.peakToday}**`, inline:true },
+      { name:'Registered Today', value:`**${todayStats.registeredToday}**`, inline:true },
+      { name:'Lottery Status', value:todayStats.lotteryStatus, inline:true },
       { name:'Open Tickets', value:`**${openTickets.length}**`, inline:true },
       { name:'Active Rentals', value:`**${activeRentals.length}**`, inline:true },
       { name:'Next Restart', value:await nextRestartText(), inline:true },
       { name:'Watcher Services', value:'🟢 Online', inline:true },
       { name:'Last Updated', value:`<t:${Math.floor(Date.now()/1000)}:R>`, inline:true },
-    ).setFooter({ text:'Updates approximately every 5 minutes' });
+    );
+    if (isLegacyPulse) embed.setFooter({ text:'Updates approximately every 5 minutes' });
     await message.edit({ embeds:[embed] });
   } finally { pulseBusy = false; }
 }
+
 async function postDaily(bot, guild, force=false) {
   const key = `analytics:daily:${guild.id}:${nowEt().minus({days:1}).toISODate()}`;
   if (!force && await stateGet(key)) return;
@@ -203,10 +272,27 @@ async function handleAnalyticsCommand(message) {
   if (!['!pulsesetup','!pulsestatus','!storynow','!awardsnow'].includes(cmd)) return false;
   if (!isStaff(message.member)) { await message.reply('Only Watcher staff can use that command.'); return true; }
   if (cmd === '!pulsesetup') {
-    const embed = new EmbedBuilder().setTitle('👁️ Watcher Activity Pulse').setDescription('Initializing live server activity…');
-    const panel = await message.channel.send({ embeds:[embed] });
-    await saveConfig(message.guild.id,{pulse_channel_id:message.channel.id,pulse_message_id:panel.id});
-    await message.delete().catch(()=>{}); await updatePulse(message.guild); return true;
+    const existing = await getConfig(message.guild.id);
+    const serverInfo = await findServerInfoMessage(message.channel, message.client.user.id);
+    if (!serverInfo) {
+      await message.reply('I could not find the Watcher Server Info post in this channel. Run `!pulsesetup` in the channel containing that post.');
+      return true;
+    }
+
+    if (existing?.pulse_channel_id && existing?.pulse_message_id && existing.pulse_message_id !== serverInfo.id) {
+      const oldChannel = await message.guild.channels.fetch(existing.pulse_channel_id).catch(() => null);
+      const oldMessage = oldChannel?.isTextBased()
+        ? await oldChannel.messages.fetch(existing.pulse_message_id).catch(() => null)
+        : null;
+      if (oldMessage?.embeds?.[0] && /Watcher Activity Pulse/i.test(oldMessage.embeds[0].title || '')) {
+        await oldMessage.delete().catch(() => {});
+      }
+    }
+
+    await saveConfig(message.guild.id,{pulse_channel_id:message.channel.id,pulse_message_id:serverInfo.id});
+    await message.delete().catch(()=>{});
+    await updatePulse(message.guild);
+    return true;
   }
   if (cmd === '!pulsestatus') { const c=await getConfig(message.guild.id); await message.reply(c?.pulse_channel_id?`Pulse is posted in <#${c.pulse_channel_id}>.`:'The Activity Pulse has not been set up yet.'); return true; }
   if (cmd === '!storynow') { await postDaily(message.client,message.guild,true); await message.reply('Daily Server Story posted in Main Chat.'); return true; }

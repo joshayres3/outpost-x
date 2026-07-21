@@ -69,7 +69,7 @@ const SECTIONS = {
       ["!taxisetup", "Post the dedicated Airlift Taxi panel."],
       ["!dirtbikerentalsetup", "Post the automated 30-minute dirtbike rental panel."],
       ["!shopsetup", "Post the Discord-native Watcher Server Shop panel."],
-      ["!pulsesetup", "Post or move the permanent Watcher Activity Pulse to the current channel."],
+      ["!pulsesetup", "Attach the live Watcher status section to the Server Info post in the current channel."],
       ["Daily Server Story", "Posts in Main Chat every evening using verified Watcher activity."],
       ["Weekly Awards", "Posts in Main Chat every Friday around 6 PM Eastern."],
       ["Dashboard", "Profile, vehicles and locations, squad, insurance, lottery, and Airlift Taxi cooldown."],
