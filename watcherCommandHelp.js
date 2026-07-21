@@ -72,7 +72,7 @@ const SECTIONS = {
       ["Dashboard", "Profile, vehicles and locations, squad, insurance, lottery, and Airlift Taxi cooldown."],
       ["Airlift Taxi", "$1,000, once per hour, C0 excluded."],
       ["Dirtbike Rental", "$500 for 30 minutes; 5-minute in-game warning; automatic removal; cannot be insured."],
-      ["Watcher Shop", "Medical Kit $2,000 and Emergency Gas $750; instant delivery while online."],
+      ["Watcher Shop", "Medical Kit $2,000, Emergency Gas $750, RPG-7 $50,000, and PG-7M rockets x10 $15,000."],
       ["!registersetup", "Post the Steam registration panel."],
       ["!insurancesetup", "Post the vehicle insurance panel."],
       ["!mechpacksetup", "Post the mech hunting pack shop."],

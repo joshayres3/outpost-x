@@ -38,6 +38,40 @@ const PACKAGES = {
       { label: "Large Gas Canister", qty: 1, itemClass: "Gasoline_Canister", aliases: ["Gasoline Canister", "Gasoline_Canister"] },
     ],
   },
+  rpg7: {
+    id: "rpg7",
+    name: "RPG-7",
+    emoji: "🚀",
+    description: "One RPG-7 for mech hunting nights.",
+    price: 50000,
+    items: [
+      {
+        label: "RPG-7",
+        qty: 1,
+        aliases: ["Weapon_RPG7", "Weapon_RPG_7", "RPG7", "RPG_7", "RPG-7", "RPG"],
+      },
+    ],
+  },
+  rockets10: {
+    id: "rockets10",
+    name: "PG-7M Rockets x10",
+    emoji: "💥",
+    description: "Ten PG-7M rockets for mech hunting nights.",
+    price: 15000,
+    items: [
+      {
+        label: "PG-7M Rocket",
+        qty: 10,
+        aliases: [
+          "PG-7M", "PG7M", "PG_7M", "Ammo_PG7M", "Ammo_PG_7M",
+          "Ammo_RPG7_PG7M", "Ammo_RPG_7_PG_7M", "RPG7_PG7M", "RPG_7_PG_7M",
+          "Ammo_RPG7", "Ammo_RPG_7", "Ammo_RPG7_Rocket", "Ammo_RPG_7_Rocket",
+          "RPG7_Rocket", "RPG_7_Rocket", "Rocket_RPG7", "Rocket_RPG_7",
+          "RPG-7 Rocket", "RPG Rocket"
+        ],
+      },
+    ],
+  },
 };
 
 function getDb() {
@@ -188,6 +222,8 @@ function shopRows() {
   return [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("shop:view:medical").setLabel("Medical Kit").setEmoji("🩹").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("shop:view:gas").setLabel("Emergency Gas").setEmoji("⛽").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("shop:view:rpg7").setLabel("RPG-7").setEmoji("🚀").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("shop:view:rockets10").setLabel("PG-7M x10").setEmoji("💥").setStyle(ButtonStyle.Secondary),
   )];
 }
 
