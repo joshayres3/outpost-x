@@ -231,7 +231,19 @@ function buildMechPackRows() {
   ];
 }
 
-function buildMechPackText() {
+function resolveRegisterChannelId(guild) {
+  const named = guild?.channels?.cache?.find((channel) => {
+    const normalized = String(channel.name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+    return normalized === "player-registration";
+  });
+  return named?.id || REGISTER_CHANNEL_ID;
+}
+
+function buildMechPackText(guild) {
+  const registerChannelId = resolveRegisterChannelId(guild);
   return [
     "# 🤖 Mech Hunting Packs",
     "Buy a small starter pack for mech hunting nights.",
@@ -241,7 +253,7 @@ function buildMechPackText() {
     "",
     "⚠️ **Profit note:** To actually profit from mechs, you will need to loot/find rockets — buying rockets is mainly for fun.",
     "",
-    `Need to register first? Use <#${REGISTER_CHANNEL_ID}>.`,
+    `Need to register first? Use <#${registerChannelId}>.`,
   ].join("\n");
 }
 
@@ -272,7 +284,7 @@ function buildRegisterPanelText() {
 }
 
 async function setupMechPackPanel(message) {
-  const sent = await message.channel.send({ content: buildMechPackText(), components: buildMechPackRows() });
+  const sent = await message.channel.send({ content: buildMechPackText(message.guild), components: buildMechPackRows() });
   await saveRuntimeValue("mech_pack_config", {
     guildId: message.guild.id,
     channelId: message.channel.id,
@@ -305,7 +317,7 @@ async function showMechPackStatus(message) {
   await message.reply([
     "🤖 **Mech Pack Status**",
     `Panel Channel: ${config?.channelId ? `<#${config.channelId}>` : "Not set"}`,
-    `Register Channel: <#${REGISTER_CHANNEL_ID}>`,
+    `Register Channel: <#${resolveRegisterChannelId(message.guild)}>`,
     "",
     `RPG-7 item: ${rpg?.itemClass ? `\`${rpg.itemClass}\`${rpg.catalogMatched ? "" : " (fallback)"}` : `Error: ${rpg?.error || "unknown"}`}`,
     `Rockets PG-7M item: ${rockets?.itemClass ? `\`${rockets.itemClass}\`${rockets.catalogMatched ? "" : " (fallback)"}` : `Error: ${rockets?.error || "unknown"}`}`,
@@ -322,7 +334,7 @@ async function showBuyConfirm(interaction, packKey) {
   const link = await getLink(interaction.guildId, interaction.user.id);
   if (!link?.steam_id) {
     await interaction.reply({
-      content: `Need to register first? Use <#${REGISTER_CHANNEL_ID}>`,
+      content: `Need to register first? Use <#${resolveRegisterChannelId(interaction.guild)}>`,
       ephemeral: true,
     }).catch(() => {});
     return;
@@ -365,7 +377,7 @@ async function confirmBuy(interaction, packKey) {
 
   const link = await getLink(interaction.guildId, interaction.user.id);
   if (!link?.steam_id) {
-    await interaction.update({ content: `Need to register first: <#${REGISTER_CHANNEL_ID}>`, components: [] }).catch(() => {});
+    await interaction.update({ content: `Need to register first: <#${resolveRegisterChannelId(interaction.guild)}>`, components: [] }).catch(() => {});
     return;
   }
 
