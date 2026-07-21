@@ -1,7 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const { DateTime } = require('luxon');
-const { getOnlinePlayers } = require('./ggcon');
+const { getOnlinePlayers, getServerSummary } = require('./ggcon');
 
 const TZ = process.env.WATCHER_TIMEZONE || 'America/Toronto';
 const MAIN_CHAT_ID = process.env.MAIN_CHAT_CHANNEL_ID || '1516269437932670977';
@@ -50,8 +50,13 @@ async function saveConfig(guildId, patch) {
 }
 function playerId(p) { return String(p?.steamId || p?.steam_id || p?.id || p?.playerId || '').trim(); }
 async function observeOnline(guild) {
-  const players = await getOnlinePlayers().catch(() => []);
+  const [players, server] = await Promise.all([
+    getOnlinePlayers().catch(() => []),
+    getServerSummary().catch(() => null),
+  ]);
   const ids = [...new Set((players || []).map(playerId).filter(Boolean))];
+  const reportedOnline = Number(server?.onlinePlayers);
+  const count = Number.isFinite(reportedOnline) && reportedOnline >= 0 ? reportedOnline : ids.length;
   const day = nowEt().toISODate();
   const { data } = await getDb().from(DAILY_TABLE).select('*').eq('guild_id', guild.id).eq('activity_date', day).maybeSingle();
   const previous = Array.isArray(data?.observed_player_ids) ? data.observed_player_ids : [];
@@ -59,11 +64,11 @@ async function observeOnline(guild) {
     guild_id: guild.id,
     activity_date: day,
     observed_player_ids: [...new Set([...previous, ...ids])],
-    peak_online: Math.max(Number(data?.peak_online || 0), ids.length),
-    last_online: ids.length,
+    peak_online: Math.max(Number(data?.peak_online || 0), count),
+    last_online: count,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'guild_id,activity_date' });
-  return { players, count: ids.length };
+  return { players, count };
 }
 async function countRows(table, timeCol, start, end, extra = []) {
   const filters = [['gte', timeCol, start], ['lte', timeCol, end], ...extra];
@@ -126,12 +131,27 @@ async function buildWeeklyAwards(guild, date = nowEt()) {
   return new EmbedBuilder().setTitle('🏆 Outpost X Weekly Awards').setDescription(awards.join('\n\n')).setFooter({ text: `Week ending ${date.toFormat('LLLL d')} • Based only on verified Watcher activity` });
 }
 async function nextRestartText() {
-  const hours = String(process.env.SERVER_RESTART_HOURS || '3,9,15,21').split(',').map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
+  const hours = String(process.env.SERVER_RESTART_HOURS || '0,4,8,12,16,20')
+    .split(',')
+    .map(Number)
+    .filter(h => Number.isInteger(h) && h >= 0 && h <= 23)
+    .sort((a, b) => a - b);
+  const restartHours = hours.length ? hours : [0, 4, 8, 12, 16, 20];
   const now = nowEt();
   let next = null;
-  for (const h of hours) { const c = now.startOf('day').set({ hour:h }); if (c > now) { next = c; break; } }
-  if (!next) next = now.plus({ days:1 }).startOf('day').set({ hour:hours[0] || 3 });
-  return `<t:${Math.floor(next.toSeconds())}:R>`;
+  for (const hour of restartHours) {
+    const candidate = now.startOf('day').set({ hour, minute: 0, second: 0, millisecond: 0 });
+    if (candidate > now) { next = candidate; break; }
+  }
+  if (!next) next = now.plus({ days: 1 }).startOf('day').set({ hour: restartHours[0], minute: 0, second: 0, millisecond: 0 });
+
+  const totalMinutes = Math.max(0, Math.ceil(next.diff(now, 'minutes').minutes));
+  const hoursLeft = Math.floor(totalMinutes / 60);
+  const minutesLeft = totalMinutes % 60;
+  const countdown = hoursLeft > 0
+    ? `${hoursLeft}h ${minutesLeft}m`
+    : `${minutesLeft}m`;
+  return `**${next.toFormat('h:mm a')} ET** — in **${countdown}**`;
 }
 async function updatePulse(guild) {
   if (pulseBusy) return; pulseBusy = true;

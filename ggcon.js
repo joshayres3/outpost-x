@@ -1352,6 +1352,10 @@ async function getOnlinePlayers() {
   return Array.isArray(data.players) ? data.players.map((player) => ({ ...player, online: true })) : [];
 }
 
+async function getServerSummary() {
+  return ggconGet("/server.json").catch(() => null);
+}
+
 async function getAllPlayersByApiSearch(query) {
   const cleaned = String(query || "").trim();
   if (cleaned.length < 2) return [];
@@ -6529,6 +6533,7 @@ module.exports = {
   buildNearVehiclesBySteamId,
   getPlayerForLookup,
   getOnlinePlayers,
+  getServerSummary,
   getPlayerDisplayName,
   ggconPost,
   jailPlayerBySteamId,
