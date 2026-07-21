@@ -135,7 +135,10 @@ function adminPanelRows(steamId) {
       new ButtonBuilder().setCustomId(`pp:admin:jail:${steamId}`).setLabel("Jail").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`pp:admin:unjail:${steamId}`).setLabel("Unjail").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`pp:admin:ban:${steamId}`).setLabel("Ban Player").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId(`pp:admin:unban:${steamId}`).setLabel("Unban Player").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`pp:admin:unban:${steamId}`).setLabel("Unban Player").setStyle(ButtonStyle.Success)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`pp:admin:unlink:${steamId}`).setLabel("Unlink Discord").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`pp:admin:refresh:${steamId}`).setLabel("Refresh Panel").setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -452,6 +455,75 @@ async function handleUnbanModal(interaction, steamId) {
   });
 }
 
+function buildUnlinkModal(steamId) {
+  return new ModalBuilder()
+    .setCustomId(`pp:unlinkmodal:${steamId}`)
+    .setTitle("Unlink Discord Account")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("reason")
+          .setLabel("Reason for unlinking")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMinLength(3)
+          .setMaxLength(500)
+          .setPlaceholder("Example: Player changed Discord accounts")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("confirmation")
+          .setLabel("Type UNLINK to confirm")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(10)
+          .setPlaceholder("UNLINK")
+      )
+    );
+}
+
+async function handleUnlinkModal(interaction, steamId) {
+  if (!isStaff(interaction)) {
+    await interaction.reply({ content: "This action is for staff only.", ephemeral: true });
+    return;
+  }
+
+  const confirmation = interaction.fields.getTextInputValue("confirmation")?.trim().toUpperCase();
+  const reason = interaction.fields.getTextInputValue("reason")?.trim();
+  if (confirmation !== "UNLINK") {
+    await interaction.reply({ content: "Unlink cancelled. You must type `UNLINK` exactly to confirm.", ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const realSteamId = String(steamId || "").trim();
+  const link = await getLinkBySteam(interaction.guildId, realSteamId).catch(() => null);
+  if (!link?.id) {
+    await interaction.editReply("No Discord link was found for this player.");
+    return;
+  }
+
+  const oldDiscordId = String(link.discord_id || "").trim();
+  const { error } = await getDb()
+    .from(PLAYER_LINKS_TABLE)
+    .delete()
+    .eq("id", link.id)
+    .eq("guild_id", String(interaction.guildId));
+  if (error) throw error;
+
+  await interaction.editReply({
+    content: [
+      "🔗 **Discord Account Unlinked**",
+      "",
+      `**Steam ID:** \`${realSteamId}\``,
+      `**Previous Discord:** ${oldDiscordId ? `<@${oldDiscordId}>` : "Unknown"}`,
+      `**Reason:** ${reason}`,
+      "The player can now register again using their new or corrected Discord account.",
+    ].join("\n"),
+    allowedMentions: { parse: [] },
+  });
+}
+
 async function handlePlayerPanelCommand(message) {
   if (!message.guild || !message.content?.startsWith("!")) return false;
   const [rawCommand, ...args] = message.content.trim().split(/\s+/);
@@ -572,6 +644,11 @@ async function handlePlayerPanelInteraction(interaction) {
       return true;
     }
 
+    if (interaction.isModalSubmit() && parts[1] === "unlinkmodal") {
+      await handleUnlinkModal(interaction, parts[2]);
+      return true;
+    }
+
     if (interaction.isModalSubmit() && parts[1] === "modal") {
       if (!isStaff(interaction)) {
         await interaction.reply({ content: "This action is for staff only.", ephemeral: true });
@@ -675,6 +752,15 @@ async function handlePlayerPanelInteraction(interaction) {
       }
       if (action === "unban") {
         await interaction.showModal(buildUnbanModal(steamId));
+        return true;
+      }
+      if (action === "unlink") {
+        const link = await getLinkBySteam(interaction.guildId, steamId).catch(() => null);
+        if (!link?.discord_id) {
+          await interaction.reply({ content: "This player does not currently have a linked Discord account.", ephemeral: true });
+          return true;
+        }
+        await interaction.showModal(buildUnlinkModal(steamId));
         return true;
       }
       if (["cashadd", "cashremove", "fameadd", "fameremove"].includes(action)) {

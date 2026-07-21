@@ -22,7 +22,7 @@ const SECTIONS = {
     label: "Essentials",
     aliases: ["essential", "essentials", "common", "start"],
     lines: [
-      ["!manage <player>", "Private admin player panel: details, vehicles, squad, money, fame, jail, ban, and unban."],
+      ["!manage <player>", "Private admin player panel: details, vehicles, squad, money, fame, jail, ban, unban, and Discord unlinking."],
       ["!unban <Steam64/@user>", "Private unban confirmation when a banned player cannot be opened with `!manage`."],
       ["!player <name/Steam64>", "Full player lookup."],
       ["!online", "Current online player list."],
@@ -42,7 +42,7 @@ const SECTIONS = {
       ["!refund <player> <amount>", "Refund cash."],
       ["!jail <player>", "Save return point and jail."],
       ["!unjail <player>", "Return player from jail."],
-      ["!manage <player>", "Private control panel with Ban Player and Unban Player confirmations."],
+      ["!manage <player>", "Private control panel with Ban Player, Unban Player, and Unlink Discord confirmations."],
       ["!unban <Steam64/@user>", "Unban from SCUM and linked Discord account."],
     ],
   },

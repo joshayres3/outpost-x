@@ -182,12 +182,32 @@ function isStaffMember(member) {
 
 function pick(values) { return values[Math.floor(Math.random() * values.length)]; }
 function randomId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`; }
-function normalizeAnswer(value) { return String(value || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/g, ""); }
+function normalizeAnswer(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/^\s*!answer\s+/i, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-function parseChatIdentity(line) {
-  const match = String(line || "").match(/'?(\d{15,20}):([^('\n]+)\((\d+)\)'?/);
-  if (!match) return null;
-  return { steamId: match[1], name: match[2].trim(), profileId: match[3] };
+function parseChatIdentity(row) {
+  const directSteamId = String(
+    row?.steamId || row?.steam_id || row?.userId || row?.user_id || row?.playerSteamId || ""
+  ).trim();
+  const directName = String(row?.playerName || row?.characterName || row?.name || "").trim();
+  if (/^\d{15,20}$/.test(directSteamId)) {
+    return { steamId: directSteamId, name: directName || directSteamId, profileId: row?.profileId || row?.profile_id || null };
+  }
+
+  const text = String(row?.line ?? row ?? "");
+  const match = text.match(/'?(\d{15,20})\s*:\s*([^('\n\r]+?)\s*\((\d+)\)'?/);
+  if (match) return { steamId: match[1], name: match[2].trim(), profileId: match[3] };
+
+  const steamOnly = text.match(/\b(\d{15,20})\b/);
+  if (steamOnly) return { steamId: steamOnly[1], name: directName || steamOnly[1], profileId: null };
+  return null;
 }
 
 function parseCommand(line) {
@@ -371,13 +391,14 @@ async function scanChat() {
     const event = activeEvent;
 
     if (event) {
-      const [staffIds, onlinePlayers] = await Promise.all([getStaffSteamIds(botRef, state.guildId), getOnlinePlayers().catch(() => [])]);
-      const onlineIds = new Set(onlinePlayers.map(playerSteamId).filter(Boolean));
+      const staffIds = await getStaffSteamIds(botRef, state.guildId);
       for (const row of lines) {
         if (!activeEvent || activeEvent.id !== event.id || event.finished) break;
-        const identity = parseChatIdentity(row?.line);
-        const parsed = parseCommand(row?.line);
-        if (!identity || !parsed || staffIds.has(identity.steamId) || !onlineIds.has(identity.steamId)) continue;
+        const identity = parseChatIdentity(row);
+        const parsed = parseCommand(row?.line ?? row);
+        // A fresh chat-log entry already proves the player was in game when they answered.
+        // Do not reject valid answers because the live-player endpoint briefly lagged behind.
+        if (!identity || !parsed || staffIds.has(identity.steamId)) continue;
 
         if (["multiple_choice", "odd_one_out"].includes(event.type)) {
           const choice = answerNumber(parsed.command);
