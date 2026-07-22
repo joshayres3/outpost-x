@@ -1,4 +1,5 @@
 const { createClient } = require("@supabase/supabase-js");
+const crypto = require("crypto");
 const { triggerBonusLottery } = require("./lottery");
 
 const DEFAULT_SERVER_BASE_URL = "https://ggcon.gghost.games/s/2788404";
@@ -16,6 +17,8 @@ const RESTART_BLOCK_MINUTES = Math.max(0, Number(process.env.POPUP_RESTART_BLOCK
 const QUICK_CHANCE = clampProbability(process.env.POPUP_QUICK_CHANCE || "0.20");
 const STAFF_ROLE_NAMES = new Set(["owner", "owners", "admin", "trial admin"]);
 const EVENT_DURATION_MS = 120_000;
+const ANGRY_STORM_CHANCE = clampProbability(process.env.POPUP_ANGRY_STORM_CHANCE || "0.03");
+const ANGRY_STORM_MINUTES = Math.max(1, Number(process.env.POPUP_ANGRY_STORM_MINUTES || "5"));
 
 let dbClient = null;
 let schedulerTimer = null;
@@ -24,6 +27,8 @@ let tickRunning = false;
 let chatRunning = false;
 let activeEvent = null;
 let botRef = null;
+let stormTimer = null;
+let stormActive = false;
 
 const MULTIPLE_CHOICE = [
   { prompt: "What is required for the admin screwdriver trade? 1) 35 red screwdrivers 2) 25 toolboxes 3) 50 batteries", correct: 1 },
@@ -32,6 +37,31 @@ const MULTIPLE_CHOICE = [
   { prompt: "What should players open when they need staff help? 1) A ticket 2) A public argument 3) A vehicle claim", correct: 1 },
   { prompt: "Which item is used during lockpicking? 1) Screwdriver 2) Crowbar 3) Wrench", correct: 1 },
   { prompt: "Which command joins a Watcher event when registration is requested? 1) !shop 2) !join 3) !ticket", correct: 2 },
+  { prompt: "Which tool is mainly used to repair base elements? 1) Toolbox 2) Compass 3) Binoculars", correct: 1 },
+  { prompt: "Which item helps repair a damaged vehicle tire? 1) Tire repair kit 2) Sewing kit 3) Canteen", correct: 1 },
+  { prompt: "Which vehicle has two wheels? 1) Dirtbike 2) Laika 3) Rager", correct: 1 },
+  { prompt: "Which item is used to carry gasoline? 1) Gasoline canister 2) Quiver 3) Holster", correct: 1 },
+  { prompt: "Which tool is used to cut down trees? 1) Axe 2) Compass 3) Lockpick", correct: 1 },
+  { prompt: "Which item is used to navigate direction? 1) Compass 2) Toolbox 3) Crowbar", correct: 1 },
+  { prompt: "Which item is used to start a fire? 1) Lighter 2) Tire repair kit 3) Binoculars", correct: 1 },
+  { prompt: "Which container is designed to hold water? 1) Canteen 2) Quiver 3) Holster", correct: 1 },
+  { prompt: "Which tool can pry open or force objects? 1) Crowbar 2) Compass 3) Canteen", correct: 1 },
+  { prompt: "Which item is commonly used to patch clothing? 1) Sewing kit 2) Gas canister 3) Car jack", correct: 1 },
+  { prompt: "Which item lets you see distant objects more clearly? 1) Binoculars 2) Toolbox 3) Lockpick", correct: 1 },
+  { prompt: "Which item is worn to reduce fall speed from the sky? 1) Parachute 2) Raincoat 3) Quiver", correct: 1 },
+  { prompt: "Which vehicle is a compact car? 1) Laika 2) Dirtbike 3) Wheelbarrow", correct: 1 },
+  { prompt: "Which vehicle is a larger off-road SUV? 1) Rager 2) Bicycle 3) Tractor", correct: 1 },
+  { prompt: "Which item holds arrows? 1) Quiver 2) Holster 3) Canteen", correct: 1 },
+  { prompt: "Which item holds a handgun on your body? 1) Holster 2) Quiver 3) Toolbox", correct: 1 },
+  { prompt: "Which item can help lift a vehicle for repairs? 1) Car jack 2) Compass 3) Sewing kit", correct: 1 },
+  { prompt: "Which material is commonly cut into rags for basic treatment? 1) Clothing 2) Gasoline 3) Metal scrap", correct: 1 },
+  { prompt: "Which skill is associated with lockpicking? 1) Thievery 2) Cooking 3) Driving", correct: 1 },
+  { prompt: "Which skill is associated with constructing and repairing base elements? 1) Engineering 2) Running 3) Camouflage", correct: 1 },
+  { prompt: "Which place is used to buy and sell goods with NPCs? 1) Trader 2) Bunker 3) Watchtower", correct: 1 },
+  { prompt: "Which location is known for underground military loot areas? 1) Bunker 2) Fishing pier 3) Farm field", correct: 1 },
+  { prompt: "What should you do before using the Airlift Taxi? 1) Equip the provided parachute 2) Drop all clothing 3) Enter a vehicle", correct: 1 },
+  { prompt: "How long does an Outpost X dirtbike rental last? 1) 30 minutes 2) 10 minutes 3) 2 hours", correct: 1 },
+  { prompt: "How much does the Outpost X Airlift Taxi cost? 1) $1,000 2) $100 3) $10,000", correct: 1 },
 ];
 
 const TEXT_QUESTIONS = [
@@ -42,6 +72,31 @@ const TEXT_QUESTIONS = [
   { prompt: "I open locks, have limited uses, and come in several colors. What am I?", answers: ["screwdriver", "a screwdriver"] },
   { prompt: "I repair damaged tires and fit inside your inventory. What am I?", answers: ["tire repair kit", "tire kit"] },
   { prompt: "Complete the Outpost X slogan: Survive Together, Die ____.", answers: ["stupid"] },
+  { prompt: "Unscramble this SCUM item: XEA", answers: ["axe", "an axe"] },
+  { prompt: "Unscramble this SCUM item: SACPOMS", answers: ["compass", "a compass"] },
+  { prompt: "Unscramble this SCUM item: GILTHER", answers: ["lighter", "a lighter"] },
+  { prompt: "Unscramble this SCUM item: NETCANE", answers: ["canteen", "a canteen"] },
+  { prompt: "Unscramble this SCUM item: VQREIU", answers: ["quiver", "a quiver"] },
+  { prompt: "Unscramble this SCUM item: TSERHOL", answers: ["holster", "a holster"] },
+  { prompt: "Unscramble this SCUM item: HCETPRAAU", answers: ["parachute", "a parachute"] },
+  { prompt: "Unscramble this SCUM vehicle: AIKAL", answers: ["laika"] },
+  { prompt: "Unscramble this SCUM vehicle: GRAER", answers: ["rager"] },
+  { prompt: "Unscramble this SCUM vehicle: TIDRBKIE", answers: ["dirtbike", "dirt bike"] },
+  { prompt: "I point north and help you navigate. What am I?", answers: ["compass", "a compass"] },
+  { prompt: "I carry fuel when your vehicle is running dry. What am I?", answers: ["gas canister", "gasoline canister", "fuel can", "gas can"] },
+  { prompt: "I help fix torn clothing and come with thread. What am I?", answers: ["sewing kit", "a sewing kit"] },
+  { prompt: "I let you look far across the island using two lenses. What am I?", answers: ["binoculars", "binocular"] },
+  { prompt: "I hold arrows on your body. What am I?", answers: ["quiver", "a quiver"] },
+  { prompt: "I hold a handgun at your hip. What am I?", answers: ["holster", "a holster"] },
+  { prompt: "I lift a vehicle so repairs can be made underneath. What am I?", answers: ["car jack", "jack", "a car jack"] },
+  { prompt: "I am used to repair damaged base elements and many crafted objects. What am I?", answers: ["toolbox", "tool box", "a toolbox"] },
+  { prompt: "I am used to chop wood and trees. What am I?", answers: ["axe", "an axe"] },
+  { prompt: "I slow your fall after an Airlift Taxi launch. What am I?", answers: ["parachute", "a parachute"] },
+  { prompt: "What skill is used for lockpicking?", answers: ["thievery", "thievery skill"] },
+  { prompt: "What skill is used for advanced base construction?", answers: ["engineering", "engineering skill"] },
+  { prompt: "What do players open when they need help from Outpost X staff?", answers: ["ticket", "a ticket", "support ticket"] },
+  { prompt: "What is the normal Outpost X player role called?", answers: ["the exiles", "exiles"] },
+  { prompt: "What vehicle can players rent from The Watcher for 30 minutes?", answers: ["dirtbike", "dirt bike"] },
 ];
 
 const TRUE_FALSE = [
@@ -142,7 +197,57 @@ function normalizeState(value) {
     lastAnyEndedAt: Number(value.lastAnyEndedAt || 0),
     chatCursor: Number(value.chatCursor || 0),
     lastResult: value.lastResult || null,
+    stormEndsAt: Number(value.stormEndsAt || 0),
+    usedQuestionIds: normalizeUsedQuestionIds(value.usedQuestionIds),
   };
+}
+
+
+function normalizeUsedQuestionIds(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const legacy = ["multiple_choice", "text_answer", "true_false", "odd_one_out", "higher_lower"]
+    .flatMap((key) => Array.isArray(source[key]) ? source[key] : []);
+  const current = Array.isArray(source.all) ? source.all : [];
+  return { all: [...new Set([...current, ...legacy].map((id) => String(id || "").trim()).filter(Boolean))] };
+}
+
+function questionId(type, question) {
+  const seed = `${type}|${String(question?.prompt || "").trim()}`;
+  return crypto.createHash("sha256").update(seed).digest("hex").slice(0, 20);
+}
+
+function questionBanks() {
+  return {
+    multiple_choice: MULTIPLE_CHOICE,
+    text_answer: TEXT_QUESTIONS,
+    true_false: TRUE_FALSE,
+    odd_one_out: ODD_ONE_OUT,
+    higher_lower: HIGHER_LOWER,
+  };
+}
+
+async function pickUnusedQuestion(requestedType) {
+  const banks = questionBanks();
+  if (!banks[requestedType]) throw new Error(`No question bank configured for ${requestedType}.`);
+
+  const state = await loadState();
+  const usedQuestionIds = normalizeUsedQuestionIds(state.usedQuestionIds);
+  const used = new Set(usedQuestionIds.all);
+  const all = Object.entries(banks).flatMap(([type, questions]) =>
+    questions.map((question) => ({ type, question, id: questionId(type, question) }))
+  );
+
+  // Reset only after every fixed trivia question has appeared once.
+  if (all.every((entry) => used.has(entry.id))) used.clear();
+
+  let available = all.filter((entry) => entry.type === requestedType && !used.has(entry.id));
+  // If that format is exhausted, use another unused trivia format rather than repeat.
+  if (!available.length) available = all.filter((entry) => !used.has(entry.id));
+
+  const selected = pick(available);
+  used.add(selected.id);
+  await saveState({ ...state, usedQuestionIds: { all: [...used] } });
+  return selected;
 }
 
 function playerSteamId(player) { return String(player?.userId || player?.steamId || player?.steam_id || player?.id || "").trim(); }
@@ -256,11 +361,71 @@ async function logToDiscord(bot, state, text) {
 
 function chooseReward() {
   const roll = Math.random();
-  if (roll < 0.30) return { type: "fame", amount: 25, label: "25 Fame Points" };
-  if (roll < 0.58) return { type: "cash", amount: 500, label: "$500 bank credit" };
+  if (roll < 0.18) return { type: "fame", amount: 25, label: "25 Fame Points" };
+  if (roll < 0.28) return { type: "fame", amount: 50, label: "50 Fame Points" };
+  if (roll < 0.43) return { type: "cash", amount: 250, label: "$250 bank credit" };
+  if (roll < 0.65) return { type: "cash", amount: 500, label: "$500 bank credit" };
   if (roll < 0.83) return { type: "cash", amount: 1000, label: "$1,000 bank credit" };
-  if (roll < 0.95) return { type: "bonus_lottery", amount: 0, label: "an extra small lottery" };
+  if (roll < 0.90) return { type: "cash", amount: 1500, label: "$1,500 bank credit" };
+  if (roll < 0.98) return { type: "bonus_lottery", amount: 0, label: "an extra small lottery" };
   return { type: "none", amount: 0, label: "nothing" };
+}
+
+async function setServerWeather(value) {
+  return serverPost("/command", { command: `#setweather ${value}` });
+}
+
+async function endAngryStorm({ announce = true } = {}) {
+  if (stormTimer) clearTimeout(stormTimer);
+  stormTimer = null;
+  try {
+    await setServerWeather(0);
+    if (announce) await sendGame("The Watcher has calmed down. The storm is ending.");
+  } finally {
+    stormActive = false;
+    const state = await loadState().catch(() => null);
+    if (state) await saveState({ ...state, stormEndsAt: 0 }).catch(() => {});
+  }
+}
+
+async function startAngryStorm(state) {
+  if (stormActive || Number(state?.stormEndsAt || 0) > Date.now()) return false;
+  stormActive = true;
+  const durationMs = ANGRY_STORM_MINUTES * 60_000;
+  const stormEndsAt = Date.now() + durationMs;
+  try {
+    await sendGame(`The Watcher is displeased. A storm has been initiated for ${ANGRY_STORM_MINUTES} minutes.`);
+    await setServerWeather(1);
+    await saveState({ ...state, stormEndsAt });
+    stormTimer = setTimeout(() => {
+      endAngryStorm().catch((err) => console.error("❌ Failed to end Watcher storm:", err.message));
+    }, durationMs);
+    await logToDiscord(botRef, state, `⛈️ **Watcher Anger Event**\nStorm activated for ${ANGRY_STORM_MINUTES} minutes.`);
+    return true;
+  } catch (err) {
+    stormActive = false;
+    await logToDiscord(botRef, state, `⚠️ **Watcher Storm Failed**\n${err.message}`).catch(() => {});
+    return false;
+  }
+}
+
+async function maybeTriggerAngryStorm(state) {
+  if (ANGRY_STORM_CHANCE <= 0 || Math.random() >= ANGRY_STORM_CHANCE) return false;
+  return startAngryStorm(state);
+}
+
+async function restoreStormState(state) {
+  const endsAt = Number(state?.stormEndsAt || 0);
+  if (!endsAt) return;
+  if (endsAt <= Date.now()) {
+    await endAngryStorm({ announce: false }).catch(() => {});
+    return;
+  }
+  stormActive = true;
+  if (stormTimer) clearTimeout(stormTimer);
+  stormTimer = setTimeout(() => {
+    endAngryStorm().catch((err) => console.error("❌ Failed to end restored Watcher storm:", err.message));
+  }, endsAt - Date.now());
 }
 
 async function deliverReward(event, winner, state) {
@@ -348,22 +513,28 @@ async function startQuickEvent({ forceType = null } = {}) {
   activeEvent = event;
   event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), EVENT_DURATION_MS);
 
-  if (type === "multiple_choice") {
-    const q = pick(MULTIPLE_CHOICE); event.correct = q.correct;
-    await sendGame(`RAPID ASSESSMENT: ${q.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes.`);
-  } else if (type === "text_answer") {
-    const q = pick(TEXT_QUESTIONS); event.answers = q.answers.map(normalizeAnswer);
-    await sendGame(`IDENTIFY IT: ${q.prompt}. Reply with !answer followed by your answer. Example: !answer screwdriver. First correct answer wins. You have 2 minutes.`);
-  } else if (type === "true_false") {
-    const q = pick(TRUE_FALSE); event.correct = q.correct;
-    await sendGame(`TRUE OR FALSE: ${q.prompt} Reply !true or !false. !t or !f also work. First correct answer wins. You have 2 minutes.`);
-  } else if (type === "odd_one_out") {
-    const q = pick(ODD_ONE_OUT); event.correct = q.correct;
-    await sendGame(`ODD ONE OUT: ${q.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes.`);
-  } else if (type === "higher_lower") {
-    const q = pick(HIGHER_LOWER); event.correct = q.correct;
-    const formats = q.allowSame ? "!higher, !lower or !same" : "!higher or !lower";
-    await sendGame(`HIGHER OR LOWER: ${q.prompt} Reply ${formats}. First correct answer wins. You have 2 minutes.`);
+  if (["multiple_choice", "text_answer", "true_false", "odd_one_out", "higher_lower"].includes(type)) {
+    const selected = await pickUnusedQuestion(type);
+    const q = selected.question;
+    event.type = selected.type;
+
+    if (event.type === "multiple_choice") {
+      event.correct = q.correct;
+      await sendGame(`RAPID ASSESSMENT: ${q.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes.`);
+    } else if (event.type === "text_answer") {
+      event.answers = q.answers.map(normalizeAnswer);
+      await sendGame(`IDENTIFY IT: ${q.prompt}. Reply with !answer followed by your answer. Example: !answer screwdriver. First correct answer wins. You have 2 minutes.`);
+    } else if (event.type === "true_false") {
+      event.correct = q.correct;
+      await sendGame(`TRUE OR FALSE: ${q.prompt} Reply !true or !false. !t or !f also work. First correct answer wins. You have 2 minutes.`);
+    } else if (event.type === "odd_one_out") {
+      event.correct = q.correct;
+      await sendGame(`ODD ONE OUT: ${q.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes.`);
+    } else {
+      event.correct = q.correct;
+      const formats = q.allowSame ? "!higher, !lower or !same" : "!higher or !lower";
+      await sendGame(`HIGHER OR LOWER: ${q.prompt} Reply ${formats}. First correct answer wins. You have 2 minutes.`);
+    }
   } else if (type === "number_guess") {
     event.target = 1 + Math.floor(Math.random() * 20);
     await sendGame("NUMBER SIGNAL: The Watcher selected a number from 1 to 20. Reply with !guess followed by one number. Example: !guess 12. Exact or closest guess wins. One guess each. You have 2 minutes.");
@@ -489,6 +660,7 @@ async function startPopupEventsOnBoot(bot) {
   botRef = bot;
   const state = await loadState().catch((err) => { console.error("❌ Pop-up event startup read failed:", err.message); return null; });
   if (!state?.enabled) return;
+  await restoreStormState(state).catch((err) => console.error("❌ Watcher storm restore failed:", err.message));
   startTimers(bot);
   await logToDiscord(bot, state, "👁️ Watcher in-game chat event scheduler is online.").catch(() => {});
 }
@@ -554,7 +726,9 @@ async function handlePopupEventCommand(message, bot) {
       `Eligible Non-Staff Online: **${eligible.length}** / ${MIN_ELIGIBLE} required`,
       `Chat Event Cooldown: **${formatRemaining(cooldownRemaining(state))}**`,
       `Restart Check: **${restartMinutes === null ? "Not configured" : `${restartMinutes} minutes`}**`,
-      "Event Pool: multiple choice, item identification, true/false, odd-one-out, higher/lower, number guess, mystery signals",
+      "Event Pool: multiple choice, SCUM trivia, item identification, true/false, odd-one-out, higher/lower, number guess, mystery signals",
+      `Reward Pool: 25–50 fame, $250–$1,500 cash, bonus lottery, or a rare empty result`,
+      `Watcher Anger: ${Math.round(ANGRY_STORM_CHANCE * 100)}% chance of a ${ANGRY_STORM_MINUTES}-minute storm after a winner`,
       "Commands: `!popupevent quick`, `!popupevent cancel`, `!popupevent enable`, `!popupevent disable`",
       "Testing: `!popupevent quick force` or add an event type, such as `!popupevent quick force number_guess`.",
     ].join("\n")).catch(() => {});

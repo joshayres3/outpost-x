@@ -108,31 +108,122 @@ async function buildDailyStory(guild, date = nowEt()) {
     .setDescription(lines.join('\n\n'))
     .setFooter({ text: `${date.toFormat('cccc, LLLL d')} • Eastern Time` });
 }
+function rowDisplayName(row) {
+  return row?.player_name
+    || row?.selected_scum_name
+    || row?.scum_name
+    || row?.opener_tag
+    || row?.discord_tag
+    || null;
+}
+
 function topBy(rows, key, value = () => 1) {
   const map = new Map();
   for (const r of rows) {
-    const id = String(r[key] || ''); if (!id) continue;
-    const item = map.get(id) || { id, name: r.player_name || r.selected_scum_name || r.scum_name || 'Unknown Exile', total: 0 };
-    item.total += Number(value(r) || 0); map.set(id, item);
+    const id = String(r?.[key] || '').trim();
+    if (!id) continue;
+    const item = map.get(id) || { id, name: rowDisplayName(r), total: 0 };
+    if (!item.name) item.name = rowDisplayName(r);
+    item.total += Number(value(r) || 0);
+    map.set(id, item);
   }
-  return [...map.values()].sort((a,b) => b.total - a.total)[0] || null;
+  return [...map.values()].sort((a, b) => b.total - a.total)[0] || null;
 }
+
+function pickLine(lines) {
+  return lines[Math.floor(Math.random() * lines.length)];
+}
+
+async function awardName(guild, award) {
+  if (!award) return 'Unknown Exile';
+  if (award.name) return award.name;
+  const member = await guild.members.fetch(award.id).catch(() => null);
+  return member?.displayName || member?.user?.username || 'Unknown Exile';
+}
+
+async function addAward(awards, guild, award, icon, title, statText, jokes) {
+  if (!award || Number(award.total || 0) <= 0) return;
+  const name = await awardName(guild, award);
+  awards.push(`${icon} **${title} — ${name}**\n${statText(award.total)} ${pickLine(jokes)}`);
+}
+
 async function buildWeeklyAwards(guild, date = nowEt()) {
   const { start, end } = rangeForWeek(date);
-  const [airlifts, rentals, purchases, lottery] = await Promise.all([
+  const insuranceTable = process.env.WATCHER_VEHICLE_INSURANCE_TABLE || 'watcher_vehicle_insurance';
+  const claimsTable = process.env.WATCHER_INSURANCE_CLAIMS_TABLE || 'watcher_insurance_claims';
+  const shopTable = process.env.WATCHER_SHOP_PURCHASES_TABLE || 'watcher_shop_purchases';
+
+  const [airlifts, rentals, purchases, lottery, policies, claims, ticketsOpened, ticketsClosed] = await Promise.all([
     safeRows(process.env.WATCHER_AIRLIFT_TABLE || 'watcher_airlift_rides', '*', [['gte','completed_at',start],['lte','completed_at',end],['eq','guild_id',guild.id],['eq','status','completed']]),
     safeRows(process.env.WATCHER_DIRTBIKE_RENTAL_TABLE || 'watcher_dirtbike_rentals', '*', [['gte','started_at',start],['lte','started_at',end],['eq','guild_id',guild.id]]),
-    safeRows(process.env.WATCHER_SHOP_PURCHASES_TABLE || 'watcher_shop_purchases', '*', [['gte','created_at',start],['lte','created_at',end],['eq','guild_id',guild.id],['eq','status','delivered']]),
+    safeRows(shopTable, '*', [['gte','created_at',start],['lte','created_at',end],['eq','guild_id',guild.id],['eq','status','delivered']]),
     safeRows(process.env.WATCHER_LOTTERY_DRAWS_TABLE || 'watcher_lottery_draws', '*', [['gte','actual_run_at',start],['lte','actual_run_at',end],['eq','guild_id',guild.id],['eq','status','completed']]),
+    safeRows(insuranceTable, '*', [['gte','purchased_at',start],['lte','purchased_at',end],['eq','guild_id',guild.id]]),
+    safeRows(claimsTable, '*', [['gte','created_at',start],['lte','created_at',end],['eq','guild_id',guild.id]]),
+    safeRows('watcher_tickets', '*', [['gte','opened_at',start],['lte','opened_at',end],['eq','guild_id',guild.id]]),
+    safeRows('watcher_tickets', '*', [['gte','closed_at',start],['lte','closed_at',end],['eq','guild_id',guild.id],['eq','status','closed']]),
   ]);
+
   const awards = [];
-  const flyer = topBy(airlifts, 'steam_id'); if (flyer) awards.push(`✈️ **Frequent Flyer:** ${flyer.name} — ${flyer.total} airlift${flyer.total === 1 ? '' : 's'}`);
-  const renter = topBy(rentals, 'steam_id'); if (renter) awards.push(`🏍️ **Rental Regular:** ${renter.name} — ${renter.total} rental${renter.total === 1 ? '' : 's'}`);
-  const spender = topBy(purchases, 'steam_id', r => r.price); if (spender) awards.push(`💸 **Big Spender:** ${spender.name} — $${money(spender.total)} spent`);
-  const lucky = topBy(lottery, 'selected_steam_id'); if (lucky) awards.push(`🍀 **Lucky Exile:** ${lucky.name} — ${lucky.total} lottery win${lucky.total === 1 ? '' : 's'}`);
-  if (!awards.length) awards.push('No awards qualified this week. The Watcher expects more questionable ambition next week.');
-  return new EmbedBuilder().setTitle('🏆 Outpost X Weekly Awards').setDescription(awards.join('\n\n')).setFooter({ text: `Week ending ${date.toFormat('LLLL d')} • Based only on verified Watcher activity` });
+  const delivered = purchases.filter(row => row.status === 'delivered');
+  const mechPurchases = delivered.filter(row => ['rpg7','rockets10'].includes(String(row.package_id || '').toLowerCase()));
+  const medicalPurchases = delivered.filter(row => String(row.package_id || '').toLowerCase() === 'medical');
+  const gasPurchases = delivered.filter(row => String(row.package_id || '').toLowerCase() === 'gas');
+
+  await addAward(awards, guild, topBy(airlifts, 'steam_id'), '✈️', 'Frequent Flyer',
+    total => `Completed **${total}** airlift${total === 1 ? '' : 's'}.`,
+    ['Apparently roads are beneath them.', 'Has developed a complicated relationship with parachutes.', 'The ground remains optional.']);
+
+  await addAward(awards, guild, topBy(rentals, 'steam_id'), '🏍️', 'Rental Regular',
+    total => `Rented **${total}** dirtbike${total === 1 ? '' : 's'}.`,
+    ['Ownership was considered and immediately rejected.', 'The rental counter knows them by name.', 'Thirty minutes at a time is apparently a lifestyle.']);
+
+  await addAward(awards, guild, topBy(delivered, 'steam_id', row => row.price), '💸', 'Big Spender',
+    total => `Spent **$${money(total)}** in the Watcher Shop.`,
+    ['The economy thanks them. Their wallet does not.', 'Clicked Buy with remarkable confidence.', 'Financial restraint was not detected.']);
+
+  await addAward(awards, guild, topBy(lottery, 'selected_steam_id'), '🍀', 'Lucky Exile',
+    total => `Won **${total}** lotter${total === 1 ? 'y' : 'ies'}.`,
+    ['Probability has filed a complaint.', 'The random number generator seems suspiciously friendly.', 'Luck continues to carry the operation.']);
+
+  await addAward(awards, guild, topBy(policies, 'steam_id'), '🛡️', 'Insurance Addict',
+    total => `Purchased **${total}** insurance polic${total === 1 ? 'y' : 'ies'}.`,
+    ['Trusts their driving exactly as much as The Watcher does.', 'Prepared for consequences before creating them.', 'Reads “covered” as a personal challenge.']);
+
+  await addAward(awards, guild, topBy(claims, 'steam_id'), '💥', 'Claim Magnet',
+    total => `Generated **${total}** insurance claim${total === 1 ? '' : 's'}.`,
+    ['The vehicles remain unavailable for comment.', 'Insurance paperwork has become a hobby.', 'Somewhere, a mechanic just sighed.']);
+
+  await addAward(awards, guild, topBy(ticketsOpened, 'opener_id'), '🎟️', 'Ticket Enthusiast',
+    total => `Opened **${total}** support ticket${total === 1 ? '' : 's'}.`,
+    ['Customer support has added them to Favorites.', 'The ticket button is now visibly worn.', 'Had questions. Then found more questions.']);
+
+  await addAward(awards, guild, topBy(ticketsClosed, 'closed_by_id'), '🧰', 'Professional Problem Solver',
+    total => `Closed **${total}** ticket${total === 1 ? '' : 's'}.`,
+    ['Kept the chaos moving in an orderly direction.', 'Resolved problems faster than players could invent them.', 'The close-reason box knows their typing style.']);
+
+  await addAward(awards, guild, topBy(mechPurchases, 'steam_id', row => row.price), '🤖', 'Mech Night Investor',
+    total => `Spent **$${money(total)}** on RPGs and rockets.`,
+    ['Peace was never part of the budget.', 'Invested heavily in loud problem-solving.', 'The mechs have been advised to review their insurance.']);
+
+  await addAward(awards, guild, topBy(medicalPurchases, 'steam_id'), '🩺', 'Medical Emergency',
+    total => `Bought **${total}** Medical Kit${total === 1 ? '' : 's'}.`,
+    ['Survival appears to require a subscription plan.', 'Bandages were purchased in a tone of urgency.', 'The pharmacy aisle has been personally audited.']);
+
+  await addAward(awards, guild, topBy(gasPurchases, 'steam_id'), '⛽', 'Running on Fumes',
+    total => `Bought **${total}** Emergency Gas can${total === 1 ? '' : 's'}.`,
+    ['Fuel planning remains an emerging skill.', 'The red warning light is apparently decorative.', 'Once again rescued by a canister and poor foresight.']);
+
+  if (!awards.length) {
+    awards.push('No awards qualified this week. The Watcher expects more questionable ambition next week.');
+  }
+
+  return new EmbedBuilder()
+    .setTitle('🏆 Outpost X Weekly Awards')
+    .setDescription(awards.join('\n\n'))
+    .setFooter({ text: `Week ending ${date.toFormat('LLLL d')} • Verified Watcher activity only` });
 }
+
 async function nextRestartText() {
   const hours = String(process.env.SERVER_RESTART_HOURS || '0,4,8,12,16,20')
     .split(',')
