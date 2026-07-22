@@ -11,10 +11,8 @@ const RULES_CHANNEL_ID = process.env.RULES_CHANNEL_ID || "1516308380837220445";
 const EXILES_ROLE_ID = process.env.EXILES_ROLE_ID || "1516270776272031796";
 const MAIN_CHAT_CHANNEL_ID = process.env.MAIN_CHAT_CHANNEL_ID || "1516269437932670977";
 const BUTTON_ID = "watcher_accept_rules";
-const WAVE_BUTTON_PREFIX = "watcher_wave_welcome:";
 const PANEL_MARKER = "WATCHER_RULES_ACCEPT_PANEL";
 
-const welcomeWaves = new Map();
 
 function isStaff(member) {
   return member?.roles?.cache?.some((role) =>
@@ -22,87 +20,6 @@ function isStaff(member) {
   );
 }
 
-
-async function pickCompactWelcomeEmoji(guild) {
-  const configured = String(process.env.WELCOME_WAVE_EMOJIS || "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-
-  if (configured.length) {
-    return configured[Math.floor(Math.random() * configured.length)];
-  }
-
-  const emojis = await guild.emojis.fetch().catch(() => null);
-  if (emojis?.size) {
-    const preferredWords = ["wave", "hello", "hi", "welcome", "hey", "howdy"];
-    const animated = [...emojis.values()].filter((emoji) => emoji.animated);
-    const preferred = animated.filter((emoji) =>
-      preferredWords.some((word) => emoji.name?.toLowerCase().includes(word))
-    );
-    const pool = preferred.length ? preferred : animated;
-    if (pool.length) {
-      const emoji = pool[Math.floor(Math.random() * pool.length)];
-      return emoji.toString();
-    }
-  }
-
-  const fallbacks = ["👋", "🙌", "🤗", "🫡", "🎉"];
-  return fallbacks[Math.floor(Math.random() * fallbacks.length)];
-}
-
-async function handleWelcomeWaveInteraction(interaction) {
-  if (!interaction.isButton() || !interaction.customId.startsWith(WAVE_BUTTON_PREFIX)) {
-    return false;
-  }
-
-  const welcomedUserId = interaction.customId.slice(WAVE_BUTTON_PREFIX.length);
-  if (!/^\d{17,20}$/.test(welcomedUserId)) {
-    await interaction.reply({
-      content: "That welcome button is no longer valid.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return true;
-  }
-
-  if (interaction.user.id === welcomedUserId) {
-    await interaction.reply({
-      content: "You cannot welcome yourself — but we are still glad you are here.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return true;
-  }
-
-  const key = interaction.message.id;
-  const users = welcomeWaves.get(key) || new Set();
-  if (users.has(interaction.user.id)) {
-    await interaction.reply({
-      content: "You already welcomed this Exile.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return true;
-  }
-
-  users.add(interaction.user.id);
-  welcomeWaves.set(key, users);
-
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const emoji = await pickCompactWelcomeEmoji(interaction.guild);
-
-  await interaction.channel.send({
-    content: `<@${interaction.user.id}> waves hello to <@${welcomedUserId}>! ${emoji}`,
-    allowedMentions: { users: [interaction.user.id, welcomedUserId] },
-  }).catch(async (err) => {
-    users.delete(interaction.user.id);
-    console.error("❌ Welcome wave post failed:", err.message);
-    await interaction.editReply("I could not send your welcome. Please try again.");
-  });
-
-  if (users.has(interaction.user.id)) {
-    await interaction.editReply("Welcome sent!");
-  }
-  return true;
-}
 
 async function handleRulesAcceptCommand(message) {
   const content = message.content.trim().toLowerCase();
@@ -170,7 +87,6 @@ async function handleRulesAcceptCommand(message) {
 }
 
 async function handleRulesAcceptInteraction(interaction) {
-  if (await handleWelcomeWaveInteraction(interaction)) return true;
   if (!interaction.isButton() || interaction.customId !== BUTTON_ID) return false;
 
   if (!interaction.guild || !interaction.member) {
@@ -229,17 +145,8 @@ async function handleRulesAcceptInteraction(interaction) {
 
     const mainChat = await interaction.guild.channels.fetch(MAIN_CHAT_CHANNEL_ID).catch(() => null);
     if (mainChat?.isTextBased()) {
-      const welcomeRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`${WAVE_BUTTON_PREFIX}${interaction.user.id}`)
-          .setLabel("Wave to say hi!")
-          .setEmoji("👋")
-          .setStyle(ButtonStyle.Secondary)
-      );
-
       await mainChat.send({
         content: `<@${interaction.user.id}>, welcome to Outpost X — you are now one of **The Exiles**!`,
-        components: [welcomeRow],
         allowedMentions: { users: [interaction.user.id] },
       }).catch((err) => console.error("❌ Rules welcome post failed:", err.message));
     }
