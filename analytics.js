@@ -258,11 +258,23 @@ async function postAwards(bot, guild, force=false) {
 }
 async function tick(bot) {
   const now = nowEt();
+  const dailyHour = Number(process.env.DAILY_STORY_HOUR || 19);
+  const awardsHour = Number(process.env.WEEKLY_AWARDS_HOUR || 18);
+  const dailyDue = now >= now.startOf('day').set({ hour: dailyHour, minute: 0, second: 0, millisecond: 0 });
+  const awardsDue = now.weekday === 5 && now >= now.startOf('day').set({ hour: awardsHour, minute: 0, second: 0, millisecond: 0 });
+
   for (const guild of bot.guilds.cache.values()) {
     await observeOnline(guild).catch(()=>{});
     await updatePulse(guild).catch(e=>console.error('❌ Pulse update failed:',e.message));
-    if (now.hour === Number(process.env.DAILY_STORY_HOUR || 19) && now.minute < 5) await postDaily(bot,guild).catch(e=>console.error('❌ Daily story failed:',e.message));
-    if (now.weekday === 5 && now.hour === Number(process.env.WEEKLY_AWARDS_HOUR || 18) && now.minute < 5) await postAwards(bot,guild).catch(e=>console.error('❌ Weekly awards failed:',e.message));
+
+    // Do not depend on the five-minute timer landing inside an exact 00-04 minute window.
+    // Once the scheduled time has passed, the Supabase state key prevents duplicate posts.
+    if (dailyDue) {
+      await postDaily(bot,guild).catch(e=>console.error('❌ Daily story failed:',e.message));
+    }
+    if (awardsDue) {
+      await postAwards(bot,guild).catch(e=>console.error('❌ Weekly awards failed:',e.message));
+    }
   }
 }
 function startAnalyticsOnBoot(bot) {
