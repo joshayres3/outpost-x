@@ -74,7 +74,7 @@ async function countRows(table, timeCol, start, end, extra = []) {
   const filters = [['gte', timeCol, start], ['lte', timeCol, end], ...extra];
   return (await safeRows(table, '*', filters)).length;
 }
-async function buildDailyStory(guild, date = nowEt().minus({ days: 1 })) {
+async function buildDailyStory(guild, date = nowEt()) {
   const { start, end } = rangeForDay(date);
   const day = date.toISODate();
   const { data: activity } = await getDb().from(DAILY_TABLE).select('*').eq('guild_id', guild.id).eq('activity_date', day).maybeSingle();
@@ -103,7 +103,10 @@ async function buildDailyStory(guild, date = nowEt().minus({ days: 1 })) {
   if (!lines.length) lines.push('The island was unusually quiet. The Watcher remains suspicious.');
   const closers = ['Another day survived. Questionable decisions were recorded.', 'Outpost X remains standing. Somehow.', 'The Watcher observed everything and judged most of it.', 'The island tried. The Exiles tried harder.'];
   lines.push(closers[Math.floor(Math.random() * closers.length)]);
-  return new EmbedBuilder().setTitle('👁️ Yesterday at Outpost X').setDescription(lines.join('\n\n')).setFooter({ text: date.toFormat('cccc, LLLL d • Eastern Time') });
+  return new EmbedBuilder()
+    .setTitle('👁️ Today at Outpost X')
+    .setDescription(lines.join('\n\n'))
+    .setFooter({ text: `${date.toFormat('cccc, LLLL d')} • Eastern Time` });
 }
 function topBy(rows, key, value = () => 1) {
   const map = new Map();
@@ -245,10 +248,11 @@ async function updatePulse(guild) {
 }
 
 async function postDaily(bot, guild, force=false) {
-  const key = `analytics:daily:${guild.id}:${nowEt().minus({days:1}).toISODate()}`;
+  const storyDate = nowEt();
+  const key = `analytics:daily:${guild.id}:${storyDate.toISODate()}`;
   if (!force && await stateGet(key)) return;
   const ch = await guild.channels.fetch(MAIN_CHAT_ID).catch(()=>null); if (!ch?.isTextBased()) return;
-  await ch.send({ embeds:[await buildDailyStory(guild)] }); await stateSet(key,{posted_at:new Date().toISOString()});
+  await ch.send({ embeds:[await buildDailyStory(guild, storyDate)] }); await stateSet(key,{posted_at:new Date().toISOString()});
 }
 async function postAwards(bot, guild, force=false) {
   const week = nowEt().toFormat("kkkk-'W'WW"); const key=`analytics:awards:${guild.id}:${week}`;
