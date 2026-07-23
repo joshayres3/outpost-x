@@ -194,10 +194,15 @@ async function processRentals() {
         await removeRental(rental);
       }
     } catch (err) {
-      await getDb().from(RENTAL_TABLE).update({
-        status: Date.now() >= new Date(rental.expires_at).getTime() ? "removal_pending" : rental.status,
-        removal_attempts: Number(rental.removal_attempts || 0) + 1, last_error: err.message, updated_at: new Date().toISOString(),
-      }).eq("id", rental.id).catch(() => {});
+      try {
+        const { error: updateError } = await getDb().from(RENTAL_TABLE).update({
+          status: Date.now() >= new Date(rental.expires_at).getTime() ? "removal_pending" : rental.status,
+          removal_attempts: Number(rental.removal_attempts || 0) + 1, last_error: err.message, updated_at: new Date().toISOString(),
+        }).eq("id", rental.id);
+        if (updateError) console.error(`❌ Dirtbike rental ${rental.id} error-state update failed:`, updateError.message);
+      } catch (updateErr) {
+        console.error(`❌ Dirtbike rental ${rental.id} error-state update failed:`, updateErr.message);
+      }
       console.error(`❌ Dirtbike rental ${rental.id} processing failed:`, err.message);
     }
   }
