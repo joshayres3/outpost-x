@@ -1014,6 +1014,48 @@ async function closeAndRepostIfNeeded(bot, db, event) {
   await postEvent(bot, db, nextEvent);
 }
 
+
+async function deleteExpiredOneTimeEventPosts(bot, db, now = DateTime.utc()) {
+  const cutoff = now.minus({ minutes: 30 }).toISO();
+
+  const { data: events, error } = await db
+    .from("events")
+    .select("id,channel_id,message_id,event_time,recurrence,status")
+    .eq("status", "closed")
+    .eq("recurrence", "none")
+    .not("channel_id", "is", null)
+    .not("message_id", "is", null)
+    .lte("event_time", cutoff)
+    .limit(100);
+
+  if (error) {
+    console.error("❌ One-time event cleanup query failed:", error);
+    return;
+  }
+
+  for (const event of events || []) {
+    try {
+      const channel = await bot.channels.fetch(String(event.channel_id)).catch(() => null);
+      const message = channel?.messages
+        ? await channel.messages.fetch(String(event.message_id)).catch(() => null)
+        : null;
+
+      if (message?.deletable) {
+        await message.delete();
+      }
+
+      const { error: updateError } = await db
+        .from("events")
+        .update({ channel_id: null, message_id: null })
+        .eq("id", event.id);
+
+      if (updateError) throw updateError;
+    } catch (err) {
+      console.error(`❌ Failed to delete completed one-time event ${event.id}:`, err.message);
+    }
+  }
+}
+
 async function checkEventReminders(bot, db) {
   const now = DateTime.utc();
   const soon = now.plus({ hours: 25 }).toISO();
@@ -1054,6 +1096,8 @@ async function checkEventReminders(bot, db) {
       console.error("❌ Event reminder processing failed:", err);
     }
   }
+
+  await deleteExpiredOneTimeEventPosts(bot, db, now);
 }
 
 function startEventScheduler(bot, db) {
