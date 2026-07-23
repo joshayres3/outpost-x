@@ -85,7 +85,6 @@ const {
   startLotteryOnBoot,
 } = require("./lottery");
 const { handleAirliftCommand, handleAirliftInteraction } = require("./airlift");
-const { handleParachuteTestCommand } = require("./parachuteTest");
 const {
   handlePopupEventCommand,
   startPopupEventsOnBoot,
@@ -346,7 +345,6 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     if (await handleAirliftCommand(msg)) return;
 
-    if (await handleParachuteTestCommand(msg)) return;
 
     if (await handleRentalCommand(msg)) return;
 
