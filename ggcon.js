@@ -3644,19 +3644,32 @@ async function handleOnlineCommand(message) {
   }
 
   const sorted = onlinePlayers.sort((a, b) => String(a.characterName || a.steamName || "").localeCompare(String(b.characterName || b.steamName || "")));
-  const rows = sorted.slice(0, 25).map((player, index) => {
+  const rows = sorted.map((player, index) => {
     const squad = player.squad?.name || "No squad";
     return `**${index + 1}. ${getPlayerDisplayName(player)}** — Ping: ${player.ping ?? "?"} ms | Fame: ${formatMoney(player.fame)} | Cash: ${formatMoney(player.accountBalance)} | Squad: ${squad}\nSteam ID: \`${player.userId || "Unknown"}\` | Location: ${formatLocation(player.location)}`;
   });
 
-  const extra = sorted.length > 25 ? `\n\nShowing 25 of ${sorted.length} online players.` : "";
+  const heading = `🟢 **Online Players (${sorted.length})**`;
+  const pages = [];
+  let current = heading;
 
-  await message.reply(clampDiscord([
-    `🟢 **Online Players (${sorted.length})**`,
-    "",
-    rows.join("\n\n"),
-    extra,
-  ].join("\n"))).catch(() => {});
+  for (const row of rows) {
+    const candidate = `${current}\n\n${row}`;
+    if (candidate.length > 1900 && current !== heading) {
+      pages.push(current);
+      current = row;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) pages.push(current);
+
+  for (let index = 0; index < pages.length; index += 1) {
+    const pageLabel = pages.length > 1 ? `\n\n_Page ${index + 1} of ${pages.length}_` : "";
+    const content = `${pages[index]}${pageLabel}`;
+    if (index === 0) await message.reply(content).catch(() => {});
+    else await message.channel.send(content).catch(() => {});
+  }
 }
 
 function buildNearbyVehicleLine(entry, index) {
