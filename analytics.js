@@ -19,7 +19,16 @@ function getDb() {
 function isStaff(member) { return !!member?.roles?.cache?.some(r => ['Owner','Owners','Admin','Trial Admin'].includes(r.name)); }
 function money(n) { return Number(n || 0).toLocaleString('en-CA'); }
 function nowEt() { return DateTime.now().setZone(TZ); }
-function rangeForDay(dt) { return { start: dt.startOf('day').toUTC().toISO(), end: dt.endOf('day').toUTC().toISO() }; }
+function dailyCutoffHour() { return Number(process.env.DAILY_STORY_HOUR || 19); }
+function reportingDateForNow(dt = nowEt()) {
+  const cutoff = dt.startOf('day').set({ hour: dailyCutoffHour(), minute: 0, second: 0, millisecond: 0 });
+  return dt < cutoff ? dt.startOf('day') : dt.plus({ days: 1 }).startOf('day');
+}
+function rangeForReportingDate(dt) {
+  const endLocal = dt.startOf('day').set({ hour: dailyCutoffHour(), minute: 0, second: 0, millisecond: 0 });
+  const startLocal = endLocal.minus({ days: 1 });
+  return { start: startLocal.toUTC().toISO(), end: endLocal.toUTC().toISO() };
+}
 function rangeForWeek(dt) { return { start: dt.startOf('week').toUTC().toISO(), end: dt.endOf('week').toUTC().toISO() }; }
 async function safeRows(table, select, filters = []) {
   try {
@@ -57,7 +66,7 @@ async function observeOnline(guild) {
   const ids = [...new Set((players || []).map(playerId).filter(Boolean))];
   const reportedOnline = Number(server?.onlinePlayers);
   const count = Number.isFinite(reportedOnline) && reportedOnline >= 0 ? reportedOnline : ids.length;
-  const day = nowEt().toISODate();
+  const day = reportingDateForNow().toISODate();
   const { data } = await getDb().from(DAILY_TABLE).select('*').eq('guild_id', guild.id).eq('activity_date', day).maybeSingle();
   const previous = Array.isArray(data?.observed_player_ids) ? data.observed_player_ids : [];
   await getDb().from(DAILY_TABLE).upsert({
@@ -75,7 +84,7 @@ async function countRows(table, timeCol, start, end, extra = []) {
   return (await safeRows(table, '*', filters)).length;
 }
 async function buildDailyStory(guild, date = nowEt()) {
-  const { start, end } = rangeForDay(date);
+  const { start, end } = rangeForReportingDate(date);
   const day = date.toISODate();
   const { data: activity } = await getDb().from(DAILY_TABLE).select('*').eq('guild_id', guild.id).eq('activity_date', day).maybeSingle();
   const [registrations, airlifts, rentals, purchases, ticketsOpened, ticketsClosed, lottery] = await Promise.all([
@@ -106,7 +115,7 @@ async function buildDailyStory(guild, date = nowEt()) {
   return new EmbedBuilder()
     .setTitle('👁️ Today at Outpost X')
     .setDescription(lines.join('\n\n'))
-    .setFooter({ text: `${date.toFormat('cccc, LLLL d')} • Eastern Time` });
+    .setFooter({ text: `${date.minus({ days: 1 }).toFormat('LLL d, h:mm a')}–${date.toFormat('LLL d, h:mm a')} ET` });
 }
 function rowDisplayName(row) {
   return row?.player_name
@@ -250,8 +259,9 @@ async function nextRestartText() {
 
 async function getTodayPulseStats(guild) {
   const now = nowEt();
-  const day = now.toISODate();
-  const { start, end } = rangeForDay(now);
+  const reportingDate = reportingDateForNow(now);
+  const day = reportingDate.toISODate();
+  const { start, end } = rangeForReportingDate(reportingDate);
   const [{ data: activity }, registrations, lotteryConfig] = await Promise.all([
     getDb().from(DAILY_TABLE).select('*').eq('guild_id', guild.id).eq('activity_date', day).maybeSingle(),
     countRows(process.env.WATCHER_PLAYER_LINKS_TABLE || 'watcher_player_links', 'created_at', start, end, [['eq','guild_id',guild.id]]),
@@ -277,6 +287,7 @@ function stripLiveStatusFields(fields = []) {
   const liveNames = new Set([
     '👁️ Live Server Status',
     'Players Online', 'Peak Today', 'Total Players Today', 'Registered Today',
+    'Peak This Cycle', 'Players This Cycle', 'Registered This Cycle',
     'Lottery Status', 'Open Tickets', 'Active Rentals',
     'Next Restart', 'Watcher Services', 'Last Updated',
   ]);
@@ -323,9 +334,9 @@ async function updatePulse(guild) {
     embed.addFields(
       { name:'👁️ Live Server Status', value:'Updated automatically by The Watcher.', inline:false },
       { name:'Players Online', value:`**${online.count}**`, inline:true },
-      { name:'Peak Today', value:`**${todayStats.peakToday}**`, inline:true },
-      { name:'Total Players Today', value:`**${todayStats.totalPlayersToday}**`, inline:true },
-      { name:'Registered Today', value:`**${todayStats.registeredToday}**`, inline:true },
+      { name:'Peak This Cycle', value:`**${todayStats.peakToday}**`, inline:true },
+      { name:'Players This Cycle', value:`**${todayStats.totalPlayersToday}**`, inline:true },
+      { name:'Registered This Cycle', value:`**${todayStats.registeredToday}**`, inline:true },
       { name:'Lottery Status', value:todayStats.lotteryStatus, inline:true },
       { name:'Open Tickets', value:`**${openTickets.length}**`, inline:true },
       { name:'Active Rentals', value:`**${activeRentals.length}**`, inline:true },
