@@ -275,11 +275,13 @@ async function getTodayPulseStats(guild) {
     lotteryStatus = `Enabled • next ${nextDraw.toFormat('h:mm a')}`;
   }
 
+  const cycleStart = DateTime.fromISO(start, { zone: 'utc' }).setZone(TZ);
   return {
     peakToday: Number(activity?.peak_online || 0),
     totalPlayersToday: Array.isArray(activity?.observed_player_ids) ? activity.observed_player_ids.length : 0,
     registeredToday: Number(registrations || 0),
     lotteryStatus,
+    cycleSinceLabel: `Since 7:00 PM ${cycleStart.toFormat('LLLL d')} ET`,
   };
 }
 
@@ -288,6 +290,7 @@ function stripLiveStatusFields(fields = []) {
     '👁️ Live Server Status',
     'Players Online', 'Peak Today', 'Total Players Today', 'Registered Today',
     'Peak This Cycle', 'Players This Cycle', 'Registered This Cycle',
+    'Peak Since 7 PM', 'Players Since 7 PM', 'Registered Since 7 PM',
     'Lottery Status', 'Open Tickets', 'Active Rentals',
     'Next Restart', 'Watcher Services', 'Last Updated',
   ]);
@@ -321,7 +324,7 @@ async function updatePulse(guild) {
       observeOnline(guild).catch(()=>({count:0})),
       safeRows('watcher_tickets','id',[['eq','guild_id',guild.id],['eq','status','open']]),
       safeRows(process.env.WATCHER_DIRTBIKE_RENTAL_TABLE || 'watcher_dirtbike_rentals','id',[['eq','guild_id',guild.id],['in','status',['active','removal_pending']]]),
-      getTodayPulseStats(guild).catch(() => ({ peakToday: 0, totalPlayersToday: 0, registeredToday: 0, lotteryStatus: 'Unavailable' })),
+      getTodayPulseStats(guild).catch(() => ({ peakToday: 0, totalPlayersToday: 0, registeredToday: 0, lotteryStatus: 'Unavailable', cycleSinceLabel: 'Since 7:00 PM ET' })),
     ]);
 
     const base = message.embeds?.[0]?.toJSON?.() || {};
@@ -332,11 +335,11 @@ async function updatePulse(guild) {
 
     embed.setFields(...stripLiveStatusFields(base.fields || []));
     embed.addFields(
-      { name:'👁️ Live Server Status', value:'Updated automatically by The Watcher.', inline:false },
+      { name:'👁️ Live Server Status', value:`Updated automatically by The Watcher.\nTracking **${todayStats.cycleSinceLabel}**.`, inline:false },
       { name:'Players Online', value:`**${online.count}**`, inline:true },
-      { name:'Peak This Cycle', value:`**${todayStats.peakToday}**`, inline:true },
-      { name:'Players This Cycle', value:`**${todayStats.totalPlayersToday}**`, inline:true },
-      { name:'Registered This Cycle', value:`**${todayStats.registeredToday}**`, inline:true },
+      { name:'Peak Since 7 PM', value:`**${todayStats.peakToday}**`, inline:true },
+      { name:'Players Since 7 PM', value:`**${todayStats.totalPlayersToday}**`, inline:true },
+      { name:'Registered Since 7 PM', value:`**${todayStats.registeredToday}**`, inline:true },
       { name:'Lottery Status', value:todayStats.lotteryStatus, inline:true },
       { name:'Open Tickets', value:`**${openTickets.length}**`, inline:true },
       { name:'Active Rentals', value:`**${activeRentals.length}**`, inline:true },

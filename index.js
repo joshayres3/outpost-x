@@ -97,6 +97,7 @@ const {
   handleRulesAcceptCommand,
   handleRulesAcceptInteraction,
 } = require("./rulesAccept");
+const { startTrackerOnBoot, handleTrackerCommand, handleTrackerInteraction } = require("./tracker");
 const {
   registerPlayerPanelCommands,
   handlePlayerPanelCommand,
@@ -240,6 +241,7 @@ bot.once(Events.ClientReady, async () => {
     startTicketSystem(bot, db);
     startRentalSystem(bot);
     startAnalyticsOnBoot(bot);
+    startTrackerOnBoot(bot).catch((err) => console.error("❌ Tracker startup failed:", err.message));
   } catch (err) {
     console.error("❌ Startup database load failed:", err);
   }
@@ -247,6 +249,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handleTrackerInteraction(interaction)) return;
+
     if (await handleRulesAcceptInteraction(interaction)) return;
 
     if (await handleTicketInteraction(interaction, openAdminPanelForSteamId)) return;
@@ -338,6 +342,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
+
+    if (await handleTrackerCommand(msg)) return;
 
     if (await handleRulesAcceptCommand(msg)) return;
 
