@@ -54,6 +54,42 @@ function isDirtbike(vehicle) {
   return vehicleText(vehicle).replace(/[^a-z0-9]/g, "").includes("dirtbike");
 }
 
+function parseLocation(value) {
+  if (!value) return null;
+  if (typeof value === "object") {
+    const x = Number(value.x ?? value.X ?? value.locationX ?? value.location_x);
+    const y = Number(value.y ?? value.Y ?? value.locationY ?? value.location_y);
+    const z = Number(value.z ?? value.Z ?? value.locationZ ?? value.location_z);
+    if (Number.isFinite(x) && Number.isFinite(y)) return { x, y, z: Number.isFinite(z) ? z : 0 };
+  }
+  const text = String(value);
+  const mx = text.match(/(?:^|[,{\s])X\s*[:=]\s*(-?\d+(?:\.\d+)?)/i);
+  const my = text.match(/(?:^|[,{\s])Y\s*[:=]\s*(-?\d+(?:\.\d+)?)/i);
+  const mz = text.match(/(?:^|[,{\s])Z\s*[:=]\s*(-?\d+(?:\.\d+)?)/i);
+  if (!mx || !my) return null;
+  return { x: Number(mx[1]), y: Number(my[1]), z: mz ? Number(mz[1]) : 0 };
+}
+
+function entityLocation(entity) {
+  return parseLocation(entity?.location || entity?.position || entity?.transform || entity?.coordinates || entity);
+}
+
+function distanceSquared(a, b) {
+  if (!a || !b) return Number.POSITIVE_INFINITY;
+  const dx = Number(a.x) - Number(b.x);
+  const dy = Number(a.y) - Number(b.y);
+  const dz = Number(a.z || 0) - Number(b.z || 0);
+  return dx * dx + dy * dy + dz * dz;
+}
+
+function vehicleSpawnTime(vehicle) {
+  for (const value of [vehicle?.spawnDate, vehicle?.spawnedAt, vehicle?.spawn_at, vehicle?.createdAt, vehicle?.created_at]) {
+    const ms = value ? new Date(value).getTime() : NaN;
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
+}
+
 async function getLink(guildId, discordId) {
   const { data, error } = await getDb()
     .from(PLAYER_LINKS_TABLE)
@@ -86,21 +122,32 @@ async function fetchVehicles() {
   return Array.isArray(data?.vehicles) ? data.vehicles : [];
 }
 
-async function discoverSpawnedBike(steamId, beforeIds, spawnResult) {
+async function discoverSpawnedBike(steamId, beforeIds, spawnResult, player) {
   const directId = String(spawnResult?.vehicleId || spawnResult?.id || spawnResult?.vehicle?.id || "").trim();
   if (directId) return directId;
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 1200 : 2000));
+
+  const playerLoc = entityLocation(player);
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 1200 : 1800));
     const vehicles = await fetchVehicles().catch(() => []);
     const candidates = vehicles.filter((vehicle) => {
       const id = vehicleId(vehicle);
-      if (!id || beforeIds.has(id) || !isDirtbike(vehicle)) return false;
-      const owner = String(vehicle?.ownerSteamId || vehicle?.steamId || vehicle?.owner_id || "");
-      return !owner || owner === String(steamId);
+      return !!id && !beforeIds.has(id) && isDirtbike(vehicle);
     });
     if (candidates.length === 1) return vehicleId(candidates[0]);
-    const owned = candidates.find((vehicle) => String(vehicle?.ownerSteamId || vehicle?.steamId || vehicle?.owner_id || "") === String(steamId));
-    if (owned) return vehicleId(owned);
+    if (!candidates.length) continue;
+
+    const owned = candidates.filter((vehicle) => String(vehicle?.ownerSteamId || vehicle?.steamId || vehicle?.owner_id || "") === String(steamId));
+    const pool = owned.length ? owned : candidates;
+    if (pool.length === 1) return vehicleId(pool[0]);
+
+    if (playerLoc) {
+      const ranked = pool
+        .map((vehicle) => ({ vehicle, d2: distanceSquared(entityLocation(vehicle), playerLoc) }))
+        .filter((entry) => Number.isFinite(entry.d2))
+        .sort((a, b) => a.d2 - b.d2);
+      if (ranked.length && (ranked.length === 1 || ranked[0].d2 < ranked[1].d2 * 0.25)) return vehicleId(ranked[0].vehicle);
+    }
   }
   return null;
 }
@@ -122,12 +169,18 @@ async function createRental(interaction, link, player) {
     let spawnResult;
     try {
       spawnResult = await ggconPost("/spawn-vehicle", { steamId: String(link.steam_id), vehicle: VEHICLE_CLASS });
+      console.log("🏍️ Dirtbike /spawn-vehicle raw response:", JSON.stringify(spawnResult));
+      console.log("🏍️ Dirtbike direct vehicle ID candidates:", {
+        vehicleId: spawnResult?.vehicleId ?? null,
+        id: spawnResult?.id ?? null,
+        nestedVehicleId: spawnResult?.vehicle?.id ?? null,
+      });
     } catch (err) {
       await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: RENTAL_PRICE }).catch(() => {});
       throw new Error(`The dirtbike could not be spawned. Your $${formatMoney(RENTAL_PRICE)} was refunded. ${err.message}`);
     }
 
-    const id = await discoverSpawnedBike(link.steam_id, beforeIds, spawnResult);
+    const id = await discoverSpawnedBike(link.steam_id, beforeIds, spawnResult, player);
     const now = new Date();
     const expires = new Date(now.getTime() + RENTAL_MINUTES * 60000);
     const warning = new Date(expires.getTime() - WARNING_MINUTES * 60000);
@@ -161,11 +214,34 @@ async function sendWarning(rental) {
 async function resolveMissingVehicleId(rental) {
   if (rental.vehicle_id) return rental.vehicle_id;
   const vehicles = await fetchVehicles();
-  const candidates = vehicles.filter((vehicle) => isDirtbike(vehicle) && String(vehicle?.ownerSteamId || vehicle?.steamId || vehicle?.owner_id || "") === String(rental.steam_id));
-  if (candidates.length !== 1) return null;
-  const id = vehicleId(candidates[0]);
-  if (id) await getDb().from(RENTAL_TABLE).update({ vehicle_id: id, last_error: null, updated_at: new Date().toISOString() }).eq("id", rental.id);
-  return id || null;
+  const dirtbikes = vehicles.filter(isDirtbike);
+  if (!dirtbikes.length) return null;
+
+  const owned = dirtbikes.filter((vehicle) => String(vehicle?.ownerSteamId || vehicle?.steamId || vehicle?.owner_id || "") === String(rental.steam_id));
+  const startedAt = new Date(rental.started_at || rental.created_at || 0).getTime();
+  const MAX_SPAWN_DELTA_MS = 5 * 60_000;
+
+  // Recovery path for older rentals whose initial spawn response did not include an ID.
+  // Prefer a dirtbike owned by the renter and spawned closest to the rental start time.
+  const timeRanked = (owned.length ? owned : dirtbikes)
+    .map((vehicle) => {
+      const spawnMs = vehicleSpawnTime(vehicle);
+      return { vehicle, spawnMs, delta: Number.isFinite(spawnMs) && Number.isFinite(startedAt) ? Math.abs(spawnMs - startedAt) : Number.POSITIVE_INFINITY };
+    })
+    .filter((entry) => Number.isFinite(entry.delta) && entry.delta <= MAX_SPAWN_DELTA_MS)
+    .sort((a, b) => a.delta - b.delta);
+
+  let chosen = null;
+  if (timeRanked.length === 1) chosen = timeRanked[0].vehicle;
+  else if (timeRanked.length > 1 && timeRanked[0].delta + 5000 < timeRanked[1].delta) chosen = timeRanked[0].vehicle;
+  else if (owned.length === 1) chosen = owned[0];
+
+  const id = chosen ? vehicleId(chosen) : null;
+  if (!id) return null;
+
+  const { error } = await getDb().from(RENTAL_TABLE).update({ vehicle_id: id, last_error: null, updated_at: new Date().toISOString() }).eq("id", rental.id);
+  if (error) throw error;
+  return id;
 }
 
 async function removeRental(rental) {
