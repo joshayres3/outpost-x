@@ -426,7 +426,7 @@ async function handleTrackerCommand(message) {
 
   await message.delete().catch(() => {});
   const reply = await message.channel.send({
-    content: '👁️ **Watcher Surveillance**\nStaff access only. Click below to create a private, short-lived tracker session.',
+    content: '👁️ **Watcher Surveillance**\nStaff access only. Use the button below whenever you need a private tracker session.',
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -437,7 +437,6 @@ async function handleTrackerCommand(message) {
       ),
     ],
   }).catch(() => null);
-  if (reply) setTimeout(() => reply.delete().catch(() => {}), 120_000);
   return true;
 }
 
