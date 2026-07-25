@@ -14,6 +14,7 @@ const {
 const DEFAULT_GGCON_BASE_URL = 'https://ggcon.gghost.games/s/2788404';
 const MOVEMENT_TABLE = process.env.TRACKER_MOVEMENT_TABLE || 'watcher_player_movement';
 const PLAYERS_TABLE = process.env.TRACKER_PLAYERS_TABLE || 'watcher_tracker_players';
+const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || 'watcher_player_links';
 const SAMPLE_SECONDS = Math.max(5, Number(process.env.TRACKER_SAMPLE_SECONDS || '15'));
 const RETENTION_HOURS = Math.max(1, Number(process.env.TRACKER_RETENTION_HOURS || '48'));
 const MOVE_THRESHOLD_UNITS = Math.max(0, Number(process.env.TRACKER_MOVE_THRESHOLD_UNITS || '1000'));
@@ -28,11 +29,24 @@ const STAFF_ROLE_NAMES = new Set(
     .filter(Boolean)
 );
 
+// Calibrated from seven user-supplied SCUM map anchors across D4/C2/B2/B0/Z4/Z0/D0.
+// These affine coefficients map SCUM world X/Y directly to the supplied 1247x1247 map pixels.
+const MAP_CALIBRATION = {
+  width: 1286,
+  height: 1284,
+  uX: -0.000839936949,
+  uY: -0.000000114251275,
+  u0: 522.554989,
+  vX: 0.0000000139951272,
+  vY: -0.000839814791,
+  v0: 520.569056,
+};
+
 const WORLD = {
-  minX: Number(process.env.TRACKER_WORLD_MIN_X || '-650000'),
-  maxX: Number(process.env.TRACKER_WORLD_MAX_X || '650000'),
-  minY: Number(process.env.TRACKER_WORLD_MIN_Y || '-700000'),
-  maxY: Number(process.env.TRACKER_WORLD_MAX_Y || '700000'),
+  minX: Number(process.env.TRACKER_WORLD_MIN_X || '-900000'),
+  maxX: Number(process.env.TRACKER_WORLD_MAX_X || '600000'),
+  minY: Number(process.env.TRACKER_WORLD_MIN_Y || '-850000'),
+  maxY: Number(process.env.TRACKER_WORLD_MAX_Y || '650000'),
   flipX: String(process.env.TRACKER_FLIP_X || 'false').toLowerCase() === 'true',
   flipY: String(process.env.TRACKER_FLIP_Y || 'true').toLowerCase() !== 'false',
 };
@@ -75,6 +89,25 @@ async function ggconGet(endpoint) {
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!response.ok || data?.ok === false) {
+    throw new Error(data?.message || data?.reason || data?.error || `GGCON HTTP ${response.status}`);
+  }
+  return data;
+}
+
+async function ggconPost(endpoint, body = {}) {
+  const response = await fetch(`${ggconBaseUrl()}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Password': ggconPassword(),
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!response.ok || data?.ok === false || data?.accepted === false) {
     throw new Error(data?.message || data?.reason || data?.error || `GGCON HTTP ${response.status}`);
   }
   return data;
@@ -288,6 +321,58 @@ async function fetchPlayerHistory(steamId, fromIso, toIso) {
   }));
 }
 
+async function readJsonBody(req, maxBytes = 65536) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      raw += chunk;
+      if (Buffer.byteLength(raw) > maxBytes) {
+        reject(new Error('Request body is too large.'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (!raw) return resolve({});
+      try { resolve(JSON.parse(raw)); } catch { reject(new Error('Invalid JSON body.')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function resolveSessionSteamId(session) {
+  const { data, error } = await getDb()
+    .from(PLAYER_LINKS_TABLE)
+    .select('steam_id,scum_name')
+    .eq('guild_id', String(session.guildId))
+    .eq('discord_id', String(session.discordId))
+    .not('steam_id', 'is', null)
+    .maybeSingle();
+  if (error) throw error;
+  const steamId = String(data?.steam_id || '').trim();
+  if (!/^\d{15,20}$/.test(steamId)) throw new Error('Your Discord account is not linked to a SCUM player.');
+  return { steamId, name: data?.scum_name || steamId };
+}
+
+async function getRecordedPoint(steamId, recordedAt) {
+  const { data, error } = await getDb()
+    .from(MOVEMENT_TABLE)
+    .select('steam_id,player_name,x,y,z,recorded_at')
+    .eq('steam_id', String(steamId))
+    .eq('recorded_at', String(recordedAt))
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('That recorded point is no longer available. Refresh the tracker and try again.');
+  return {
+    steamId: String(data.steam_id),
+    name: data.player_name || data.steam_id,
+    x: Number(data.x),
+    y: Number(data.y),
+    z: Number(data.z),
+    recordedAt: data.recorded_at,
+  };
+}
+
 function json(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -301,11 +386,6 @@ function json(res, status, body) {
 function text(res, status, body, contentType = 'text/plain; charset=utf-8') {
   res.writeHead(status, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
   res.end(body);
-}
-
-function redirect(res, location) {
-  res.writeHead(302, { Location: location, 'Cache-Control': 'no-store' });
-  res.end();
 }
 
 function unauthorized(res) {
@@ -357,6 +437,7 @@ async function handleHttp(req, res) {
       retentionHours: RETENTION_HOURS,
       sampleSeconds: SAMPLE_SECONDS,
       mapAvailable: fs.existsSync(mapPath),
+      map: MAP_CALIBRATION,
       world: WORLD,
       sessionExpiresAt: new Date(session.expiresAt).toISOString(),
     });
@@ -380,6 +461,35 @@ async function handleHttp(req, res) {
     try {
       const points = await fetchPlayerHistory(steamId, url.searchParams.get('from'), url.searchParams.get('to'));
       return json(res, 200, { steamId, points });
+    } catch (err) {
+      return json(res, 500, { error: err.message });
+    }
+  }
+
+  if (url.pathname === '/tracker/api/teleport-me' && req.method === 'POST') {
+    try {
+      const body = await readJsonBody(req);
+      const targetSteamId = String(body.targetSteamId || '').trim();
+      const recordedAt = String(body.recordedAt || '').trim();
+      if (!/^\d{15,20}$/.test(targetSteamId) || !recordedAt) {
+        return json(res, 400, { error: 'A recorded player point is required.' });
+      }
+
+      // Never accept X/Y/Z from the browser. Re-read the exact recorded point from Supabase.
+      const point = await getRecordedPoint(targetSteamId, recordedAt);
+      const actor = await resolveSessionSteamId(session);
+      await ggconPost(`/players/${encodeURIComponent(actor.steamId)}/teleport`, {
+        x: point.x,
+        y: point.y,
+        z: point.z,
+      });
+      return json(res, 200, {
+        ok: true,
+        teleportedSteamId: actor.steamId,
+        teleportedName: actor.name,
+        sourcePlayer: point.name,
+        point,
+      });
     } catch (err) {
       return json(res, 500, { error: err.message });
     }
@@ -425,7 +535,7 @@ async function handleTrackerCommand(message) {
   }
 
   await message.delete().catch(() => {});
-  const reply = await message.channel.send({
+  await message.channel.send({
     content: '👁️ **Watcher Surveillance**\nStaff access only. Use the button below whenever you need a private tracker session.',
     components: [
       new ActionRowBuilder().addComponents(
