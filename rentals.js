@@ -122,6 +122,46 @@ async function fetchVehicles() {
   return Array.isArray(data?.vehicles) ? data.vehicles : [];
 }
 
+
+async function fetchServerLogsSince(since, sources = "SCUM") {
+  const base = (process.env.GGCON_BASE_URL || "https://ggcon.gghost.games/s/2788404").replace(/\/+$/, "");
+  const params = new URLSearchParams({ since: String(Math.max(0, Number(since || 0))) });
+  if (sources) params.set("sources", sources);
+  const res = await fetch(`${base}/logs?${params.toString()}`, {
+    headers: { Accept: "application/json", "X-Password": process.env.GGCON_PASSWORD || "" },
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || data?.ok === false) throw new Error(data?.reason || data?.message || `Log lookup failed (${res.status}).`);
+  return Array.isArray(data?.lines) ? data.lines : [];
+}
+
+function extractSpawnedDirtbikeId(lines, since) {
+  const candidates = [];
+  for (const row of lines || []) {
+    const t = Number(row?.t || row?.timestamp || row?.time || 0);
+    if (Number.isFinite(t) && t && t < Number(since || 0)) continue;
+    const text = String(row?.line ?? row?.message ?? row ?? "");
+    const match = text.match(/Spawned\s+BPC?_?Dirtbike\s+with\s+ID\s+(\d+)/i)
+      || text.match(/Spawned\s+BP_C_Dirtbike\s+with\s+ID\s+(\d+)/i);
+    if (match) candidates.push({ id: String(match[1]), t: Number.isFinite(t) ? t : 0 });
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.t - a.t);
+  return candidates[0].id;
+}
+
+async function discoverSpawnedBikeFromLogs(spawnStartedAt) {
+  // GGCON's /spawn-vehicle response currently omits the vehicle ID, while SCUM emits
+  // "Spawned BP_C_Dirtbike with ID <id>". Poll recent SCUM logs briefly and capture it.
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 500 : 900));
+    const lines = await fetchServerLogsSince(Math.max(0, spawnStartedAt - 2000), "SCUM").catch(() => []);
+    const id = extractSpawnedDirtbikeId(lines, spawnStartedAt - 2000);
+    if (id) return id;
+  }
+  return null;
+}
+
 async function discoverSpawnedBike(steamId, beforeIds, spawnResult, player) {
   const directId = String(spawnResult?.vehicleId || spawnResult?.id || spawnResult?.vehicle?.id || "").trim();
   if (directId) return directId;
@@ -167,20 +207,17 @@ async function createRental(interaction, link, player) {
     const beforeIds = new Set(before.map(vehicleId).filter(Boolean));
     await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -RENTAL_PRICE });
     let spawnResult;
+    const spawnStartedAt = Date.now();
     try {
       spawnResult = await ggconPost("/spawn-vehicle", { steamId: String(link.steam_id), vehicle: VEHICLE_CLASS });
-      console.log("🏍️ Dirtbike /spawn-vehicle raw response:", JSON.stringify(spawnResult));
-      console.log("🏍️ Dirtbike direct vehicle ID candidates:", {
-        vehicleId: spawnResult?.vehicleId ?? null,
-        id: spawnResult?.id ?? null,
-        nestedVehicleId: spawnResult?.vehicle?.id ?? null,
-      });
     } catch (err) {
       await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: RENTAL_PRICE }).catch(() => {});
       throw new Error(`The dirtbike could not be spawned. Your $${formatMoney(RENTAL_PRICE)} was refunded. ${err.message}`);
     }
 
-    const id = await discoverSpawnedBike(link.steam_id, beforeIds, spawnResult, player);
+    let id = await discoverSpawnedBikeFromLogs(spawnStartedAt);
+    if (id) console.log(`🏍️ Dirtbike rental captured spawned vehicle ID ${id} from SCUM logs.`);
+    if (!id) id = await discoverSpawnedBike(link.steam_id, beforeIds, spawnResult, player);
     const now = new Date();
     const expires = new Date(now.getTime() + RENTAL_MINUTES * 60000);
     const warning = new Date(expires.getTime() - WARNING_MINUTES * 60000);
