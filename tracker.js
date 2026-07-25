@@ -29,17 +29,17 @@ const STAFF_ROLE_NAMES = new Set(
     .filter(Boolean)
 );
 
-// Calibrated from seven user-supplied SCUM map anchors across D4/C2/B2/B0/Z4/Z0/D0.
-// These affine coefficients map SCUM world X/Y directly to the supplied 1247x1247 map pixels.
+// Calibrated from the original sector map, then scaled onto the new 2048x2048 high-resolution map.
+// The new map keeps the same world extents, with sector grid/labels overlaid for easier navigation.
 const MAP_CALIBRATION = {
-  width: 1286,
-  height: 1284,
-  uX: -0.000839936949,
-  uY: -0.000000114251275,
-  u0: 522.554989,
-  vX: 0.0000000139951272,
-  vY: -0.000839814791,
-  v0: 520.569056,
+  width: 2048,
+  height: 2048,
+  uX: -0.0013376289825443235,
+  uY: -1.819491533437014e-7,
+  u0: 832.1871053437013,
+  vX: 2.2322445876635514e-8,
+  vY: -0.001339517672872274,
+  v0: 830.3157528722742,
 };
 
 const WORLD = {
