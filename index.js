@@ -340,6 +340,9 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (!msg.guild) {
       if (msg.author.bot) return;
 
+      // Player Lore image uploads are intentionally handled through DMs so the lore channel stays read-only.
+      if (await handlePlayerLoreMessage(msg)) return;
+
       await msg.reply(
         [
           "Thanks for the message!",
