@@ -92,6 +92,7 @@ const {
 const { handleRentalCommand, handleRentalInteraction, startRentalSystem } = require("./rentals");
 const { handleShopCommand, handleShopInteraction } = require("./shop");
 const { startPlayerShops, handlePlayerShopCommand, handlePlayerShopMessage, handlePlayerShopInteraction, handlePlayerShopModal } = require("./playerShops");
+const { startSquadFinder, handleSquadFinderCommand, handleSquadFinderInteraction, handleSquadFinderModal } = require("./squadFinder");
 const { startAnalyticsOnBoot, handleAnalyticsCommand } = require("./analytics");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
@@ -242,6 +243,7 @@ bot.once(Events.ClientReady, async () => {
     startTicketSystem(bot, db);
     startRentalSystem(bot);
     startPlayerShops(bot, db);
+    startSquadFinder(bot, db);
     startAnalyticsOnBoot(bot);
     startTrackerOnBoot(bot).catch((err) => console.error("❌ Tracker startup failed:", err.message));
   } catch (err) {
@@ -252,6 +254,8 @@ bot.once(Events.ClientReady, async () => {
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await handlePlayerShopModal(interaction)) return;
+
+    if (await handleSquadFinderModal(interaction)) return;
 
     if (await handleTrackerInteraction(interaction)) return;
 
@@ -266,6 +270,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
     if (await handleShopInteraction(interaction)) return;
 
     if (await handlePlayerShopInteraction(interaction)) return;
+
+    if (await handleSquadFinderInteraction(interaction)) return;
 
     if (await handlePlayerPanelInteraction(interaction)) return;
 
@@ -365,6 +371,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleShopCommand(msg)) return;
 
     if (await handlePlayerShopCommand(msg)) return;
+
+    if (await handleSquadFinderCommand(msg)) return;
 
     if (await handleAnalyticsCommand(msg)) return;
 
