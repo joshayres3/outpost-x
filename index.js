@@ -91,6 +91,7 @@ const {
 } = require("./popupEvents");
 const { handleRentalCommand, handleRentalInteraction, startRentalSystem } = require("./rentals");
 const { handleShopCommand, handleShopInteraction } = require("./shop");
+const { startPlayerShops, handlePlayerShopCommand, handlePlayerShopMessage, handlePlayerShopInteraction, handlePlayerShopModal } = require("./playerShops");
 const { startAnalyticsOnBoot, handleAnalyticsCommand } = require("./analytics");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
@@ -240,6 +241,7 @@ bot.once(Events.ClientReady, async () => {
     startPopupEventsOnBoot(bot).catch((err) => console.error("❌ Pop-up event startup failed:", err.message));
     startTicketSystem(bot, db);
     startRentalSystem(bot);
+    startPlayerShops(bot, db);
     startAnalyticsOnBoot(bot);
     startTrackerOnBoot(bot).catch((err) => console.error("❌ Tracker startup failed:", err.message));
   } catch (err) {
@@ -249,6 +251,8 @@ bot.once(Events.ClientReady, async () => {
 
 bot.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await handlePlayerShopModal(interaction)) return;
+
     if (await handleTrackerInteraction(interaction)) return;
 
     if (await handleRulesAcceptInteraction(interaction)) return;
@@ -260,6 +264,8 @@ bot.on(Events.InteractionCreate, async (interaction) => {
     if (await handleRentalInteraction(interaction)) return;
 
     if (await handleShopInteraction(interaction)) return;
+
+    if (await handlePlayerShopInteraction(interaction)) return;
 
     if (await handlePlayerPanelInteraction(interaction)) return;
 
@@ -343,6 +349,8 @@ bot.on(Events.MessageCreate, async (msg) => {
 
     if (msg.author.bot) return;
 
+    if (await handlePlayerShopMessage(msg)) return;
+
     if (await handleTrackerCommand(msg)) return;
 
     if (await handleRulesAcceptCommand(msg)) return;
@@ -355,6 +363,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handleRentalCommand(msg)) return;
 
     if (await handleShopCommand(msg)) return;
+
+    if (await handlePlayerShopCommand(msg)) return;
 
     if (await handleAnalyticsCommand(msg)) return;
 
