@@ -93,6 +93,7 @@ const { handleRentalCommand, handleRentalInteraction, startRentalSystem } = requ
 const { handleShopCommand, handleShopInteraction } = require("./shop");
 const { startPlayerShops, handlePlayerShopCommand, handlePlayerShopMessage, handlePlayerShopInteraction, handlePlayerShopModal } = require("./playerShops");
 const { startSquadFinder, handleSquadFinderCommand, handleSquadFinderInteraction, handleSquadFinderModal } = require("./squadFinder");
+const { startPlayerLore, handlePlayerLoreCommand, handlePlayerLoreMessage, handlePlayerLoreInteraction, handlePlayerLoreModal } = require("./playerLore");
 const { startAnalyticsOnBoot, handleAnalyticsCommand } = require("./analytics");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
@@ -244,6 +245,7 @@ bot.once(Events.ClientReady, async () => {
     startRentalSystem(bot);
     startPlayerShops(bot, db);
     startSquadFinder(bot, db);
+    startPlayerLore(bot, db);
     startAnalyticsOnBoot(bot);
     startTrackerOnBoot(bot).catch((err) => console.error("❌ Tracker startup failed:", err.message));
   } catch (err) {
@@ -256,6 +258,7 @@ bot.on(Events.InteractionCreate, async (interaction) => {
     if (await handlePlayerShopModal(interaction)) return;
 
     if (await handleSquadFinderModal(interaction)) return;
+    if (await handlePlayerLoreModal(interaction)) return;
 
     if (await handleTrackerInteraction(interaction)) return;
 
@@ -272,6 +275,7 @@ bot.on(Events.InteractionCreate, async (interaction) => {
     if (await handlePlayerShopInteraction(interaction)) return;
 
     if (await handleSquadFinderInteraction(interaction)) return;
+    if (await handlePlayerLoreInteraction(interaction)) return;
 
     if (await handlePlayerPanelInteraction(interaction)) return;
 
@@ -356,6 +360,7 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot) return;
 
     if (await handlePlayerShopMessage(msg)) return;
+    if (await handlePlayerLoreMessage(msg)) return;
 
     if (await handleTrackerCommand(msg)) return;
 
@@ -373,6 +378,7 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handlePlayerShopCommand(msg)) return;
 
     if (await handleSquadFinderCommand(msg)) return;
+    if (await handlePlayerLoreCommand(msg)) return;
 
     if (await handleAnalyticsCommand(msg)) return;
 
