@@ -857,7 +857,7 @@ async function processInsuranceDestructionEvent(bot, guildId, channelId, event) 
 
 async function scanInsuranceDestructions(bot, { baselineOnly = false } = {}) {
   const config = await loadRuntimeValue("insurance_config");
-  if (!config?.guildId || !config?.channelId) return { scanned: false, reason: "Insurance is not set up." };
+  if (!config?.guildId) return { scanned: false, reason: "Insurance guild is not configured." };
   const state = await loadRuntimeValue("insurance_state") || {};
   const since = state.destructionCursor || Math.max(0, Date.now() - 5 * 60 * 1000);
   const data = await fetchRawServerLogs({ since, label: "insurance" }, "vehicle_destruction");
@@ -885,7 +885,7 @@ async function scanInsuranceDestructions(bot, { baselineOnly = false } = {}) {
 
 async function processInsuranceDestructionEvents(bot, events = [], { baselineOnly = false } = {}) {
   const config = await loadRuntimeValue("insurance_config");
-  if (!config?.guildId || !config?.channelId) return { scanned: false, reason: "Insurance is not set up." };
+  if (!config?.guildId) return { scanned: false, reason: "Insurance guild is not configured." };
 
   const state = await loadRuntimeValue("insurance_state") || {};
   const seen = new Set(state.seen || []);
@@ -927,7 +927,7 @@ function ensureInsuranceLoop(bot) {
 async function startInsuranceOnBoot(bot) {
   try {
     const config = await loadRuntimeValue("insurance_config");
-    if (!config?.channelId) return;
+    if (!config?.guildId) return;
     ensureInsuranceLoop(bot);
     const state = await loadRuntimeValue("insurance_state");
     await scanInsuranceDestructions(bot, { baselineOnly: !state });
@@ -1252,10 +1252,39 @@ function portalInteraction(ctx){
   return {guildId:String(ctx.guildId),user:{id:String(ctx.discordId),tag:ctx.displayName||'Portal User',username:ctx.displayName||'Portal User'},reply:capture,update:capture,followUp:capture,deferUpdate:async()=>{},editReply:capture,get result(){return last;}};
 }
 async function portalInsuranceOptions(ctx){
-  const policies=await getActivePolicies(ctx.guildId,ctx.steamId);
-  const claims=await getAvailableClaims(ctx.guildId,ctx.discordId);
-  const vehicles=(await fetchVehicles()).filter(v=>String(v.ownerSteamId||'')===String(ctx.steamId)).map(v=>{const config=getInsuranceVehicleType(v);return{id:String(getVehicleId(v)||''),name:getVehicleName(v),type:config?.type||null,label:config?.label||null,price:config?.price||null,eligible:!!config&&!policies.some(p=>p.vehicle_type===config.type)};});
-  return {policies,claims,vehicles};
+  const [policies, claims, vehicleData] = await Promise.all([
+    getActivePolicies(ctx.guildId, ctx.steamId),
+    getAvailableClaims(ctx.guildId, ctx.discordId),
+    serverGet('/vehicles.json'),
+  ]);
+  const activeTypes = new Set(policies.map((policy) => policy.vehicle_type));
+  const rawVehicles = Array.isArray(vehicleData?.vehicles) ? vehicleData.vehicles : [];
+  const owned = rawVehicles
+    .filter((vehicle) => String(vehicle.ownerSteamId || '') === String(ctx.steamId))
+    .map((vehicle) => {
+      const config = getInsuranceVehicleType(vehicle);
+      return {
+        vehicle,
+        id: String(getVehicleId(vehicle) || ''),
+        name: getVehicleName(vehicle),
+        type: config?.type || null,
+        label: config?.label || null,
+        price: config?.price || null,
+        eligible: !!config && !activeTypes.has(config.type),
+      };
+    })
+    .filter((entry) => entry.id);
+  const rentalChecks = await Promise.all(owned.map((entry) => isRentalVehicle(ctx.guildId, entry.id)));
+  const vehicles = owned.map((entry, index) => ({
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    label: entry.label,
+    price: entry.price,
+    eligible: entry.eligible && !rentalChecks[index],
+    rental: !!rentalChecks[index],
+  }));
+  return { policies, claims, vehicles };
 }
 async function portalBuyInsurance(ctx,vehicleId){const i=portalInteraction(ctx);await confirmBuy(i,String(vehicleId));const content=String(i.result?.content||'');if(!content.startsWith('✅'))throw new Error(content||'Insurance purchase failed.');return{ok:true,message:content};}
 async function portalRedeemInsurance(ctx,claimId){const i=portalInteraction(ctx);await redeemClaim(i,String(claimId));const content=String(i.result?.content||'');if(!content.startsWith('✅'))throw new Error(content||'Insurance claim failed.');return{ok:true,message:content};}
