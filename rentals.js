@@ -1,3 +1,4 @@
+const { recordTransaction } = require('./watcherTransactions');
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
 const { getPlayerForLookup, getPlayerDisplayName, ggconPost } = require("./ggcon");
@@ -233,6 +234,7 @@ async function createRental(interaction, link, player) {
       await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: RENTAL_PRICE }).catch(() => {});
       throw error;
     }
+    await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId: link.steam_id, playerName: link.scum_name || getPlayerDisplayName(player), type: 'dirtbike_rental', title: '30-Minute Dirtbike Rental', amount: -RENTAL_PRICE, balanceBefore: cash, balanceAfter: cash - RENTAL_PRICE, details: { vehicleId: id, expiresAt: expires.toISOString() } });
     return { expires, id };
   } finally {
     activePurchases.delete(key);

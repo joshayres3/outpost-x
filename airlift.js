@@ -1,3 +1,4 @@
+const { recordTransaction } = require('./watcherTransactions');
 const {
   ActionRowBuilder,
   ButtonBuilder,
@@ -402,6 +403,7 @@ async function handleAirliftInteraction(interaction) {
           z: AIRLIFT_ALTITUDE_Z,
           price: AIRLIFT_PRICE,
         });
+        await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId, playerName: getPlayerDisplayName(player), type: 'airlift_taxi', title: `Airlift Taxi to ${sectorName}`, amount: -AIRLIFT_PRICE, balanceBefore: cash, balanceAfter: cash - AIRLIFT_PRICE, details: { sector: sectorName, x: sector.x, y: sector.y, z: AIRLIFT_ALTITUDE_Z } });
         clearPending(interaction.guildId, interaction.user.id);
         const nextRide = new Date(Date.now() + AIRLIFT_COOLDOWN_MS);
         await interaction.editReply({

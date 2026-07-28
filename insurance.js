@@ -1,3 +1,4 @@
+const { recordTransaction } = require('./watcherTransactions');
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
@@ -740,6 +741,7 @@ async function confirmBuy(interaction, vehicleId) {
     updated_at: new Date().toISOString(),
   });
   if (error) throw error;
+  await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId: link.steam_id, playerName: link.scum_name || getPlayerDisplayName(afterPlayer), type: 'vehicle_insurance', title: `Vehicle Insurance: ${config.label}`, amount: -config.price, balanceBefore: beforeCash, balanceAfter: afterCash, details: { vehicleId: String(vehicleId), vehicleType: config.type, vehicleName: getVehicleName(vehicle) } });
 
   await interaction.update({
     content: [

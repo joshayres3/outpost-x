@@ -100,7 +100,7 @@ const {
   handleRulesAcceptCommand,
   handleRulesAcceptInteraction,
 } = require("./rulesAccept");
-const { startTrackerOnBoot, handleTrackerCommand, handleTrackerInteraction } = require("./tracker");
+const { startTrackerOnBoot, handleTrackerCommand, handleTrackerInteraction, handleCommandCenterCommand } = require("./tracker");
 const {
   registerPlayerPanelCommands,
   handlePlayerPanelCommand,
@@ -365,6 +365,7 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (await handlePlayerShopMessage(msg)) return;
     if (await handlePlayerLoreMessage(msg)) return;
 
+    if (await handleCommandCenterCommand(msg)) return;
     if (await handleTrackerCommand(msg)) return;
 
     if (await handleRulesAcceptCommand(msg)) return;

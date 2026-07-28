@@ -1,3 +1,4 @@
+const { recordTransaction } = require('./watcherTransactions');
 const {
   ActionRowBuilder,
   ButtonBuilder,
@@ -288,6 +289,7 @@ async function buyPackage(interaction, pkg) {
       player_name: link.scum_name || getPlayerDisplayName(player), package_id: pkg.id, package_name: pkg.name,
       price: pkg.price, status: "delivered", error_message: null, created_at: new Date().toISOString(),
     });
+    await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId: link.steam_id, playerName: link.scum_name || getPlayerDisplayName(player), type: 'server_shop', title: `Server Shop: ${pkg.name}`, amount: -pkg.price, balanceBefore: cash, balanceAfter: cash - pkg.price, details: { packageId: pkg.id, packageName: pkg.name, items: pkg.items } });
     return { playerName: link.scum_name || getPlayerDisplayName(player) };
   } finally {
     purchaseLocks.delete(lockKey);

@@ -52,7 +52,13 @@ const WORLD = {
 };
 
 const mapPath = path.join(__dirname, 'tracker-map.png');
-const htmlPath = path.join(__dirname, 'tracker.html');
+const htmlPath = path.join(__dirname, 'surveillance.html');
+const portalHtmlPath = path.join(__dirname, 'portal.html');
+const portalCssPath = path.join(__dirname, 'portal.css');
+const portalJsPath = path.join(__dirname, 'portal.js');
+const portalOutpostPath = path.join(__dirname, 'portal-outpost.jpg');
+const portalWatcherPath = path.join(__dirname, 'portal-watcher.jpg');
+const TRANSACTIONS_TABLE = process.env.WATCHER_TRANSACTIONS_TABLE || 'watcher_transactions';
 
 let dbClient = null;
 let botRef = null;
@@ -117,6 +123,10 @@ function hasTrackerRole(member) {
   return !!member?.roles?.cache?.some((role) => STAFF_ROLE_NAMES.has(String(role.name || '').toLowerCase()));
 }
 
+function hasPortalAccess(member) {
+  return hasTrackerRole(member) || !!member?.roles?.cache?.some((role) => ['the exiles','exiles'].includes(String(role.name || '').toLowerCase()));
+}
+
 function publicBaseUrl() {
   const explicit = String(process.env.TRACKER_PUBLIC_URL || '').trim().replace(/\/+$/, '');
   if (explicit) return explicit;
@@ -128,11 +138,14 @@ function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString('base64url');
 }
 
-function createAccessToken(discordId, guildId) {
+function createAccessToken(discordId, guildId, profile = {}) {
   const token = randomToken(32);
   accessTokens.set(token, {
     discordId: String(discordId),
     guildId: String(guildId),
+    displayName: profile.displayName || 'Outpost Player',
+    avatar: profile.avatar || null,
+    isAdmin: !!profile.isAdmin,
     expiresAt: Date.now() + ACCESS_TOKEN_SECONDS * 1000,
   });
   return token;
@@ -261,6 +274,9 @@ async function cleanupOldTrackerData() {
     if (movement.error) throw movement.error;
     const players = await db.from(PLAYERS_TABLE).delete().lt('last_seen', cutoff);
     if (players.error) throw players.error;
+    const transactionCutoff = new Date(Date.now() - 15 * 86400000).toISOString();
+    const transactions = await db.from(TRANSACTIONS_TABLE).delete().lt('created_at', transactionCutoff);
+    if (transactions.error && !String(transactions.error.message || '').includes('does not exist')) throw transactions.error;
   } catch (err) {
     console.error(`❌ Tracker cleanup failed: ${err.message}`);
   }
@@ -373,6 +389,80 @@ async function getRecordedPoint(steamId, recordedAt) {
   };
 }
 
+
+async function safeRows(table, build) {
+  try { const q = build(getDb().from(table)); const { data, error } = await q; if (error) throw error; return data || []; }
+  catch (err) { console.warn(`⚠️ Portal could not read ${table}: ${err.message}`); return []; }
+}
+async function portalLink(session) {
+  const { data, error } = await getDb().from(PLAYER_LINKS_TABLE).select('*').eq('guild_id', String(session.guildId)).eq('discord_id', String(session.discordId)).maybeSingle();
+  if (error) throw error; return data || null;
+}
+function currentPlayerBySteam(steamId) {
+  const p = latestOnline.get(String(steamId));
+  return p || null;
+}
+function playerCash(p){ const n=Number(p?.cash ?? p?.currency ?? p?.money ?? p?.balance); return Number.isFinite(n)?n:null; }
+function playerFame(p){ const n=Number(p?.famePoints ?? p?.fame ?? p?.fame_points); return Number.isFinite(n)?n:null; }
+async function buildPortalOverview(session) {
+  const link = await portalLink(session);
+  const steamId = String(link?.steam_id || '');
+  let live = steamId ? currentPlayerBySteam(steamId) : null;
+  if (steamId) {
+    try { const d=await ggconGet(`/players/${encodeURIComponent(steamId)}.json`); live=d?.player||d; } catch {}
+  }
+  const cutoff15 = new Date(Date.now()-15*86400000).toISOString();
+  const [insurance,rentals,rides,shops,myShop,squads,lore,myLore,transactions,adminTransactions] = await Promise.all([
+    steamId?safeRows('watcher_vehicle_insurance',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('purchased_at',{ascending:false}).limit(100)):[],
+    steamId?safeRows('watcher_dirtbike_rentals',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('created_at',{ascending:false}).limit(5)):[],
+    steamId?safeRows('watcher_airlift_rides',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('completed_at',{ascending:false}).limit(5)):[],
+    safeRows('watcher_player_shops',q=>q.select('*').eq('guild_id',String(session.guildId)).order('updated_at',{ascending:false}).limit(250)),
+    safeRows('watcher_player_shops',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('owner_id',String(session.discordId)).limit(1)),
+    safeRows('watcher_squad_listings',q=>q.select('*').eq('guild_id',String(session.guildId)).order('updated_at',{ascending:false}).limit(250)),
+    safeRows('watcher_player_lore',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('is_published',true).order('updated_at',{ascending:false}).limit(250)),
+    safeRows('watcher_player_lore',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('owner_id',String(session.discordId)).limit(1)),
+    steamId?safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).gte('created_at',cutoff15).order('created_at',{ascending:false}).limit(500)):[],
+    session.isAdmin?safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).gte('created_at',cutoff15).order('created_at',{ascending:false}).limit(1000)):[],
+  ]);
+  const lastRide=rides[0]?.completed_at?new Date(rides[0].completed_at):null; const nextRide=lastRide?new Date(lastRide.getTime()+3600000):null;
+  const vehicles=[];
+  try { if(steamId){const d=await ggconGet(`/players/${encodeURIComponent(steamId)}.json`); const arr=d?.vehicles||d?.player?.vehicles||[]; for(const x of arr) vehicles.push({...x,id:x.id||x.vehicleId,name:x.name||x.vehicleName,insured:insurance.some(i=>String(i.vehicle_id)===String(x.id||x.vehicleId)&&i.status==='active')});} } catch{}
+  return {
+    me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,sessionExpiresAt:new Date(session.expiresAt).toISOString()},
+    player:{steamId:steamId||null,name:link?.scum_name||live?.characterName||live?.name||null,online:!!live,cash:playerCash(live),fame:playerFame(live)},
+    vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
+    airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,lore,myLore:myLore[0]||null,transactions,adminTransactions,
+    shopCatalog:[]
+  };
+}
+const PORTAL_SECTORS = {D4:[493707,525891],D3:[193707,525891],D2:[-106293,525891],D1:[-406293,525891],D0:[-693133,480558],C4:[493707,225891],C3:[193707,225891],C2:[-152325,290058],C1:[-406293,225891],C0:[-706293,225891],B4:[493707,-74109],B3:[193707,-74109],B2:[-123750,-166083],B1:[-406293,-74109],B0:[-825081,-141941],A4:[493707,-374109],A3:[193707,-374109],A2:[-106293,-374109],A1:[-406293,-374109],A0:[-706293,-374109],Z4:[410705,-755571],Z3:[193707,-674109],Z2:[-106293,-674109],Z1:[-406293,-674109],Z0:[-712773,-706255]};
+async function portalTransaction(v){
+  const row={guild_id:String(v.guildId),discord_id:String(v.discordId),steam_id:String(v.steamId),player_name:v.playerName||null,type:v.type,title:v.title,amount:Number(v.amount||0),currency:'cash',status:'completed',details:v.details||{},balance_before:v.before??null,balance_after:v.after??null,refundable:Number(v.amount)<0,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+  const {data,error}=await getDb().from(TRANSACTIONS_TABLE).insert(row).select('*').single(); if(error) console.warn('⚠️ Transaction insert failed:',error.message); return data;
+}
+async function portalTaxi(session, body){
+  const sector=String(body.sector||'').toUpperCase(); if(!PORTAL_SECTORS[sector]) throw new Error('Choose a valid SCUM sector.');
+  const link=await portalLink(session); if(!link?.steam_id) throw new Error('Your Discord account is not linked to a SCUM player.');
+  const last=await safeRows('watcher_airlift_rides',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',String(link.steam_id)).eq('status','completed').order('completed_at',{ascending:false}).limit(1));
+  if(last[0]?.completed_at && Date.now()-Date.parse(last[0].completed_at)<3600000) throw new Error('Your Airlift Taxi is still on cooldown.');
+  const p=await ggconGet(`/players/${encodeURIComponent(link.steam_id)}.json`); const player=p?.player||p; const before=playerCash(player); if(before===null||before<1000) throw new Error('You need $1,000 in SCUM cash for an airlift.');
+  await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`,{action:'change',amount:-1000});
+  const [x,y]=PORTAL_SECTORS[sector]; const z=120000;
+  try { await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/teleport`,{x,y,z}); }
+  catch(err){await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`,{action:'change',amount:1000}).catch(()=>{});throw new Error(`Airlift failed and your $1,000 was returned. ${err.message}`)}
+  const now=new Date().toISOString(); await getDb().from('watcher_airlift_rides').insert({guild_id:String(session.guildId),discord_id:String(session.discordId),steam_id:String(link.steam_id),player_name:link.scum_name||null,sector,destination_x:x,destination_y:y,destination_z:z,price:1000,status:'completed',completed_at:now});
+  await portalTransaction({guildId:session.guildId,discordId:session.discordId,steamId:link.steam_id,playerName:link.scum_name,type:'airlift_taxi',title:`Airlift Taxi to ${sector}`,amount:-1000,before,after:before-1000,details:{sector,x,y,z}}); return {ok:true,sector};
+}
+async function portalRental(session){ throw new Error('Dirtbike portal dispatch is temporarily locked to the Discord rental panel so exact vehicle-ID cleanup remains protected.'); }
+async function portalRefund(session,body){
+  const id=String(body.transactionId||''); const amount=Number(body.amount); const reason=String(body.reason||'').trim(); if(!id||!Number.isFinite(amount)||amount<=0) throw new Error('Enter a valid refund amount.'); if(!reason) throw new Error('A refund reason is required.');
+  const {data:tx,error}=await getDb().from(TRANSACTIONS_TABLE).select('*').eq('id',id).eq('guild_id',String(session.guildId)).maybeSingle(); if(error) throw error; if(!tx) throw new Error('Transaction not found.'); if(!tx.refundable) throw new Error('This transaction is not refundable.');
+  const max=Math.abs(Number(tx.amount||0))-Number(tx.refunded_amount||0); if(amount>max+0.001) throw new Error(`Maximum remaining refund is $${max.toFixed(2)}.`); if(!tx.steam_id) throw new Error('No linked Steam ID is attached to this transaction.');
+  await ggconPost(`/players/${encodeURIComponent(tx.steam_id)}/currency`,{action:'change',amount}); const total=Number(tx.refunded_amount||0)+amount; const full=total>=Math.abs(Number(tx.amount||0))-0.001; const now=new Date().toISOString();
+  const {error:updateError}=await getDb().from(TRANSACTIONS_TABLE).update({refunded_amount:total,refund_status:full?'fully_refunded':'partially_refunded',refunded_by_discord_id:String(session.discordId),refunded_by_name:session.displayName||'Admin',refund_reason:reason,refunded_at:now,updated_at:now}).eq('id',id); if(updateError) throw updateError;
+  await getDb().from(TRANSACTIONS_TABLE).insert({guild_id:String(session.guildId),discord_id:tx.discord_id,steam_id:tx.steam_id,player_name:tx.player_name,type:'refund',title:`Refund: ${tx.title}`,amount, currency:'cash',status:'completed',details:{reason,admin:session.displayName||'Admin'},refundable:false,original_transaction_id:tx.id,created_at:now,updated_at:now}); return {ok:true,amount};
+}
+
 function json(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -406,10 +496,13 @@ async function handleHttp(req, res) {
     sessions.set(sid, {
       discordId: grant.discordId,
       guildId: grant.guildId,
+      displayName: grant.displayName,
+      avatar: grant.avatar,
+      isAdmin: !!grant.isAdmin,
       expiresAt: Date.now() + SESSION_MINUTES * 60_000,
     });
     res.writeHead(302, {
-      Location: '/tracker',
+      Location: '/portal',
       'Set-Cookie': `watcher_tracker_session=${encodeURIComponent(sid)}; Path=/tracker; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_MINUTES * 60}`,
       'Cache-Control': 'no-store',
     });
@@ -422,8 +515,41 @@ async function handleHttp(req, res) {
   if (!session) return unauthorized(res);
 
   if (url.pathname === '/tracker') {
-    if (!fs.existsSync(htmlPath)) return text(res, 500, 'tracker.html is missing.');
+    res.writeHead(302, { Location: '/portal?section=surveillance', 'Cache-Control': 'no-store' });
+    return res.end();
+  }
+  if (url.pathname === '/tracker/view') {
+    if (!session.isAdmin) return unauthorized(res);
+    if (!fs.existsSync(htmlPath)) return text(res, 500, 'surveillance.html is missing.');
     return text(res, 200, fs.readFileSync(htmlPath, 'utf8'), 'text/html; charset=utf-8');
+  }
+
+  if (url.pathname === '/portal') {
+    if (!fs.existsSync(portalHtmlPath)) return text(res, 500, 'portal.html is missing.');
+    return text(res, 200, fs.readFileSync(portalHtmlPath, 'utf8'), 'text/html; charset=utf-8');
+  }
+  if (url.pathname === '/portal/assets/portal.css') return text(res, 200, fs.readFileSync(portalCssPath, 'utf8'), 'text/css; charset=utf-8');
+  if (url.pathname === '/portal/assets/portal.js') return text(res, 200, fs.readFileSync(portalJsPath, 'utf8'), 'application/javascript; charset=utf-8');
+  if (url.pathname === '/portal/assets/outpost.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'private, max-age=86400'}); return fs.createReadStream(portalOutpostPath).pipe(res); }
+  if (url.pathname === '/portal/assets/watcher.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'private, max-age=86400'}); return fs.createReadStream(portalWatcherPath).pipe(res); }
+
+  if (url.pathname === '/portal/api/overview') {
+    try { return json(res, 200, await buildPortalOverview(session)); }
+    catch (err) { return json(res, 500, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/action/taxi' && req.method === 'POST') {
+    try { return json(res, 200, await portalTaxi(session, await readJsonBody(req))); }
+    catch (err) { return json(res, 400, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/action/rental' && req.method === 'POST') {
+    try { return json(res, 200, await portalRental(session)); }
+    catch (err) { return json(res, 400, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/action/shop' && req.method === 'POST') return json(res, 400, { error: 'Use the Server Shop Discord panel while web catalogue synchronization is active.' });
+  if (url.pathname === '/portal/api/admin/refund' && req.method === 'POST') {
+    if (!session.isAdmin) return unauthorized(res);
+    try { return json(res, 200, await portalRefund(session, await readJsonBody(req))); }
+    catch (err) { return json(res, 400, { error: err.message }); }
   }
 
   if (url.pathname === '/tracker/map.png') {
@@ -500,7 +626,7 @@ async function handleHttp(req, res) {
 
 function startWebServer() {
   if (serverRef) return serverRef;
-  const port = Number(process.env.PORT || process.env.TRACKER_PORT || '3000');
+  const port = Number(process.env.PORT || process.env.TRACKER_PORT || '8080');
   serverRef = http.createServer((req, res) => {
     handleHttp(req, res).catch((err) => {
       console.error('❌ Tracker HTTP error:', err);
@@ -551,9 +677,11 @@ async function handleTrackerCommand(message) {
 }
 
 async function handleTrackerInteraction(interaction) {
-  if (!interaction.isButton() || interaction.customId !== 'tracker_open') return false;
-  if (!interaction.guild || !hasTrackerRole(interaction.member)) {
-    await interaction.reply({ content: 'This tracker is restricted to Outpost X staff.', flags: MessageFlags.Ephemeral });
+  if (!interaction.isButton() || !['tracker_open','command_center_open'].includes(interaction.customId)) return false;
+  const isPortal = interaction.customId === 'command_center_open';
+  const allowed = isPortal ? hasPortalAccess(interaction.member) : hasTrackerRole(interaction.member);
+  if (!interaction.guild || !allowed) {
+    await interaction.reply({ content: isPortal ? 'You need the Outpost X player role before entering the Command Center.' : 'This tracker is restricted to Outpost X staff.', flags: MessageFlags.Ephemeral });
     return true;
   }
 
@@ -566,16 +694,32 @@ async function handleTrackerInteraction(interaction) {
     return true;
   }
 
-  const token = createAccessToken(interaction.user.id, interaction.guild.id);
+  const token = createAccessToken(interaction.user.id, interaction.guild.id, { displayName: interaction.member?.displayName || interaction.user.globalName || interaction.user.username, avatar: interaction.user.displayAvatarURL({ extension: 'png', size: 128 }), isAdmin: hasTrackerRole(interaction.member) });
   const link = `${base}/tracker/access?token=${encodeURIComponent(token)}`;
   await interaction.reply({
-    content: `👁️ **Private Watcher Tracker Access**\nThis link is one-time use and expires in ${ACCESS_TOKEN_SECONDS} seconds. The browser session lasts ${SESSION_MINUTES} minutes.`,
+    content: `👁️ **Private Outpost Command Center Access**\nThis link is one-time use and expires in ${ACCESS_TOKEN_SECONDS} seconds. The browser session lasts ${SESSION_MINUTES} minutes.`,
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setLabel('Open Watcher Surveillance').setStyle(ButtonStyle.Link).setURL(link).setEmoji('👁️')
+        new ButtonBuilder().setLabel('Enter Command Center').setStyle(ButtonStyle.Link).setURL(link).setEmoji('👁️')
       ),
     ],
     flags: MessageFlags.Ephemeral,
+  });
+  return true;
+}
+
+
+async function handleCommandCenterCommand(message) {
+  if (String(message.content || '').trim().toLowerCase() !== '!commandcentersetup') return false;
+  if (!message.guild || !hasTrackerRole(message.member)) { await message.reply('Only Outpost X staff can install the Command Center panel.').catch(()=>{}); return true; }
+  await message.delete().catch(()=>{});
+  const recent = await message.channel.messages.fetch({ limit: 50 }).catch(()=>null);
+  for (const msg of recent?.values?.() || []) {
+    if (msg.author?.id === message.client.user.id && (msg.components||[]).some(r => r.components?.some(c => ['player_dashboard_open','command_center_open'].includes(c.customId)))) await msg.delete().catch(()=>{});
+  }
+  await message.channel.send({
+    content: '👁️ **THE OUTPOST COMMAND CENTER**\nYour secure gateway to Outpost X services, vehicles, records, shops, lore, squads, and Watcher tools.',
+    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('command_center_open').setLabel('Enter Command Center').setEmoji('👁️').setStyle(ButtonStyle.Primary))]
   });
   return true;
 }
@@ -584,4 +728,5 @@ module.exports = {
   startTrackerOnBoot,
   handleTrackerCommand,
   handleTrackerInteraction,
+  handleCommandCenterCommand,
 };

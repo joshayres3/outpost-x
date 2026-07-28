@@ -1,0 +1,148 @@
+<div id="tracker-app">
+  <style>
+    :root{color-scheme:dark;--bg:#060a0f;--panel:#0a1119;--panel2:#0d1721;--line:#1c3144;--line2:#284963;--text:#eaf4ff;--muted:#7894ac;--blue:#3d97ff;--blue2:#7cbcff;--green:#47d67d;--warn:#e9c46a;--danger:#ff6b6b}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;overflow:hidden}.wrap{height:100vh;display:grid;grid-template-columns:310px 1fr;background:var(--bg)}
+    .side{border-right:1px solid var(--line);background:linear-gradient(180deg,#0a1119,#071019);padding:16px;overflow:auto}.brandrow{display:flex;align-items:center;justify-content:space-between;gap:10px}.brand{font-size:20px;font-weight:900;letter-spacing:.09em}.xmark{font-size:12px;color:var(--blue2);font-weight:800;letter-spacing:.16em}.sub{color:var(--muted);font-size:11px;margin-top:4px;letter-spacing:.08em}.status{display:flex;gap:8px;align-items:center;margin:15px 0 10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 12px #3acb74}.small{font-size:11px;color:var(--muted)}
+    .search,.datetime,.select{width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--line2);background:#071019;color:#fff}.sectionlabel{margin:14px 0 7px;font-size:10px;color:#6f8ca5;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.quickrow,.row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.mini,.ctrl{border:1px solid #26465f;background:#0c1a25;color:#e8f4ff;border-radius:8px;padding:7px 9px;cursor:pointer}.mini{font-size:11px}.mini:hover,.ctrl:hover{border-color:#4f98d4}.mini.active,.ctrl.primary{background:#12365a;border-color:var(--blue)}
+    .rangegrid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.players{display:flex;flex-direction:column;gap:7px;margin-top:9px}.player{display:grid;grid-template-columns:18px 8px 1fr;gap:8px;align-items:start;width:100%;text-align:left;border:1px solid var(--line);background:#0b151f;color:#dfeeff;border-radius:9px;padding:9px;cursor:pointer}.player:hover{border-color:#35698d}.player.selected{border-color:#2f8fff;background:#102235}.player.focus{box-shadow:inset 3px 0 0 var(--blue)}.player input{margin:3px 0 0}.swatch{width:8px;height:8px;border-radius:50%;margin-top:5px}.player .name{font-weight:750}.player .meta{font-size:10px;color:#7792a9;margin-top:3px;line-height:1.35}.online{color:#58dc8a}.offline{color:#71889c}.notice{margin-top:12px;padding:9px;border:1px solid #5a4522;background:#2b200d;color:#e7c981;border-radius:8px;font-size:11px}.empty{padding:12px;color:#69859c;font-size:11px}
+    .main{display:grid;grid-template-rows:auto 1fr auto;min-width:0;min-height:0}.top{display:flex;justify-content:space-between;gap:16px;padding:11px 15px;border-bottom:1px solid #17283a;background:#08111a}.title{font-weight:850}.session{text-align:right}.viewport{position:relative;overflow:hidden;background:#03070b;touch-action:none;cursor:grab}.viewport.dragging{cursor:grabbing}.stage{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}.stage img{position:absolute;left:0;top:0;display:block;user-select:none;pointer-events:none;filter:saturate(.78) brightness(.86) contrast(.94)}.stage canvas{position:absolute;left:0;top:0}.hud{position:absolute;left:14px;top:14px;padding:9px 11px;border:1px solid #23455e;background:#071019e8;border-radius:9px;backdrop-filter:blur(6px);z-index:5}.hud .big{font-size:14px;font-weight:850}.maptools{position:absolute;right:14px;top:14px;display:flex;gap:6px;z-index:6}.maptools button{min-width:36px}.maphint{position:absolute;left:14px;bottom:14px;background:#071019df;border:1px solid #1e3c53;border-radius:8px;padding:7px 9px;color:#7897af;font-size:10px;z-index:5}
+    .pointcard{position:absolute;right:14px;top:58px;width:300px;z-index:10;border:1px solid #2d5571;background:#071019f2;border-radius:12px;padding:12px;display:none;backdrop-filter:blur(8px)}.pointcard.show{display:block}.pointname{font-weight:850;font-size:15px}.pointcoords{margin:8px 0;padding:8px;border-radius:8px;background:#0d1822;border:1px solid #1b3549;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;line-height:1.5}.pointactions{display:flex;gap:7px;flex-wrap:wrap}.danger{border-color:#713a3a!important;background:#2a1317!important;color:#ffd9d9!important}.success{color:#7fe5a6}.error{color:#ff9c9c}.loading{color:#8ab5d8}
+    .controls{padding:11px 15px 12px;border-top:1px solid #17283a;background:#08111a}.ctrl{padding:7px 10px}.speed,.trailselect{padding:7px;border-radius:8px;border:1px solid #26465f;background:#0d1a25;color:#fff}.timeline{width:100%;margin-top:10px}.time-row{display:flex;justify-content:space-between;margin-top:4px;color:#6f8ba3;font-size:10px}.legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:10px;color:#8ca7bd}.pill{border:1px solid #25445b;border-radius:999px;padding:3px 7px}.stopkey{display:inline-flex;align-items:center;gap:5px}.stopdot{width:5px;height:5px;border-radius:50%;background:var(--blue2)}
+    .modalback{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:50}.modalback.show{display:flex}.modal{width:min(430px,calc(100vw - 30px));background:#09131d;border:1px solid #315b77;border-radius:14px;padding:16px}.modal h3{margin:0 0 7px}.modal p{color:#9bb1c3;font-size:12px;line-height:1.5}.toast{position:fixed;right:18px;bottom:18px;z-index:70;background:#0b1721;border:1px solid #2d5571;border-radius:10px;padding:10px 12px;display:none;max-width:380px;font-size:12px}.toast.show{display:block}
+    .mobile{display:none}@media(max-width:900px){body{overflow:auto}.wrap{grid-template-columns:1fr;height:100vh}.side{position:absolute;z-index:30;width:290px;height:100%;transform:translateX(-100%);transition:.2s}.side.open{transform:translateX(0)}.mobile{display:inline-block}.pointcard{width:min(300px,calc(100vw - 28px))}.rangegrid{grid-template-columns:1fr}.session{display:none}}
+  </style>
+
+  <div class="wrap">
+    <aside class="side" id="sidebar">
+      <div class="brandrow"><div class="brand">WATCHER<br>SURVEILLANCE</div><div class="xmark">OUTPOST X</div></div>
+      <div class="sub">48-HOUR PLAYER MOVEMENT DVR</div>
+      <div class="status"><span class="dot"></span><div><div id="liveCount">0 online</div><div class="small" id="sampleAge">Waiting for sample…</div></div></div>
+
+      <div class="sectionlabel">Time Window</div>
+      <div class="quickrow" id="presetRow">
+        <button class="mini" data-hours="1">1h</button><button class="mini" data-hours="6">6h</button><button class="mini" data-hours="12">12h</button><button class="mini" data-hours="24">24h</button><button class="mini active" data-hours="48">48h</button>
+      </div>
+      <div class="rangegrid" style="margin-top:7px">
+        <label class="small">From<input class="datetime" id="fromInput" type="datetime-local"></label>
+        <label class="small">To<input class="datetime" id="toInput" type="datetime-local"></label>
+      </div>
+      <button class="mini" id="applyRange" style="width:100%;margin-top:7px">Apply Time Range</button>
+
+      <div class="sectionlabel">Players</div>
+      <div class="quickrow">
+        <button class="mini" id="onlineBtn">Show Online</button><button class="mini" id="allBtn">Show All</button><button class="mini" id="clearBtn">Clear</button>
+      </div>
+      <input class="search" id="search" placeholder="Search player or Steam ID" style="margin-top:8px">
+      <div class="players" id="players"></div>
+    </aside>
+
+    <main class="main">
+      <div class="top">
+        <div><button class="ctrl mobile" id="menuBtn">☰</button> <span class="title" id="selectedTitle">Watcher map ready</span><div class="small" id="coords">Select one or more players.</div></div>
+        <div class="session"><div class="small">SECURE SESSION</div><div id="sessionText">Secure</div></div>
+      </div>
+
+      <section class="viewport" id="viewport">
+        <div class="stage" id="stage"><img id="mapImage" src="/tracker/map.png" alt="SCUM map"><canvas id="canvas"></canvas></div>
+        <div class="hud"><div class="big" id="clock">--:--:--</div><div class="small" id="mode">PAUSED</div></div>
+        <div class="maptools"><button class="ctrl" id="zoomOut">−</button><button class="ctrl" id="fitBtn">FIT</button><button class="ctrl" id="zoomIn">+</button></div>
+        <div class="maphint">Mouse wheel: zoom • Drag: pan • Click a player/stop dot for recorded coordinates</div>
+        <div class="pointcard" id="pointCard">
+          <div class="pointname" id="pointName">Recorded Point</div><div class="small" id="pointTime"></div>
+          <div class="pointcoords" id="pointCoords"></div>
+          <div class="pointactions"><button class="ctrl primary" id="tpBtn">Teleport Me Here</button><button class="ctrl" id="copyBtn">Copy #Teleport</button><button class="ctrl" id="closePoint">Close</button></div>
+          <div class="small" id="pointStatus" style="margin-top:8px"></div>
+        </div>
+      </section>
+
+      <section class="controls">
+        <div class="row">
+          <button class="ctrl" id="startBtn">⏮</button><button class="ctrl" id="rewBtn">◀◀ 1h</button><button class="ctrl primary" id="playBtn">▶ Play</button><button class="ctrl" id="ffBtn">1h ▶▶</button><button class="ctrl" id="liveBtn">LIVE ●</button>
+          <select class="speed" id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option><option value="30">30×</option><option value="60">60×</option></select>
+          <span class="small">Trail</span><select class="trailselect" id="trailWindow"><option value="1800000">30m</option><option value="3600000">1h</option><option value="21600000">6h</option><option value="0">Full selected range</option></select>
+        </div>
+        <input class="timeline" id="timeline" type="range" min="0" max="1000" value="1000">
+        <div class="time-row"><span id="fromLabel">48h ago</span><span id="cursorLabel">Now</span><span id="toLabel">LIVE</span></div>
+        <div class="legend"><span class="pill" id="selectedCount">0 players shown</span><span class="pill" id="pointCount">0 recorded points</span><span class="pill stopkey"><span class="stopdot"></span>small dot = stopped here</span><span class="pill">History retained 48h</span></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modalback" id="confirmBack"><div class="modal"><h3>Confirm Teleport</h3><p id="confirmText"></p><div class="row"><button class="ctrl primary" id="confirmTp">Teleport Me</button><button class="ctrl" id="cancelTp">Cancel</button></div></div></div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+  (()=>{
+    const COLORS=['#00d9ff','#ff3355','#ff4fd8','#7cff3a','#ff9f1c','#3d97ff','#b65cff','#00ffa8','#ff6b2c','#39ffcc','#ffe347','#7aa2ff'];
+    const STOP_DISTANCE=2000, STOP_MIN_MS=120000;
+    const S={config:null,players:[],live:[],selected:new Set(),focusId:null,histories:new Map(),cursor:Date.now(),rangeFrom:Date.now()-48*3600000,rangeTo:Date.now(),playing:false,lastFrame:0,speed:1,filter:'',zoom:1,panX:0,panY:0,baseScale:1,baseLeft:0,baseTop:0,drag:null,hit:[],activePoint:null,loading:false};
+    const $=id=>document.getElementById(id);
+    const E={sidebar:$('sidebar'),players:$('players'),search:$('search'),canvas:$('canvas'),viewport:$('viewport'),stage:$('stage'),timeline:$('timeline'),play:$('playBtn'),speed:$('speed'),clock:$('clock'),mode:$('mode'),coords:$('coords'),title:$('selectedTitle'),pointCount:$('pointCount'),selectedCount:$('selectedCount'),liveCount:$('liveCount'),sampleAge:$('sampleAge'),cursorLabel:$('cursorLabel'),fromLabel:$('fromLabel'),toLabel:$('toLabel'),fromInput:$('fromInput'),toInput:$('toInput'),trail:$('trailWindow'),pointCard:$('pointCard'),pointName:$('pointName'),pointTime:$('pointTime'),pointCoords:$('pointCoords'),pointStatus:$('pointStatus'),confirmBack:$('confirmBack'),confirmText:$('confirmText'),toast:$('toast')};
+    const esc=s=>String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+    const fmt=t=>new Date(t).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit'});
+    const localInput=ms=>{const d=new Date(ms),p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`};
+    const retainedEarliest=()=>Date.now()-(S.config?.retentionHours||48)*3600000;
+    const colorFor=id=>COLORS[Math.abs(hash(id))%COLORS.length];
+    const rgba=(hex,a)=>{const h=String(hex||'#ffffff').replace('#','');const n=parseInt(h.length===3?h.split('').map(c=>c+c).join(''):h,16);return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`};
+    const haloFor=hex=>{const h=String(hex||'#ffffff').replace('#','');const n=parseInt(h.length===3?h.split('').map(c=>c+c).join(''):h,16);const r=(n>>16)&255,g=(n>>8)&255,b=n&255;const lum=(0.2126*r+0.7152*g+0.0722*b)/255;return lum>.58?'rgba(0,0,0,.78)':'rgba(255,255,255,.72)'};
+    function labelText(ctx,text,x,y,scale=1){ctx.save();ctx.font=`${Math.max(10,13/S.zoom)*scale}px system-ui`;ctx.lineWidth=3.5/S.zoom;ctx.strokeStyle='rgba(0,0,0,.82)';ctx.fillStyle='#f4f9ff';ctx.strokeText(text,x,y);ctx.fillText(text,x,y);ctx.restore()}
+    function hash(s){let h=0;for(const ch of String(s))h=((h<<5)-h)+ch.charCodeAt(0)|0;return h}
+    function dist(a,b){return Math.hypot(Number(a.x)-Number(b.x),Number(a.y)-Number(b.y))}
+    function worldToMap(x,y){const m=S.config.map;return{x:m.uX*x+m.uY*y+m.u0,y:m.vX*x+m.vY*y+m.v0}}
+    function recordedAt(points,t){if(!points?.length)return null;let lo=0,hi=points.length-1;if(t<points[0].ms)return null;if(t>=points[hi].ms)return points[hi];while(lo<=hi){const m=(lo+hi)>>1;if(points[m].ms<=t)lo=m+1;else hi=m-1}return points[Math.max(0,hi)]||null}
+    function stopPoints(points,from,to){const out=[];for(let i=0;i<points.length-1;i++){const a=points[i],b=points[i+1];if(a.ms<from||a.ms>to)continue;if((b.ms-a.ms)>=STOP_MIN_MS&&dist(a,b)<=STOP_DISTANCE){const prev=out[out.length-1];if(!prev||dist(prev,a)>STOP_DISTANCE||(a.ms-prev.ms)>10*60000)out.push(a)}}return out}
+    function showToast(msg,kind=''){E.toast.textContent=msg;E.toast.className=`toast show ${kind}`;clearTimeout(showToast.t);showToast.t=setTimeout(()=>E.toast.className='toast',3500)}
+
+    function updateStage(){const r=E.viewport.getBoundingClientRect(),mw=S.config?.map?.width||1247,mh=S.config?.map?.height||1247;S.baseScale=Math.min(r.width/mw,r.height/mh);S.baseLeft=(r.width-mw*S.baseScale)/2;S.baseTop=(r.height-mh*S.baseScale)/2;const scale=S.baseScale*S.zoom;E.stage.style.transform=`translate(${S.baseLeft+S.panX}px,${S.baseTop+S.panY}px) scale(${scale})`}
+    function fitMap(){S.zoom=1;S.panX=0;S.panY=0;updateStage()}
+    function setZoom(next,cx=null,cy=null){next=Math.max(.6,Math.min(8,next));const r=E.viewport.getBoundingClientRect(),old=S.baseScale*S.zoom,newS=S.baseScale*next;const x=cx==null?r.width/2:cx,y=cy==null?r.height/2:cy;const mx=(x-S.baseLeft-S.panX)/old,my=(y-S.baseTop-S.panY)/old;S.panX=x-S.baseLeft-mx*newS;S.panY=y-S.baseTop-my*newS;S.zoom=next;updateStage()}
+
+    function renderPlayers(){const f=S.filter.toLowerCase();E.players.innerHTML='';const list=S.players.filter(p=>!f||p.name.toLowerCase().includes(f)||p.steamId.includes(f));if(!list.length){E.players.innerHTML='<div class="empty">No players found in this 48-hour history window.</div>';return}for(const p of list){const id=p.steamId,sel=S.selected.has(id);const row=document.createElement('label');row.className=`player${sel?' selected':''}${S.focusId===id?' focus':''}`;row.innerHTML=`<input type="checkbox" ${sel?'checked':''}><span class="swatch" style="background:${colorFor(id)}"></span><span><span class="name">${esc(p.name)}</span><span class="meta"><span class="${p.online?'online':'offline'}">${p.online?'● ONLINE':'○ OFFLINE'}</span> • ${esc(id)}<br>Last seen ${fmt(p.lastSeen)}</span></span>`;const cb=row.querySelector('input');cb.addEventListener('change',()=>togglePlayer(p,cb.checked));row.addEventListener('dblclick',e=>{e.preventDefault();S.focusId=id;renderPlayers();draw()});E.players.appendChild(row)}}
+
+    async function fetchHistory(id){const from=new Date(S.rangeFrom).toISOString(),to=new Date(S.rangeTo).toISOString();const r=await fetch(`/tracker/api/history?steamId=${encodeURIComponent(id)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);const j=await r.json();if(!r.ok)throw new Error(j.error||'History request failed');return (j.points||[]).map(p=>({...p,ms:Date.parse(p.t)}))}
+    async function togglePlayer(p,on){if(on){S.selected.add(p.steamId);S.focusId=p.steamId;E.coords.textContent='Loading movement history…';try{S.histories.set(p.steamId,await fetchHistory(p.steamId))}catch(e){S.selected.delete(p.steamId);showToast(e.message,'error')}}else{S.selected.delete(p.steamId);S.histories.delete(p.steamId);if(S.focusId===p.steamId)S.focusId=[...S.selected][0]||null}updateCounts();renderPlayers();draw()}
+    async function setMany(ids){S.loading=true;S.selected=new Set(ids);S.focusId=ids[0]||null;S.histories.clear();renderPlayers();updateCounts();E.coords.textContent=ids.length?`Loading ${ids.length} player histories…`:'Select one or more players.';let done=0;const queue=[...ids];const workers=Array.from({length:Math.min(4,queue.length)},async()=>{while(queue.length){const id=queue.shift();try{S.histories.set(id,await fetchHistory(id))}catch(e){console.error(e)}done++;E.coords.textContent=`Loaded ${done}/${ids.length} player histories…`;draw()}});await Promise.all(workers);S.loading=false;updateCounts();draw();renderPlayers()}
+    function updateCounts(){let total=0;for(const id of S.selected)total+=(S.histories.get(id)||[]).length;E.selectedCount.textContent=`${S.selected.size} player${S.selected.size===1?'':'s'} shown`;E.pointCount.textContent=`${total.toLocaleString()} recorded points`;E.title.textContent=S.focusId?(S.players.find(p=>p.steamId===S.focusId)?.name||'Selected player'):(S.selected.size?'Multiple players':'Watcher map ready')}
+
+    function draw(){const ctx=E.canvas.getContext('2d');ctx.clearRect(0,0,S.config.map.width,S.config.map.height);S.hit=[];const trailMs=Number(E.trail.value||0),trailFrom=trailMs?Math.max(S.rangeFrom,S.cursor-trailMs):S.rangeFrom;let focusPoint=null;for(const id of S.selected){const pts=S.histories.get(id)||[];if(!pts.length)continue;const color=colorFor(id),halo=haloFor(color);const visible=pts.filter(p=>p.ms>=trailFrom&&p.ms<=S.cursor);if(visible.length>1){ctx.save();ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();visible.forEach((p,i)=>{const q=worldToMap(p.x,p.y);i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y)});ctx.strokeStyle=halo;ctx.lineWidth=10/S.zoom;ctx.stroke();ctx.strokeStyle=color;ctx.globalAlpha=1;ctx.lineWidth=5/S.zoom;ctx.stroke();ctx.restore();const start=worldToMap(visible[0].x,visible[0].y),sr=5/S.zoom;ctx.save();ctx.strokeStyle=color;ctx.lineWidth=2.3/S.zoom;ctx.fillStyle='rgba(7,16,25,.45)';ctx.beginPath();ctx.arc(start.x,start.y,sr,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.strokeStyle=halo;ctx.lineWidth=1.4/S.zoom;ctx.stroke();ctx.restore()}
+        for(const sp of stopPoints(pts,trailFrom,S.cursor)){const q=worldToMap(sp.x,sp.y),r=3/S.zoom;ctx.save();ctx.fillStyle=rgba(color,.88);ctx.strokeStyle=halo;ctx.lineWidth=1.2/S.zoom;ctx.beginPath();ctx.arc(q.x,q.y,r,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();S.hit.push({x:q.x,y:q.y,r:9/S.zoom,id,point:sp,type:'stop'})}
+        const p=recordedAt(pts,S.cursor);if(!p)continue;const q=worldToMap(p.x,p.y),rad=(id===S.focusId?8:6)/S.zoom;ctx.save();ctx.fillStyle=color;ctx.strokeStyle=halo;ctx.lineWidth=3/S.zoom;ctx.beginPath();ctx.arc(q.x,q.y,rad,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.strokeStyle='#f4f9ff';ctx.lineWidth=1.4/S.zoom;ctx.stroke();ctx.restore();const name=S.players.find(x=>x.steamId===id)?.name||p.name||id;if(id===S.focusId||S.selected.size<=8||S.zoom>=1.6)labelText(ctx,name,q.x+12/S.zoom,q.y-9/S.zoom);S.hit.push({x:q.x,y:q.y,r:13/S.zoom,id,point:p,type:'player'});if(id===S.focusId)focusPoint=p}
+      if(focusPoint)E.coords.textContent=`X ${Math.round(focusPoint.x)} • Y ${Math.round(focusPoint.y)} • Z ${Math.round(focusPoint.z||0)} • recorded ${fmt(focusPoint.ms)}`;else if(!S.loading)E.coords.textContent=S.selected.size?'No recorded point at this time.':'Select one or more players.';E.clock.textContent=fmt(S.cursor);E.cursorLabel.textContent=fmt(S.cursor);E.mode.textContent=(S.cursor>Date.now()-20000&&Math.abs(S.rangeTo-Date.now())<120000)?'LIVE':(S.playing?`PLAYBACK ${S.speed}×`:'PAUSED')}
+
+    function setCursor(ms){S.cursor=Math.max(S.rangeFrom,Math.min(S.rangeTo,ms));const span=Math.max(1,S.rangeTo-S.rangeFrom);E.timeline.value=Math.round(((S.cursor-S.rangeFrom)/span)*1000);draw()}
+    function animate(ts){if(S.playing){if(!S.lastFrame)S.lastFrame=ts;const dt=ts-S.lastFrame;S.lastFrame=ts;setCursor(S.cursor+dt*S.speed);if(S.cursor>=S.rangeTo){S.playing=false;E.play.textContent='▶ Play'}}else S.lastFrame=ts;requestAnimationFrame(animate)}
+
+    async function applyRange(from,to){const earliest=retainedEarliest(),now=Date.now();from=Math.max(earliest,Math.min(from,now));to=Math.min(now,Math.max(to,from+1000));S.rangeFrom=from;S.rangeTo=to;S.cursor=to;E.fromInput.value=localInput(from);E.toInput.value=localInput(to);E.fromLabel.textContent=fmt(from);E.toLabel.textContent=Math.abs(to-now)<120000?'LIVE':fmt(to);E.timeline.value=1000;document.querySelectorAll('[data-hours]').forEach(b=>b.classList.remove('active'));if(S.selected.size)await setMany([...S.selected]);draw()}
+
+    async function loadPlayers(){const r=await fetch('/tracker/api/players'),j=await r.json();if(!r.ok)throw new Error(j.error||'Could not load players');S.players=j.players||[];const online=new Set(S.live.map(p=>p.steamId));for(const p of S.players)p.online=online.has(p.steamId);renderPlayers()}
+    async function loadLive(){const r=await fetch('/tracker/api/live'),j=await r.json();if(!r.ok)return;S.live=j.players||[];E.liveCount.textContent=`${S.live.length} online`;E.sampleAge.textContent=`Sample ${new Date(j.sampledAt).toLocaleTimeString()}`;const online=new Set(S.live.map(p=>p.steamId));for(const p of S.players)p.online=online.has(p.steamId);renderPlayers()}
+
+    function openPoint(hit){S.activePoint=hit;const p=hit.point,pl=S.players.find(x=>x.steamId===hit.id);E.pointName.textContent=pl?.name||p.name||hit.id;E.pointTime.textContent=`Recorded ${fmt(p.ms)}${hit.type==='stop'?' • stop point':''}`;E.pointCoords.textContent=`X ${Number(p.x).toFixed(3)}\nY ${Number(p.y).toFixed(3)}\nZ ${Number(p.z||0).toFixed(3)}`;E.pointStatus.textContent='';E.pointCard.classList.add('show')}
+    function closePoint(){S.activePoint=null;E.pointCard.classList.remove('show')}
+    function commandForPoint(){const p=S.activePoint?.point;if(!p)return'';return `#Teleport ${Number(p.x).toFixed(3)} ${Number(p.y).toFixed(3)} ${Number(p.z||0).toFixed(3)}`}
+    async function copyCommand(){const txt=commandForPoint();if(!txt)return;try{await navigator.clipboard.writeText(txt);showToast('Teleport command copied.','success')}catch{const ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Teleport command copied.','success')}}
+    function requestTeleport(){if(!S.activePoint)return;const p=S.activePoint.point,pl=S.players.find(x=>x.steamId===S.activePoint.id);E.confirmText.textContent=`Teleport yourself to ${pl?.name||'this player'}'s recorded position from ${fmt(p.ms)}? X ${Math.round(p.x)} • Y ${Math.round(p.y)} • Z ${Math.round(p.z||0)}`;E.confirmBack.classList.add('show')}
+    async function confirmTeleport(){if(!S.activePoint)return;E.confirmBack.classList.remove('show');E.pointStatus.className='small loading';E.pointStatus.textContent='Sending verified recorded position to GGCON…';const p=S.activePoint.point;try{const r=await fetch('/tracker/api/teleport-me',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetSteamId:S.activePoint.id,recordedAt:p.t})});const j=await r.json();if(!r.ok)throw new Error(j.error||'Teleport failed');E.pointStatus.className='small success';E.pointStatus.textContent=`Teleported ${j.teleportedName} to this recorded position.`;showToast('Teleport completed.','success')}catch(e){E.pointStatus.className='small error';E.pointStatus.textContent=e.message;showToast(e.message,'error')}}
+
+    async function init(){const r=await fetch('/tracker/api/config'),c=await r.json();if(!r.ok)throw new Error(c.error||'Tracker config failed');S.config=c;const w=Number(c?.map?.width||1286),h=Number(c?.map?.height||1284),img=$('mapImage');E.stage.style.width=w+'px';E.stage.style.height=h+'px';img.style.width=w+'px';img.style.height=h+'px';E.canvas.width=w;E.canvas.height=h;E.canvas.style.width=w+'px';E.canvas.style.height=h+'px';$('sessionText').textContent=`Secure until ${new Date(c.sessionExpiresAt).toLocaleTimeString()}`;S.rangeFrom=retainedEarliest();S.rangeTo=Date.now();S.cursor=S.rangeTo;E.fromInput.value=localInput(S.rangeFrom);E.toInput.value=localInput(S.rangeTo);E.fromLabel.textContent=fmt(S.rangeFrom);E.toLabel.textContent='LIVE';await loadLive();await loadPlayers();fitMap();setInterval(loadLive,10000);setInterval(loadPlayers,60000);requestAnimationFrame(animate)}
+
+    document.querySelectorAll('[data-hours]').forEach(b=>b.addEventListener('click',async()=>{document.querySelectorAll('[data-hours]').forEach(x=>x.classList.toggle('active',x===b));const h=Number(b.dataset.hours);await applyRange(Date.now()-h*3600000,Date.now())}));
+    $('applyRange').addEventListener('click',()=>{const f=new Date(E.fromInput.value).getTime(),t=new Date(E.toInput.value).getTime();if(!Number.isFinite(f)||!Number.isFinite(t)||t<=f)return showToast('Choose a valid From and To time.','error');applyRange(f,t)});
+    E.search.addEventListener('input',e=>{S.filter=e.target.value;renderPlayers()});
+    $('onlineBtn').addEventListener('click',()=>setMany(S.players.filter(p=>p.online).map(p=>p.steamId)));
+    $('allBtn').addEventListener('click',()=>setMany(S.players.map(p=>p.steamId)));
+    $('clearBtn').addEventListener('click',()=>setMany([]));
+    E.timeline.addEventListener('input',e=>{S.playing=false;E.play.textContent='▶ Play';setCursor(S.rangeFrom+(Number(e.target.value)/1000)*(S.rangeTo-S.rangeFrom))});
+    E.play.addEventListener('click',()=>{S.playing=!S.playing;E.play.textContent=S.playing?'❚❚ Pause':'▶ Play'});E.speed.addEventListener('change',e=>S.speed=Number(e.target.value));E.trail.addEventListener('change',draw);
+    $('startBtn').addEventListener('click',()=>setCursor(S.rangeFrom));$('rewBtn').addEventListener('click',()=>setCursor(S.cursor-3600000));$('ffBtn').addEventListener('click',()=>setCursor(S.cursor+3600000));$('liveBtn').addEventListener('click',async()=>{S.playing=false;E.play.textContent='▶ Play';if(Math.abs(S.rangeTo-Date.now())>120000)await applyRange(Math.max(retainedEarliest(),Date.now()-(S.rangeTo-S.rangeFrom)),Date.now());setCursor(Date.now())});
+    $('zoomIn').addEventListener('click',()=>setZoom(S.zoom*1.25));$('zoomOut').addEventListener('click',()=>setZoom(S.zoom/1.25));$('fitBtn').addEventListener('click',fitMap);$('menuBtn').addEventListener('click',()=>E.sidebar.classList.toggle('open'));
+    E.viewport.addEventListener('wheel',e=>{e.preventDefault();const r=E.viewport.getBoundingClientRect();setZoom(S.zoom*(e.deltaY<0?1.15:.87),e.clientX-r.left,e.clientY-r.top)},{passive:false});
+    E.viewport.addEventListener('pointerdown',e=>{if(e.button!==0)return;S.drag={x:e.clientX,y:e.clientY,panX:S.panX,panY:S.panY,moved:false};E.viewport.setPointerCapture(e.pointerId);E.viewport.classList.add('dragging')});
+    E.viewport.addEventListener('pointermove',e=>{if(!S.drag)return;const dx=e.clientX-S.drag.x,dy=e.clientY-S.drag.y;if(Math.abs(dx)+Math.abs(dy)>4)S.drag.moved=true;S.panX=S.drag.panX+dx;S.panY=S.drag.panY+dy;updateStage()});
+    E.viewport.addEventListener('pointerup',e=>{if(!S.drag)return;const moved=S.drag.moved;S.drag=null;E.viewport.classList.remove('dragging');if(moved)return;const rect=E.canvas.getBoundingClientRect(),mx=(e.clientX-rect.left)*(S.config.map.width/rect.width),my=(e.clientY-rect.top)*(S.config.map.height/rect.height);let best=null,bestD=Infinity;for(const h of S.hit){const d=Math.hypot(mx-h.x,my-h.y);if(d<=h.r&&d<bestD){best=h;bestD=d}}if(best)openPoint(best);else closePoint()});
+    $('closePoint').addEventListener('click',closePoint);$('copyBtn').addEventListener('click',copyCommand);$('tpBtn').addEventListener('click',requestTeleport);$('cancelTp').addEventListener('click',()=>E.confirmBack.classList.remove('show'));$('confirmTp').addEventListener('click',confirmTeleport);
+    window.addEventListener('resize',()=>{updateStage()});
+    init().catch(err=>{document.body.innerHTML=`<pre style="padding:20px;color:#f88">Tracker failed to load: ${esc(err.message)}</pre>`});
+  })();
+  </script>
+</div>
