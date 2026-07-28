@@ -61,6 +61,7 @@ const WORLD = {
 };
 
 const mapPath = path.join(__dirname, 'tracker-map.png');
+const highResMapPath = path.join(__dirname, 'tracker-map-hi.webp');
 const htmlPath = path.join(__dirname, 'surveillance.html');
 const portalHtmlPath = path.join(__dirname, 'portal.html');
 const portalCssPath = path.join(__dirname, 'portal.css');
@@ -684,6 +685,12 @@ async function handleHttp(req, res) {
     if (!fs.existsSync(mapPath)) return text(res, 404, 'Map image not configured.');
     res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=3600' });
     return fs.createReadStream(mapPath).pipe(res);
+  }
+
+  if (url.pathname === '/tracker/map-hi.webp') {
+    if (!fs.existsSync(highResMapPath)) return text(res, 404, 'High-resolution map image not configured.');
+    res.writeHead(200, { 'Content-Type': 'image/webp', 'Cache-Control': 'private, max-age=86400' });
+    return fs.createReadStream(highResMapPath).pipe(res);
   }
 
   if (url.pathname === '/tracker/api/config') {
