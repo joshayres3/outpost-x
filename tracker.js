@@ -81,6 +81,12 @@ let latestOnline = new Map();
 const lastSaved = new Map();
 const accessTokens = new Map();
 const sessions = new Map();
+const portalAirliftPending = new Map();
+const portalAirliftLaunches = new Set();
+const PORTAL_AIRLIFT_PENDING_MS = 10 * 60 * 1000;
+const PORTAL_AIRLIFT_PRICE = Math.max(0, Number(process.env.AIRLIFT_PRICE || '1000'));
+const PORTAL_AIRLIFT_ALTITUDE_Z = Number(process.env.AIRLIFT_ALTITUDE_Z || '150000');
+const PORTAL_AIRLIFT_PARACHUTE_ITEM = process.env.AIRLIFT_PARACHUTE_ITEM || 'BeginPlay_Parachute';
 
 function getDb() {
   if (dbClient) return dbClient;
@@ -474,19 +480,80 @@ async function portalTransaction(v){
   const row={guild_id:String(v.guildId),discord_id:String(v.discordId),steam_id:String(v.steamId),player_name:v.playerName||null,type:v.type,title:v.title,amount:Number(v.amount||0),currency:'cash',status:'completed',details:v.details||{},balance_before:v.before??null,balance_after:v.after??null,refundable:Number(v.amount)<0,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
   const {data,error}=await getDb().from(TRANSACTIONS_TABLE).insert(row).select('*').single(); if(error) console.warn('⚠️ Transaction insert failed:',error.message); return data;
 }
-async function portalTaxi(session, body){
-  const sector=String(body.sector||'').toUpperCase(); if(!PORTAL_SECTORS[sector]) throw new Error('Choose a valid SCUM sector.');
-  const link=await portalLink(session); if(!link?.steam_id) throw new Error('Your Discord account is not linked to a SCUM player.');
-  const last=await safeRows('watcher_airlift_rides',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',String(link.steam_id)).eq('status','completed').order('completed_at',{ascending:false}).limit(1));
-  if(last[0]?.completed_at && Date.now()-Date.parse(last[0].completed_at)<3600000) throw new Error('Your Airlift Taxi is still on cooldown.');
-  const p=await ggconGet(`/players/${encodeURIComponent(link.steam_id)}.json`); const player=p?.player||p; const before=playerCash(player); if(before===null||before<1000) throw new Error('You need $1,000 in SCUM cash for an airlift.');
-  await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`,{action:'change',amount:-1000});
-  const [x,y]=PORTAL_SECTORS[sector]; const z=120000;
-  try { await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/teleport`,{x,y,z}); }
-  catch(err){await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`,{action:'change',amount:1000}).catch(()=>{});throw new Error(`Airlift failed and your $1,000 was returned. ${err.message}`)}
-  const now=new Date().toISOString(); await getDb().from('watcher_airlift_rides').insert({guild_id:String(session.guildId),discord_id:String(session.discordId),steam_id:String(link.steam_id),player_name:link.scum_name||null,sector,destination_x:x,destination_y:y,destination_z:z,price:1000,status:'completed',completed_at:now});
-  await portalTransaction({guildId:session.guildId,discordId:session.discordId,steamId:link.steam_id,playerName:link.scum_name,type:'airlift_taxi',title:`Airlift Taxi to ${sector}`,amount:-1000,before,after:before-1000,details:{sector,x,y,z}}); return {ok:true,sector};
+function portalAirliftKey(session) {
+  return `${session.guildId}:${session.discordId}`;
 }
+function getPortalAirliftPending(session) {
+  const key = portalAirliftKey(session);
+  const value = portalAirliftPending.get(key);
+  if (!value) return null;
+  if (Number(value.expiresAt || 0) <= Date.now()) {
+    portalAirliftPending.delete(key);
+    return null;
+  }
+  return value;
+}
+async function loadPortalAirliftPlayer(session) {
+  const link = await portalLink(session);
+  if (!link?.steam_id) throw new Error('Your Discord account is not linked to a SCUM player.');
+  const payload = await ggconGet(`/players/${encodeURIComponent(link.steam_id)}.json`);
+  const player = payload?.player || payload;
+  const online = player?.online === true || player?.ping !== undefined || player?.health !== undefined || latestOnline.has(String(link.steam_id));
+  if (!online) throw new Error('You must be online in SCUM to use the Airlift Taxi.');
+  return { link, player };
+}
+async function verifyPortalAirliftReady(session, link, player) {
+  const last = await safeRows('watcher_airlift_rides', q => q.select('*').eq('guild_id', String(session.guildId)).eq('steam_id', String(link.steam_id)).eq('status', 'completed').order('completed_at', { ascending: false }).limit(1));
+  if (last[0]?.completed_at && Date.now() - Date.parse(last[0].completed_at) < 3600000) throw new Error('Your Airlift Taxi is still on cooldown.');
+  const cash = playerCash(player);
+  if (cash === null || cash < PORTAL_AIRLIFT_PRICE) throw new Error(`You need $${PORTAL_AIRLIFT_PRICE.toLocaleString('en-CA')} in SCUM cash for an airlift.`);
+  return cash;
+}
+async function portalTaxiPrepare(session, body) {
+  const sector = String(body.sector || '').toUpperCase();
+  if (!PORTAL_SECTORS[sector] || sector === 'C0') throw new Error('Choose a valid SCUM sector.');
+  const { link, player } = await loadPortalAirliftPlayer(session);
+  await verifyPortalAirliftReady(session, link, player);
+  await ggconPost('/command', { command: `#SpawnItem ${PORTAL_AIRLIFT_PARACHUTE_ITEM} 1 Location ${link.steam_id}` });
+  const pending = { steamId: String(link.steam_id), playerName: link.scum_name || getPlayerDisplayName(player), sector, expiresAt: Date.now() + PORTAL_AIRLIFT_PENDING_MS };
+  portalAirliftPending.set(portalAirliftKey(session), pending);
+  return { ok: true, stage: 'prepared', sector, expiresAt: new Date(pending.expiresAt).toISOString() };
+}
+async function portalTaxiCancel(session) {
+  portalAirliftPending.delete(portalAirliftKey(session));
+  return { ok: true, stage: 'cancelled' };
+}
+async function portalTaxiSend(session, body) {
+  const key = portalAirliftKey(session);
+  if (portalAirliftLaunches.has(key)) throw new Error('Your airlift is already being processed.');
+  const pending = getPortalAirliftPending(session);
+  const sector = String(body.sector || pending?.sector || '').toUpperCase();
+  if (!pending || pending.sector !== sector) throw new Error('This prepared Airlift Taxi expired. Prepare a new ride first.');
+  portalAirliftLaunches.add(key);
+  try {
+    const { link, player } = await loadPortalAirliftPlayer(session);
+    if (String(link.steam_id) !== String(pending.steamId)) throw new Error('The linked SCUM account changed. Prepare the airlift again.');
+    const before = await verifyPortalAirliftReady(session, link, player);
+    const [x, y] = PORTAL_SECTORS[sector];
+    const z = PORTAL_AIRLIFT_ALTITUDE_Z;
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -PORTAL_AIRLIFT_PRICE });
+    try {
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/teleport`, { x, y, z });
+    } catch (err) {
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: PORTAL_AIRLIFT_PRICE }).catch(() => {});
+      throw new Error(`Airlift failed and your $${PORTAL_AIRLIFT_PRICE.toLocaleString('en-CA')} was returned. ${err.message}`);
+    }
+    const now = new Date().toISOString();
+    const { error: rideError } = await getDb().from('watcher_airlift_rides').insert({ guild_id: String(session.guildId), discord_id: String(session.discordId), steam_id: String(link.steam_id), player_name: pending.playerName || link.scum_name || null, sector, destination_x: x, destination_y: y, destination_z: z, price: PORTAL_AIRLIFT_PRICE, status: 'completed', completed_at: now });
+    if (rideError) console.warn('⚠️ Airlift ride record failed:', rideError.message);
+    await portalTransaction({ guildId: session.guildId, discordId: session.discordId, steamId: link.steam_id, playerName: pending.playerName || link.scum_name, type: 'airlift_taxi', title: `Airlift Taxi to ${sector}`, amount: -PORTAL_AIRLIFT_PRICE, before, after: before - PORTAL_AIRLIFT_PRICE, details: { sector, x, y, z } });
+    portalAirliftPending.delete(key);
+    return { ok: true, stage: 'launched', sector, nextRide: new Date(Date.now() + 3600000).toISOString() };
+  } finally {
+    portalAirliftLaunches.delete(key);
+  }
+}
+
 async function portalRental(session){const link=await portalLink(session);if(!link?.steam_id)throw new Error('Your Discord account is not linked to a SCUM player.');return portalCreateRental({guildId:session.guildId,discordId:session.discordId,steamId:link.steam_id,playerName:link.scum_name});}
 async function portalRefund(session,body){
   const id=String(body.transactionId||''); const amount=Number(body.amount); const reason=String(body.reason||'').trim(); if(!id||!Number.isFinite(amount)||amount<=0) throw new Error('Enter a valid refund amount.'); if(!reason) throw new Error('A refund reason is required.');
@@ -636,8 +703,16 @@ async function handleHttp(req, res) {
     try { return json(res, 200, await buildPortalOverview(session)); }
     catch (err) { return json(res, 500, { error: err.message }); }
   }
-  if (url.pathname === '/portal/api/action/taxi' && req.method === 'POST') {
-    try { return json(res, 200, await portalTaxi(session, await readJsonBody(req))); }
+  if (url.pathname === '/portal/api/action/taxi/prepare' && req.method === 'POST') {
+    try { return json(res, 200, await portalTaxiPrepare(session, await readJsonBody(req))); }
+    catch (err) { return json(res, 400, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/action/taxi/send' && req.method === 'POST') {
+    try { return json(res, 200, await portalTaxiSend(session, await readJsonBody(req))); }
+    catch (err) { return json(res, 400, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/action/taxi/cancel' && req.method === 'POST') {
+    try { return json(res, 200, await portalTaxiCancel(session)); }
     catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/rental' && req.method === 'POST') {

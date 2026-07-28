@@ -88,16 +88,38 @@ function renderTaxi(v,d){
 function taxiSelectionMarkup(sector,d){
   if(!sector)return `<div class="taxiEmptySelection"><b>No destination selected</b><span>Choose a sector from the map.</span></div>`;
   const ready=!!d?.airlift?.ready;
-  return `<div class="taxiSelectedSector"><small>SELECTED DESTINATION</small><strong>Sector ${sector}</strong><span>Center-sector airlift drop</span></div><button class="btn primary taxiConfirm" ${ready?'':'disabled'} onclick="requestTaxi('${sector}')">🚁 Request Airlift to ${sector} — ${money(1000)}</button><button class="btn taxiClear" onclick="clearTaxiSector()">Clear Selection</button>`
+  if(state.taxiPrepared?.sector===sector)return `<div class="taxiSelectedSector prepared"><small>PARACHUTE DELIVERED</small><strong>Sector ${sector}</strong><span>Put on the parachute now. Do not jump or move until Watcher launches you.</span></div><button class="btn primary taxiConfirm" onclick="sendTaxi('${sector}')">🚁 I’m Ready — Send Airlift</button><button class="btn taxiClear" onclick="cancelTaxi()">Cancel Without Charge</button>`;
+  return `<div class="taxiSelectedSector"><small>SELECTED DESTINATION</small><strong>Sector ${sector}</strong><span>Step 1 of 2: Watcher will deliver a parachute. You will not be charged or teleported yet.</span></div><button class="btn primary taxiConfirm" ${ready?'':'disabled'} onclick="prepareTaxi('${sector}')">🪂 Prepare Airlift to ${sector}</button><button class="btn taxiClear" onclick="clearTaxiSector()">Clear Selection</button>`
 }
 function selectTaxiSector(sector){
   if(!sector||sector==='C0')return;
-  state.taxiSector=sector;
+  state.taxiSector=sector;state.taxiPrepared=null;
   document.querySelectorAll('.taxiSectorCell').forEach(cell=>cell.classList.toggle('selected',cell.dataset.sector===sector));
   const panel=$('taxiSelectionPanel');if(panel)panel.innerHTML=taxiSelectionMarkup(sector,state.data);
 }
-function clearTaxiSector(){state.taxiSector=null;document.querySelectorAll('.taxiSectorCell').forEach(cell=>cell.classList.remove('selected'));const panel=$('taxiSelectionPanel');if(panel)panel.innerHTML=taxiSelectionMarkup(null,state.data)}
-async function requestTaxi(sector){if(!confirm(`Request an airlift to sector ${sector} for $1,000?`))return;try{await api('/portal/api/action/taxi',{method:'POST',body:JSON.stringify({sector})});state.taxiSector=null;toast(`Airlift dispatched to ${sector}.`);await refresh()}catch(e){toast(e.message)}}
+function clearTaxiSector(){state.taxiSector=null;state.taxiPrepared=null;document.querySelectorAll('.taxiSectorCell').forEach(cell=>cell.classList.remove('selected'));const panel=$('taxiSelectionPanel');if(panel)panel.innerHTML=taxiSelectionMarkup(null,state.data)}
+async function prepareTaxi(sector){
+  if(!confirm(`Prepare an airlift to sector ${sector}? Watcher will spawn a parachute, but you will not be charged or teleported yet.`))return;
+  try{
+    const r=await api('/portal/api/action/taxi/prepare',{method:'POST',body:JSON.stringify({sector})});
+    state.taxiPrepared={sector:r.sector,expiresAt:r.expiresAt};
+    const panel=$('taxiSelectionPanel');if(panel)panel.innerHTML=taxiSelectionMarkup(sector,state.data);
+    toast('Parachute delivered. Put it on, then press Send Airlift.');
+  }catch(e){toast(e.message)}
+}
+async function sendTaxi(sector){
+  if(!confirm(`Are you wearing the parachute and ready to launch to sector ${sector}? You will be charged $1,000 now.`))return;
+  try{
+    await api('/portal/api/action/taxi/send',{method:'POST',body:JSON.stringify({sector})});
+    state.taxiPrepared=null;state.taxiSector=null;
+    toast(`Airlift launched to ${sector}. Deploy your parachute and land safely.`);
+    await refresh();render();
+  }catch(e){toast(e.message)}
+}
+async function cancelTaxi(){
+  try{await api('/portal/api/action/taxi/cancel',{method:'POST',body:'{}'});}catch{}
+  state.taxiPrepared=null;clearTaxiSector();toast('Airlift cancelled. You were not charged.');
+}
 function renderRental(v,d){title('TEMPORARY TRANSPORT','Dirtbike Rental');const r=d.rental||{};v.innerHTML=`<div class="grid"><div class="card span8"><h3>30-Minute Dirtbike Rental</h3><p style="color:var(--muted)">Cost: <b>${money(500)}</b>. Watcher spawns a tracked dirtbike for 30 minutes and removes it automatically when time expires.</p><button class="btn primary" onclick="requestRental()" ${r.status==='active'?'disabled':''}>${r.status==='active'?'Rental Active':'Rent Dirtbike'}</button></div><div class="card span4"><h3>Rental Status</h3>${statusRow('Status',r.status||'None')}${statusRow('Vehicle ID',r.vehicle_id||'—')}${statusRow('Expires',fmt(r.expires_at))}</div></div>`}
 async function requestRental(){if(!confirm('Rent a dirtbike for $500?'))return;try{await api('/portal/api/action/rental',{method:'POST',body:'{}'});toast('Dirtbike rental started.');await refresh()}catch(e){toast(e.message)}}
 function renderServerShop(v,d){title('WATCHER SUPPLY NETWORK','Server Shop');v.innerHTML=`<div class="grid">${(d.shopCatalog||[]).map(x=>`<div class="card span4 shopproduct"><div style="font-size:34px">${esc(x.emoji||'📦')}</div><h3>${esc(x.name)}</h3><p style="color:var(--muted);min-height:42px">${esc(x.description||'Emergency supply package')}</p><div class="list" style="margin:12px 0">${(x.contents||[]).map(i=>`<div class="row"><span>${esc(i.label)}</span><b>×${Number(i.qty||1)}</b></div>`).join('')}</div><b style="font-size:24px">${money(x.price)}</b><div style="margin-top:14px"><button class="btn primary" onclick="buyItem('${esc(x.id)}','${esc(x.name)}',${Number(x.price||0)})">Purchase & Deliver</button></div></div>`).join('')||'<div class="card span12 empty">No server-shop packages are configured.</div>'}</div>`}
