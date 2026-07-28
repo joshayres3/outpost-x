@@ -190,7 +190,7 @@ function getSession(req) {
     sessions.delete(sid);
     return null;
   }
-  session.expiresAt = Date.now() + SESSION_MINUTES * 60_000;
+  // Command Center sessions use a fixed lifetime. Requests do not extend the expiry.
   return { sid, ...session };
 }
 
