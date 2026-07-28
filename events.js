@@ -1120,9 +1120,159 @@ function startEventScheduler(bot, db) {
   console.log("📅 Event scheduler started");
 }
 
+
+function portalEventText(value, max, field) {
+  const text = cleanText(value, max);
+  if (!text) throw new Error(`${field} is required.`);
+  return text;
+}
+
+function portalEventIso(value) {
+  const dt = DateTime.fromISO(String(value || ''), { setZone: true });
+  if (!dt.isValid) throw new Error('Choose a valid event date and time.');
+  return dt.toUTC().toISO();
+}
+
+function portalEventRecurrence(value) {
+  const recurrence = String(value || 'none').toLowerCase();
+  if (!['none', 'daily', 'weekly', 'biweekly', 'monthly'].includes(recurrence)) {
+    throw new Error('Invalid recurrence option.');
+  }
+  return recurrence;
+}
+
+async function portalListEvents(ctx) {
+  const now = DateTime.utc().minus({ hours: 12 }).toISO();
+  let query = ctx.db.from('events').select('*').gte('event_time', now).order('event_time', { ascending: true }).limit(250);
+  if (!ctx.isAdmin) query = query.eq('status', 'open');
+  const { data: events, error } = await query;
+  if (error) throw error;
+  const ids = (events || []).map((event) => event.id);
+  let rsvps = [];
+  if (ids.length) {
+    const result = await ctx.db.from('event_rsvps').select('event_id,user_id,username').in('event_id', ids);
+    if (result.error) throw result.error;
+    rsvps = result.data || [];
+  }
+  const counts = new Map();
+  const mine = new Set();
+  for (const row of rsvps) {
+    counts.set(String(row.event_id), (counts.get(String(row.event_id)) || 0) + 1);
+    if (String(row.user_id) === String(ctx.discordId)) mine.add(String(row.event_id));
+  }
+  return (events || []).map((event) => ({
+    ...event,
+    rsvp_count: counts.get(String(event.id)) || 0,
+    my_rsvp: mine.has(String(event.id)),
+    formatted_time: formatServerTime(event.event_time),
+    recurrence_label: recurrenceLabel(event.recurrence),
+  }));
+}
+
+async function portalRsvpEvent(ctx, eventId, attending) {
+  const { data: event, error } = await ctx.db.from('events').select('*').eq('id', String(eventId)).single();
+  if (error) throw error;
+  if (!event || event.status !== 'open') throw new Error('This event is closed.');
+  if (attending) {
+    const user = await ctx.bot.users.fetch(String(ctx.discordId)).catch(() => null);
+    const { error: saveError } = await ctx.db.from('event_rsvps').upsert({
+      event_id: event.id,
+      user_id: String(ctx.discordId),
+      username: user?.tag || user?.username || String(ctx.discordId),
+    }, { onConflict: 'event_id,user_id' });
+    if (saveError) throw saveError;
+  } else {
+    const { error: deleteError } = await ctx.db.from('event_rsvps').delete().eq('event_id', event.id).eq('user_id', String(ctx.discordId));
+    if (deleteError) throw deleteError;
+  }
+  await updateEventPost(ctx.bot, ctx.db, event, false);
+  return { ok: true, attending: !!attending };
+}
+
+async function portalCreateEvent(ctx, body) {
+  if (!ctx.isAdmin) throw new Error('Admin access required.');
+  const payload = {
+    title: portalEventText(body.title, 100, 'Event title'),
+    description: portalEventText(body.description, 2000, 'Description'),
+    location: portalEventText(body.location, 200, 'Location'),
+    event_time: portalEventIso(body.eventTime),
+    timezone: SERVER_TZ,
+    recurrence: portalEventRecurrence(body.recurrence),
+    status: 'open',
+    created_by: String(ctx.discordId),
+    reminder_24h_sent: false,
+    reminder_1h_sent: false,
+    reminder_start_sent: false,
+  };
+  const { data: event, error } = await ctx.db.from('events').insert(payload).select().single();
+  if (error) throw error;
+  try {
+    await postEvent(ctx.bot, ctx.db, event);
+  } catch (err) {
+    await ctx.db.from('events').delete().eq('id', event.id);
+    throw err;
+  }
+  return { ok: true, event };
+}
+
+async function portalUpdateEvent(ctx, body) {
+  if (!ctx.isAdmin) throw new Error('Admin access required.');
+  const id = String(body.id || '');
+  if (!id) throw new Error('Event ID is required.');
+  const { data: existing, error: loadError } = await ctx.db.from('events').select('*').eq('id', id).single();
+  if (loadError) throw loadError;
+  const payload = {
+    title: portalEventText(body.title, 100, 'Event title'),
+    description: portalEventText(body.description, 2000, 'Description'),
+    location: portalEventText(body.location, 200, 'Location'),
+    event_time: portalEventIso(body.eventTime),
+    recurrence: portalEventRecurrence(body.recurrence),
+    reminder_24h_sent: false,
+    reminder_1h_sent: false,
+    reminder_start_sent: false,
+  };
+  const { data: event, error } = await ctx.db.from('events').update(payload).eq('id', id).select().single();
+  if (error) throw error;
+  await updateEventPost(ctx.bot, ctx.db, { ...existing, ...event }, event.status !== 'open');
+  return { ok: true, event };
+}
+
+async function portalSetEventStatus(ctx, body) {
+  if (!ctx.isAdmin) throw new Error('Admin access required.');
+  const id = String(body.id || '');
+  const status = body.status === 'open' ? 'open' : 'closed';
+  const { data: event, error } = await ctx.db.from('events').update({ status }).eq('id', id).select().single();
+  if (error) throw error;
+  await updateEventPost(ctx.bot, ctx.db, event, status !== 'open');
+  return { ok: true, event };
+}
+
+async function portalDeleteEvent(ctx, eventId) {
+  if (!ctx.isAdmin) throw new Error('Admin access required.');
+  const id = String(eventId || '');
+  const { data: event, error: loadError } = await ctx.db.from('events').select('*').eq('id', id).single();
+  if (loadError) throw loadError;
+  if (event?.channel_id && event?.message_id) {
+    const channel = await ctx.bot.channels.fetch(String(event.channel_id)).catch(() => null);
+    const message = channel?.messages ? await channel.messages.fetch(String(event.message_id)).catch(() => null) : null;
+    if (message?.deletable) await message.delete().catch(() => {});
+  }
+  const rsvpDelete = await ctx.db.from('event_rsvps').delete().eq('event_id', id);
+  if (rsvpDelete.error) throw rsvpDelete.error;
+  const deleted = await ctx.db.from('events').delete().eq('id', id);
+  if (deleted.error) throw deleted.error;
+  return { ok: true };
+}
+
 module.exports = {
   handleEventCommand,
   handleEventInteraction,
   handleEventText,
   startEventScheduler,
+  portalListEvents,
+  portalRsvpEvent,
+  portalCreateEvent,
+  portalUpdateEvent,
+  portalSetEventStatus,
+  portalDeleteEvent,
 };

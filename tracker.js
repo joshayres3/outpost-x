@@ -10,6 +10,7 @@ const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance } = re
 const { portalCreateShop, portalUpdateShop, portalToggleShop, portalDeleteShop, portalSetShopImages, portalAdminShop } = require('./playerShops');
 const { portalCreateSquad, portalUpdateSquad, portalToggleSquad, portalDeleteSquad, portalAdminSquad } = require('./squadFinder');
 const { portalCreateLore, portalUpdateLore, portalToggleLore, portalDeleteLore, portalSetLoreImages, portalAdminLore } = require('./playerLore');
+const { portalListEvents, portalRsvpEvent, portalCreateEvent, portalUpdateEvent, portalSetEventStatus, portalDeleteEvent } = require('./events');
 const {
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
@@ -428,7 +429,7 @@ async function buildPortalOverview(session) {
     try { const d=await ggconGet(`/players/${encodeURIComponent(steamId)}.json`); live=d?.player||d; } catch {}
   }
   const cutoff15 = new Date(Date.now()-15*86400000).toISOString();
-  const [insurance,rentals,rides,shops,myShop,squads,mySquad,lore,myLore,transactions,adminTransactions] = await Promise.all([
+  const [insurance,rentals,rides,shops,myShop,squads,mySquad,lore,myLore,transactions,adminTransactions,events] = await Promise.all([
     steamId?safeRows('watcher_vehicle_insurance',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('purchased_at',{ascending:false}).limit(100)):[],
     steamId?safeRows('watcher_dirtbike_rentals',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('created_at',{ascending:false}).limit(5)):[],
     steamId?safeRows('watcher_airlift_rides',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('completed_at',{ascending:false}).limit(5)):[],
@@ -440,6 +441,7 @@ async function buildPortalOverview(session) {
     safeRows('watcher_player_lore',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('owner_id',String(session.discordId)).limit(1)),
     steamId?safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).gte('created_at',cutoff15).order('created_at',{ascending:false}).limit(500)):[],
     session.isAdmin?safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).gte('created_at',cutoff15).order('created_at',{ascending:false}).limit(1000)):[],
+    portalListEvents({db:getDb(),bot:botRef,guildId:String(session.guildId),discordId:String(session.discordId),isAdmin:!!session.isAdmin}),
   ]);
   const lastRide=rides[0]?.completed_at?new Date(rides[0].completed_at):null; const nextRide=lastRide?new Date(lastRide.getTime()+3600000):null;
   const vehicles=[];
@@ -448,7 +450,7 @@ async function buildPortalOverview(session) {
     me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,sessionExpiresAt:new Date(session.expiresAt).toISOString()},
     player:{steamId:steamId||null,name:link?.scum_name||live?.characterName||live?.name||null,online:!!live,cash:playerCash(live),fame:playerFame(live)},
     vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
-    airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,transactions,adminTransactions,
+    airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,adminTransactions,
     shopCatalog:getPortalCatalog()
   };
 }
@@ -542,7 +544,7 @@ async function adminModeration(session,body){
   return {ok:true,message:'Player unbanned from SCUM. Linked Discord ban was removed when available.'};
 }
 
-function portalCtx(session){return {guildId:String(session.guildId),discordId:String(session.discordId),displayName:session.displayName||'Player',isAdmin:!!session.isAdmin};}
+function portalCtx(session){return {guildId:String(session.guildId),discordId:String(session.discordId),displayName:session.displayName||'Player',isAdmin:!!session.isAdmin,db:getDb(),bot:botRef};}
 async function portalInsuranceData(session){const link=await portalLink(session);if(!link?.steam_id)return{policies:[],claims:[],vehicles:[]};return portalInsuranceOptions({...portalCtx(session),steamId:String(link.steam_id)});}
 
 function json(res, status, body) {
@@ -631,6 +633,11 @@ async function handleHttp(req, res) {
     try { const link=await portalLink(session); return json(res,200,await buyPackageForPortal({guildId:session.guildId,discordId:session.discordId,steamId:link?.steam_id,playerName:link?.scum_name,packageId:(await readJsonBody(req)).id})); }
     catch (err) { return json(res,400,{error:err.message}); }
   }
+  if (url.pathname === '/portal/api/events/rsvp' && req.method === 'POST') { try{const b=await readJsonBody(req);return json(res,200,await portalRsvpEvent(portalCtx(session),b.id,b.attending!==false));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/create' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res);try{return json(res,200,await portalCreateEvent(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/update' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res);try{return json(res,200,await portalUpdateEvent(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/status' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res);try{return json(res,200,await portalSetEventStatus(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/delete' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res);try{return json(res,200,await portalDeleteEvent(portalCtx(session),(await readJsonBody(req)).id));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/options') { try{return json(res,200,await portalInsuranceData(session));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/buy' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalBuyInsurance({...portalCtx(session),steamId:link?.steam_id},b.vehicleId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/redeem' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalRedeemInsurance({...portalCtx(session),steamId:link?.steam_id},b.claimId));}catch(err){return json(res,400,{error:err.message});} }
