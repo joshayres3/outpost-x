@@ -369,4 +369,46 @@ async function handleShopInteraction(interaction) {
   return true;
 }
 
-module.exports = { handleShopCommand, handleShopInteraction };
+
+function getPortalCatalog() {
+  return Object.values(PACKAGES).map((pkg) => ({
+    id: pkg.id,
+    name: pkg.name,
+    emoji: pkg.emoji,
+    description: pkg.description,
+    price: pkg.price,
+    contents: pkg.items.map((item) => ({ label: item.label, qty: item.qty })),
+  }));
+}
+
+async function buyPackageForPortal({ guildId, discordId, steamId, playerName, packageId }) {
+  const pkg = PACKAGES[String(packageId || '')];
+  if (!pkg) throw new Error('That shop package no longer exists.');
+  const lockKey = `${guildId}:${discordId}`;
+  if (purchaseLocks.has(lockKey)) throw new Error('A shop purchase is already being processed for you.');
+  purchaseLocks.add(lockKey);
+  try {
+    const link = steamId ? { steam_id: String(steamId), scum_name: playerName || null } : await getLink(guildId, discordId);
+    if (!link?.steam_id) throw new Error('You must register your SCUM character before using the shop.');
+    const playerResult = await getPlayerForLookup(link.steam_id);
+    const player = playerResult?.type === 'single' ? playerResult.player : null;
+    if (!player || !isOnline(player)) throw new Error('You must be online in SCUM to receive a shop purchase.');
+    const cash = getCash(player);
+    if (cash === null) throw new Error('Watcher could not verify your current in-game cash.');
+    if (cash < pkg.price) throw new Error(`You need $${formatMoney(pkg.price)}. Your current balance is $${formatMoney(cash)}.`);
+    const resolved = [];
+    for (const item of pkg.items) resolved.push({ ...item, itemClass: await resolveItemClass(item) });
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -pkg.price });
+    try {
+      for (const item of resolved) await ggconPost('/spawn', { steamId: String(link.steam_id), item: item.itemClass, qty: item.qty });
+    } catch (error) {
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: pkg.price }).catch(() => {});
+      await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.id, package_name:pkg.name, price:pkg.price, status:'refunded', error_message:error.message, created_at:new Date().toISOString() });
+      throw new Error(`Delivery failed, so your $${formatMoney(pkg.price)} was refunded. ${error.message}`);
+    }
+    await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.id, package_name:pkg.name, price:pkg.price, status:'delivered', error_message:null, created_at:new Date().toISOString() });
+    await recordTransaction({ guildId, discordId, steamId:link.steam_id, playerName:link.scum_name||getPlayerDisplayName(player), type:'server_shop', title:`Server Shop: ${pkg.name}`, amount:-pkg.price, balanceBefore:cash, balanceAfter:cash-pkg.price, details:{ packageId:pkg.id, packageName:pkg.name, items:pkg.items } });
+    return { ok:true, package:pkg, playerName:link.scum_name||getPlayerDisplayName(player), balanceBefore:cash, balanceAfter:cash-pkg.price };
+  } finally { purchaseLocks.delete(lockKey); }
+}
+module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal };
