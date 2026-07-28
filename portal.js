@@ -1,14 +1,17 @@
 const NAV=[['dashboard','⌂','Overview'],['vehicles','🚗','Vehicles'],['insurance','🛡️','Insurance'],['taxi','🚁','Airlift Taxi'],['rental','🏍️','Dirtbike'],['shop','🛒','Server Shop'],['events','📅','Events'],['playershops','🏪','Player Shops'],['squads','👥','Squad Finder'],['lore','📖','Player Lore'],['history','🧾','History']];
 const ADMIN=[['admin','⚙️','Admin Tools'],['surveillance','👁️','Surveillance']];
 const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-let state={me:null,data:null,section:new URLSearchParams(location.search).get('section')||'dashboard'};
+let state={me:null,data:null,section:new URLSearchParams(location.search).get('section')||'dashboard',navHistory:[]};
 async function api(path,opt={}){const r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'Watcher request failed');return j}
 function money(n){return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(Number(n||0))}
 function fmt(t){return t?new Date(t).toLocaleString():'—'}
 function toast(s){const e=$('toast');e.textContent=s;e.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display='none',3500)}
 function nav(){const rows=[...NAV,...(state.me?.isAdmin?ADMIN:[])];$('nav').innerHTML=rows.map(([id,ic,l])=>`<button class="${id===state.section?'active':''}" onclick="go('${id}')">${ic}<span>${l}</span></button>`).join('')}
 async function load(){state.data=await api('/portal/api/overview');state.me=state.data.me;$('displayName').textContent=state.me.displayName;$('roleText').textContent=state.me.isAdmin?'OWNER / ADMIN CLEARANCE':'THE EXILES CLEARANCE';$('avatar').src=state.me.avatar||'/portal/assets/watcher.jpg';$('sessionState').textContent=`Secure until ${new Date(state.me.sessionExpiresAt).toLocaleTimeString()}`;nav();render();setTimeout(()=>$('boot').classList.add('hide'),500)}
-function go(id){state.section=id;history.replaceState({},'',`/portal?section=${id}`);nav();render()}
+function updatePageNav(){const back=$('backBtn'),home=$('homeBtn');if(back)back.disabled=!state.navHistory.length;if(home)home.disabled=state.section==='dashboard'}
+function go(id,opt={}){if(!id||id===state.section){updatePageNav();return}if(!opt.fromBack){state.navHistory.push(state.section);if(state.navHistory.length>30)state.navHistory.shift()}state.section=id;history.replaceState({section:id},'',`/portal?section=${id}`);nav();render();updatePageNav();window.scrollTo({top:0,behavior:opt.instant?'auto':'smooth'})}
+function goBack(){const id=state.navHistory.pop()||'dashboard';go(id,{fromBack:true})}
+function goHome(){go('dashboard')}
 function title(a,b){$('sectionEyebrow').textContent=a;$('sectionTitle').textContent=b}
 function metric(label,val,sub=''){return `<div class="card span3 metric"><small>${label}</small><b>${val}</b><span>${sub}</span></div>`}
 function service(id,ic,name,desc,status='Open'){return `<div class="card span4 service" onclick="go('${id}')"><i>${ic}</i><h3>${name}</h3><p>${desc}</p><div style="margin-top:12px"><span class="status good">${status}</span></div></div>`}
@@ -92,4 +95,4 @@ function refund(x){$('modalBody').innerHTML=`<h2>Refund Transaction</h2><p>${esc
 async function confirmRefund(id){const amount=Number($('refundAmount').value),reason=$('refundReason').value.trim();if(!reason)return toast('A refund reason is required.');try{await api('/portal/api/admin/refund',{method:'POST',body:JSON.stringify({transactionId:id,amount,reason})});closeModal();toast('Refund completed.');await refresh();go('admin')}catch(e){toast(e.message)}}
 function closeModal(){const modal=$('modal').querySelector('.modal');modal.classList.remove('detailModal');$('modal').classList.add('hidden')}
 async function refresh(){state.data=await api('/portal/api/overview');state.me=state.data.me;render()}
-$('refreshBtn').onclick=refresh;load().catch(e=>{document.body.innerHTML=`<div style="padding:40px;color:#ff8d8d"><h2>Command Center unavailable</h2><p>${esc(e.message)}</p></div>`});
+$('refreshBtn').onclick=refresh;$('backBtn').onclick=goBack;$('homeBtn').onclick=goHome;updatePageNav();load().catch(e=>{document.body.innerHTML=`<div style="padding:40px;color:#ff8d8d"><h2>Command Center unavailable</h2><p>${esc(e.message)}</p></div>`});
