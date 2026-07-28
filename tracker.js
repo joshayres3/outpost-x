@@ -62,6 +62,7 @@ const WORLD = {
 
 const mapPath = path.join(__dirname, 'tracker-map.png');
 const highResMapPath = path.join(__dirname, 'tracker-map-hi.webp');
+const portalMapTilesPath = path.join(__dirname, 'portal-map-tiles');
 const htmlPath = path.join(__dirname, 'surveillance.html');
 const portalHtmlPath = path.join(__dirname, 'portal.html');
 const portalCssPath = path.join(__dirname, 'portal.css');
@@ -679,6 +680,19 @@ async function handleHttp(req, res) {
     if (!session.isAdmin) return unauthorized(res);
     try { return json(res, 200, await portalRefund(session, await readJsonBody(req))); }
     catch (err) { return json(res, 400, { error: err.message }); }
+  }
+
+
+  if (url.pathname.startsWith('/tracker/tiles/hi/')) {
+    const match = url.pathname.match(/^\/tracker\/tiles\/hi\/(\d+)_(\d+)\.jpg$/);
+    if (!match) return text(res, 404, 'Map tile not found.');
+    const x = Number(match[1]);
+    const y = Number(match[2]);
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 7 || y < 0 || y > 7) return text(res, 404, 'Map tile not found.');
+    const tilePath = path.join(portalMapTilesPath, 'hi', `${x}_${y}.jpg`);
+    if (!fs.existsSync(tilePath)) return text(res, 404, 'Map tile not found.');
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=604800, immutable' });
+    return fs.createReadStream(tilePath).pipe(res);
   }
 
   if (url.pathname === '/tracker/map.png') {
