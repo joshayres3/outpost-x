@@ -1245,9 +1245,19 @@ async function handleInsuranceInteraction(interaction) {
   return true;
 }
 
-module.exports = {
-  handleInsuranceCommand,
-  handleInsuranceInteraction,
-  startInsuranceOnBoot,
-  processInsuranceDestructionEvents,
-};
+
+function portalInteraction(ctx){
+  let last=null;
+  const capture=async payload=>{last=payload;return payload;};
+  return {guildId:String(ctx.guildId),user:{id:String(ctx.discordId),tag:ctx.displayName||'Portal User',username:ctx.displayName||'Portal User'},reply:capture,update:capture,followUp:capture,deferUpdate:async()=>{},editReply:capture,get result(){return last;}};
+}
+async function portalInsuranceOptions(ctx){
+  const policies=await getActivePolicies(ctx.guildId,ctx.steamId);
+  const claims=await getAvailableClaims(ctx.guildId,ctx.discordId);
+  const vehicles=(await fetchVehicles()).filter(v=>String(v.ownerSteamId||'')===String(ctx.steamId)).map(v=>{const config=getInsuranceVehicleType(v);return{id:String(getVehicleId(v)||''),name:getVehicleName(v),type:config?.type||null,label:config?.label||null,price:config?.price||null,eligible:!!config&&!policies.some(p=>p.vehicle_type===config.type)};});
+  return {policies,claims,vehicles};
+}
+async function portalBuyInsurance(ctx,vehicleId){const i=portalInteraction(ctx);await confirmBuy(i,String(vehicleId));const content=String(i.result?.content||'');if(!content.startsWith('✅'))throw new Error(content||'Insurance purchase failed.');return{ok:true,message:content};}
+async function portalRedeemInsurance(ctx,claimId){const i=portalInteraction(ctx);await redeemClaim(i,String(claimId));const content=String(i.result?.content||'');if(!content.startsWith('✅'))throw new Error(content||'Insurance claim failed.');return{ok:true,message:content};}
+
+module.exports = { handleInsuranceCommand, handleInsuranceInteraction, startInsuranceOnBoot, processInsuranceDestructionEvents, portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance }; 

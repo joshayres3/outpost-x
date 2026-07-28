@@ -422,9 +422,19 @@ function startSquadFinder(client, db) {
   dbRef = db;
 }
 
-module.exports = {
-  startSquadFinder,
-  handleSquadFinderCommand,
-  handleSquadFinderInteraction,
-  handleSquadFinderModal,
-};
+
+async function portalCreateSquad(ctx, values){
+  const existing=await getListingByOwner(ctx.guildId,ctx.discordId); if(existing) throw new Error('You already have a Squad Finder listing.');
+  const cfg=await getConfig(ctx.guildId); if(!cfg?.channel_id) throw new Error('Squad Finder has not been set up in Discord yet.');
+  const guild=clientRef?.guilds?.cache?.get(String(ctx.guildId)); const channel=guild?.channels?.cache?.get(String(cfg.channel_id)); if(!channel?.isTextBased()) throw new Error('The Squad Finder channel is unavailable.');
+  const name=String(values.squad_name||'').trim().slice(0,80); if(!name) throw new Error('Squad name is required.');
+  const now=new Date().toISOString(); const temp=await channel.send({embeds:[new EmbedBuilder().setDescription('Creating squad listing…')]});
+  const row={guild_id:String(ctx.guildId),owner_id:String(ctx.discordId),squad_name:name,member_count:String(values.member_count||'').trim().slice(0,30),play_style:String(values.play_style||'').trim().slice(0,100),active_times:String(values.active_times||'').trim().slice(0,100),description:String(values.description||'').trim().slice(0,1000),voice_chat:String(values.voice_chat||'Optional').trim().slice(0,40)||'Optional',is_recruiting:true,channel_id:String(cfg.channel_id),message_id:String(temp.id),created_at:now,updated_at:now};
+  const{data,error}=await dbRef.from(LISTINGS_TABLE).insert(row).select('*').single();if(error){await temp.delete().catch(()=>{});throw error;}await temp.edit({embeds:[listingEmbed(data)],allowedMentions:{users:[]}});await updateDirectory(ctx.guildId);return data;
+}
+async function portalUpdateSquad(ctx,values){const listing=await getListingByOwner(ctx.guildId,ctx.discordId);if(!listing)throw new Error('You do not have a Squad Finder listing.');const patch={squad_name:String(values.squad_name??listing.squad_name).trim().slice(0,80),member_count:String(values.member_count??listing.member_count??'').trim().slice(0,30),play_style:String(values.play_style??listing.play_style??'').trim().slice(0,100),active_times:String(values.active_times??listing.active_times??'').trim().slice(0,100),description:String(values.description??listing.description??'').trim().slice(0,1000),voice_chat:String(values.voice_chat??listing.voice_chat??'Optional').trim().slice(0,40)||'Optional',updated_at:new Date().toISOString()};if(!patch.squad_name)throw new Error('Squad name is required.');const{data,error}=await dbRef.from(LISTINGS_TABLE).update(patch).eq('id',listing.id).select('*').single();if(error)throw error;await updateListingMessage(data);await updateDirectory(ctx.guildId);return data;}
+async function portalToggleSquad(ctx){const listing=await getListingByOwner(ctx.guildId,ctx.discordId);if(!listing)throw new Error('You do not have a Squad Finder listing.');const{data,error}=await dbRef.from(LISTINGS_TABLE).update({is_recruiting:!listing.is_recruiting,updated_at:new Date().toISOString()}).eq('id',listing.id).select('*').single();if(error)throw error;await updateListingMessage(data);await updateDirectory(ctx.guildId);return data;}
+async function portalDeleteSquad(ctx){const listing=await getListingByOwner(ctx.guildId,ctx.discordId);if(!listing)throw new Error('You do not have a Squad Finder listing.');const channel=clientRef?.guilds?.cache?.get(String(listing.guild_id))?.channels?.cache?.get(String(listing.channel_id));const msg=await channel?.messages?.fetch(String(listing.message_id)).catch(()=>null);await msg?.delete().catch(()=>{});const{error}=await dbRef.from(LISTINGS_TABLE).delete().eq('id',listing.id);if(error)throw error;await updateDirectory(ctx.guildId);return{ok:true};}
+async function portalAdminSquad(ctx,values){if(!ctx.isAdmin)throw new Error('Admin access required.');const listing=await getListingById(ctx.guildId,values.id);if(!listing)throw new Error('Squad listing not found.');if(values.action==='delete'){const channel=clientRef?.guilds?.cache?.get(String(listing.guild_id))?.channels?.cache?.get(String(listing.channel_id));const msg=await channel?.messages?.fetch(String(listing.message_id)).catch(()=>null);await msg?.delete().catch(()=>{});const{error}=await dbRef.from(LISTINGS_TABLE).delete().eq('id',listing.id);if(error)throw error;await updateDirectory(ctx.guildId);return{ok:true};}if(values.action==='toggle'){const{data,error}=await dbRef.from(LISTINGS_TABLE).update({is_recruiting:!listing.is_recruiting,updated_at:new Date().toISOString()}).eq('id',listing.id).select('*').single();if(error)throw error;await updateListingMessage(data);await updateDirectory(ctx.guildId);return data;}throw new Error('Unknown squad moderation action.');}
+
+module.exports = { startSquadFinder, handleSquadFinderCommand, handleSquadFinderInteraction, handleSquadFinderModal, portalCreateSquad, portalUpdateSquad, portalToggleSquad, portalDeleteSquad, portalAdminSquad }; 

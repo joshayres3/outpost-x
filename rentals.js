@@ -415,4 +415,13 @@ async function getRentalStatus(guildId, steamId) {
   return rental ? { active: true, ...rental } : { active: false };
 }
 
-module.exports = { handleRentalCommand, handleRentalInteraction, startRentalSystem, getRentalStatus };
+
+async function portalCreateRental(ctx){
+  const result=await getPlayerForLookup(String(ctx.steamId||''));
+  if(result.type!=='single'||!isOnline(result.player)) throw new Error('You must be online in SCUM to rent a dirtbike.');
+  const fake={guildId:String(ctx.guildId),user:{id:String(ctx.discordId)}};
+  const rental=await createRental(fake,{steam_id:String(ctx.steamId),scum_name:ctx.playerName||getPlayerDisplayName(result.player)},result.player);
+  return {ok:true,vehicleId:rental.id||null,expiresAt:rental.expires.toISOString()};
+}
+
+module.exports = { handleRentalCommand, handleRentalInteraction, startRentalSystem, getRentalStatus, portalCreateRental };

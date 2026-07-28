@@ -534,10 +534,64 @@ function startPlayerShops(client, db) {
   }, 60_000).unref?.();
 }
 
-module.exports = {
-  startPlayerShops,
-  handlePlayerShopCommand,
-  handlePlayerShopMessage,
-  handlePlayerShopInteraction,
-  handlePlayerShopModal,
-};
+
+function decodePortalImages(images, prefix) {
+  if (!Array.isArray(images)) return [];
+  return images.slice(0, MAX_IMAGES).map((item, index) => {
+    const raw = String(item?.data || '');
+    const match = raw.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
+    if (!match) throw new Error(`Image ${index + 1} is invalid.`);
+    const buffer = Buffer.from(match[2], 'base64');
+    if (!buffer.length || buffer.length > 8 * 1024 * 1024) throw new Error(`Image ${index + 1} must be smaller than 8 MB.`);
+    const ext = String(item?.name || '').match(/\.[a-z0-9]{2,5}$/i)?.[0] || (match[1].includes('jpeg') ? '.jpg' : '.png');
+    return { attachment: buffer, name: `${prefix}-${index + 1}${ext}` };
+  });
+}
+
+async function portalMember(guildId, discordId) {
+  const guild = clientRef?.guilds?.cache?.get(String(guildId));
+  return guild?.members?.fetch(String(discordId)).catch(() => null);
+}
+
+async function portalCreateShop(ctx, values) {
+  const member = await portalMember(ctx.guildId, ctx.discordId);
+  if (!member || !hasShopOwnerRole(member)) throw new Error(`You need the Shop Owner role before creating a shop. Open a ticket to request it.`);
+  const existing = await getShopByOwner(ctx.guildId, ctx.discordId);
+  if (existing) throw new Error('You already own a player shop.');
+  const cfg = await getConfig(ctx.guildId);
+  if (!cfg?.channel_id) throw new Error('Player Shops has not been set up in Discord yet.');
+  const channel = member.guild.channels.cache.get(String(cfg.channel_id));
+  if (!channel?.isTextBased()) throw new Error('The Player Shops channel is unavailable.');
+  const name = String(values.shop_name || '').trim().slice(0, 80);
+  if (!name) throw new Error('Shop name is required.');
+  const now = new Date().toISOString();
+  const temp = await channel.send({ embeds: [new EmbedBuilder().setDescription('Creating shop storefront…')] });
+  const row = { guild_id:String(ctx.guildId), owner_id:String(ctx.discordId), shop_name:name, location_text:String(values.location_text||'').trim().slice(0,100), shop_type:String(values.shop_type||'General').trim().slice(0,80)||'General', description:String(values.description||'').trim().slice(0,1000), storefront_text:String(values.storefront_text||'').trim().slice(0,1000), is_open:true, channel_id:String(cfg.channel_id), message_id:String(temp.id), image_urls:[], created_at:now, updated_at:now };
+  const {data,error}=await dbRef.from(SHOPS_TABLE).insert(row).select('*').single();
+  if(error){await temp.delete().catch(()=>{});throw error;}
+  await temp.edit({content:'',embeds:shopEmbeds(data),allowedMentions:{users:[]}});
+  await updateDirectory(ctx.guildId);
+  return data;
+}
+
+async function portalUpdateShop(ctx, values) {
+  const shop = await getShopByOwner(ctx.guildId, ctx.discordId);
+  if (!shop) throw new Error('You do not have a player shop yet.');
+  const patch={
+    shop_name:String(values.shop_name??shop.shop_name).trim().slice(0,80),
+    location_text:String(values.location_text??shop.location_text??'').trim().slice(0,100),
+    shop_type:String(values.shop_type??shop.shop_type??'General').trim().slice(0,80)||'General',
+    description:String(values.description??shop.description??'').trim().slice(0,1000),
+    storefront_text:String(values.storefront_text??shop.storefront_text??'').trim().slice(0,1000),
+    updated_at:new Date().toISOString(),
+  };
+  if(!patch.shop_name) throw new Error('Shop name is required.');
+  const {data,error}=await dbRef.from(SHOPS_TABLE).update(patch).eq('id',shop.id).select('*').single(); if(error)throw error;
+  await updateShopMessage(data); await updateDirectory(ctx.guildId); return data;
+}
+async function portalToggleShop(ctx){const shop=await getShopByOwner(ctx.guildId,ctx.discordId);if(!shop)throw new Error('You do not have a player shop yet.');const{data,error}=await dbRef.from(SHOPS_TABLE).update({is_open:!shop.is_open,updated_at:new Date().toISOString()}).eq('id',shop.id).select('*').single();if(error)throw error;await updateShopMessage(data);await updateDirectory(ctx.guildId);return data;}
+async function portalDeleteShop(ctx){const shop=await getShopByOwner(ctx.guildId,ctx.discordId);if(!shop)throw new Error('You do not have a player shop yet.');const channel=clientRef?.guilds?.cache?.get(String(shop.guild_id))?.channels?.cache?.get(String(shop.channel_id));const msg=await channel?.messages?.fetch(String(shop.message_id)).catch(()=>null);await msg?.delete().catch(()=>{});const{error}=await dbRef.from(SHOPS_TABLE).delete().eq('id',shop.id);if(error)throw error;await updateDirectory(ctx.guildId);return{ok:true};}
+async function portalSetShopImages(ctx, values){const shop=await getShopByOwner(ctx.guildId,ctx.discordId);if(!shop)throw new Error('You do not have a player shop yet.');const files=decodePortalImages(values.images,`shop-${shop.id}`);const channel=clientRef?.guilds?.cache?.get(String(shop.guild_id))?.channels?.cache?.get(String(shop.channel_id));const msg=await channel?.messages?.fetch(String(shop.message_id)).catch(()=>null);if(!msg)throw new Error('The shop storefront message could not be found.');let urls=[];if(files.length){const uploaded=await msg.edit({content:'',embeds:shopEmbeds({...shop,image_urls:[]}),files,attachments:[]});urls=[...uploaded.attachments.values()].map(a=>a.url).slice(0,MAX_IMAGES);}else{await msg.edit({content:'',embeds:shopEmbeds({...shop,image_urls:[]}),attachments:[]});}const{data,error}=await dbRef.from(SHOPS_TABLE).update({image_urls:urls,storefront_text:String(values.storefront_text??shop.storefront_text??'').trim().slice(0,1000),updated_at:new Date().toISOString()}).eq('id',shop.id).select('*').single();if(error)throw error;await updateShopMessage(data);await updateDirectory(ctx.guildId);return data;}
+async function portalAdminShop(ctx, values){if(!ctx.isAdmin)throw new Error('Admin access required.');const shop=await getShopById(ctx.guildId,values.id);if(!shop)throw new Error('Shop not found.');if(values.action==='delete'){const channel=clientRef?.guilds?.cache?.get(String(shop.guild_id))?.channels?.cache?.get(String(shop.channel_id));const msg=await channel?.messages?.fetch(String(shop.message_id)).catch(()=>null);await msg?.delete().catch(()=>{});const{error}=await dbRef.from(SHOPS_TABLE).delete().eq('id',shop.id);if(error)throw error;await updateDirectory(ctx.guildId);return{ok:true};}if(values.action==='toggle'){const{data,error}=await dbRef.from(SHOPS_TABLE).update({is_open:!shop.is_open,updated_at:new Date().toISOString()}).eq('id',shop.id).select('*').single();if(error)throw error;await updateShopMessage(data);await updateDirectory(ctx.guildId);return data;}throw new Error('Unknown shop moderation action.');}
+
+module.exports = { startPlayerShops, handlePlayerShopCommand, handlePlayerShopMessage, handlePlayerShopInteraction, handlePlayerShopModal, portalCreateShop, portalUpdateShop, portalToggleShop, portalDeleteShop, portalSetShopImages, portalAdminShop };
