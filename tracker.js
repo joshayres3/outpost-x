@@ -503,7 +503,7 @@ async function handleHttp(req, res) {
     });
     res.writeHead(302, {
       Location: '/portal',
-      'Set-Cookie': `watcher_tracker_session=${encodeURIComponent(sid)}; Path=/tracker; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_MINUTES * 60}`,
+      'Set-Cookie': `watcher_tracker_session=${encodeURIComponent(sid)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_MINUTES * 60}`,
       'Cache-Control': 'no-store',
     });
     return res.end();
