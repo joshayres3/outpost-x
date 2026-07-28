@@ -8,25 +8,13 @@ const {
 } = require("discord.js");
 
 const { DateTime } = require("luxon");
+const { mapPointData } = require("./mapCalibration");
 
 const ADMIN_CH = process.env.ADMIN_CHANNEL_ID || "1518059656302301245";
 const EVENTS_CH = process.env.EVENTS_CHANNEL_ID || "1516324485865799690";
 const EXILES_ROLE_ID = process.env.EXILES_ROLE_ID || "1516270776272031796";
 const SERVER_TZ = process.env.SERVER_TIMEZONE || "America/New_York";
 const MAX_EVENT_IMAGES = 5;
-const EVENT_MAP = {
-  width: 2048,
-  height: 2048,
-  uX: -0.0013376289825443235,
-  uY: -1.819491533437014e-7,
-  u0: 832.1871053437013,
-  vX: 2.2322445876635514e-8,
-  vY: -0.001339517672872274,
-  v0: 830.3157528722742,
-};
-const EVENT_SECTOR_ROWS = ['D', 'C', 'B', 'A', 'Z'];
-const EVENT_SECTOR_COLS = ['4', '3', '2', '1', '0'];
-
 const createSessions = {};
 let schedulerStarted = false;
 
@@ -218,22 +206,7 @@ function eventMapData(event) {
   const y = Number(event?.coordinate_y);
   const z = Number(event?.coordinate_z);
   if (![x, y, z].every(Number.isFinite)) return null;
-  const mapX = EVENT_MAP.uX * x + EVENT_MAP.uY * y + EVENT_MAP.u0;
-  const mapY = EVENT_MAP.vX * x + EVENT_MAP.vY * y + EVENT_MAP.v0;
-  if (mapX < 0 || mapY < 0 || mapX > EVENT_MAP.width || mapY > EVENT_MAP.height) return null;
-  const tileW = EVENT_MAP.width / 5;
-  const tileH = EVENT_MAP.height / 5;
-  const col = Math.max(0, Math.min(4, Math.floor(mapX / tileW)));
-  const row = Math.max(0, Math.min(4, Math.floor(mapY / tileH)));
-  return {
-    map_x: mapX,
-    map_y: mapY,
-    sector_col: col,
-    sector_row: row,
-    sector: `${EVENT_SECTOR_ROWS[row]}${EVENT_SECTOR_COLS[col]}`,
-    local_x_pct: ((mapX - col * tileW) / tileW) * 100,
-    local_y_pct: ((mapY - row * tileH) / tileH) * 100,
-  };
+  return mapPointData(x, y);
 }
 
 function buildEventEmbeds(event, rsvpCount = 0, closed = false) {

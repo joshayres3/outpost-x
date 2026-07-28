@@ -38,45 +38,31 @@ const CARGO_SCHEDULE_HOURS = String(process.env.GGCON_CARGO_SCHEDULE_HOURS || "0
 const CARGO_SCHEDULE_MINUTE = Number(process.env.GGCON_CARGO_SCHEDULE_MINUTE || "30");
 const CARGO_SCHEDULE_WINDOW_MINUTES = Number(process.env.GGCON_CARGO_SCHEDULE_WINDOW_MINUTES || "4");
 const CARGO_SCHEDULE_WAKE_BUFFER_MS = Number(process.env.GGCON_CARGO_SCHEDULE_WAKE_BUFFER_MS || "3000");
-const CARGO_FRENZY_HAND_PICKED_POINTS = [
-  { x: -560000, y: -660000 }, { x: -480000, y: -650000 }, { x: -400000, y: -640000 }, { x: -320000, y: -630000 },
-  { x: -240000, y: -650000 }, { x: -160000, y: -640000 }, { x: -80000, y: -625000 }, { x: 0, y: -645000 },
-  { x: 80000, y: -625000 }, { x: 160000, y: -650000 }, { x: 240000, y: -620000 }, { x: 320000, y: -600000 },
-  { x: 400000, y: -570000 }, { x: 500000, y: -530000 }, { x: 560000, y: -460000 },
-
-  { x: -570000, y: -520000 }, { x: -490000, y: -500000 }, { x: -410000, y: -485000 }, { x: -330000, y: -470000 },
-  { x: -250000, y: -500000 }, { x: -170000, y: -470000 }, { x: -90000, y: -500000 }, { x: -10000, y: -465000 },
-  { x: 70000, y: -500000 }, { x: 150000, y: -470000 }, { x: 230000, y: -500000 }, { x: 310000, y: -460000 },
-  { x: 390000, y: -430000 }, { x: 470000, y: -400000 }, { x: 550000, y: -360000 },
-
-  { x: -580000, y: -360000 }, { x: -500000, y: -340000 }, { x: -420000, y: -320000 }, { x: -340000, y: -350000 },
-  { x: -260000, y: -320000 }, { x: -180000, y: -350000 }, { x: -100000, y: -320000 }, { x: -20000, y: -350000 },
-  { x: 60000, y: -320000 }, { x: 140000, y: -350000 }, { x: 220000, y: -320000 }, { x: 300000, y: -350000 },
-  { x: 380000, y: -315000 }, { x: 460000, y: -285000 }, { x: 540000, y: -250000 },
-
-  { x: -560000, y: -180000 }, { x: -480000, y: -150000 }, { x: -400000, y: -190000 }, { x: -320000, y: -140000 },
-  { x: -240000, y: -180000 }, { x: -160000, y: -140000 }, { x: -80000, y: -180000 }, { x: 0, y: -130000 },
-  { x: 80000, y: -180000 }, { x: 160000, y: -140000 }, { x: 240000, y: -180000 }, { x: 320000, y: -130000 },
-  { x: 400000, y: -170000 }, { x: 480000, y: -120000 }, { x: 560000, y: -90000 },
-
-  { x: -540000, y: 20000 }, { x: -460000, y: 50000 }, { x: -380000, y: 10000 }, { x: -300000, y: 60000 },
-  { x: -220000, y: 20000 }, { x: -140000, y: 65000 }, { x: -60000, y: 20000 }, { x: 20000, y: 70000 },
-  { x: 100000, y: 20000 }, { x: 180000, y: 70000 }, { x: 260000, y: 25000 }, { x: 340000, y: 75000 },
-  { x: 420000, y: 35000 }, { x: 500000, y: 90000 }, { x: 580000, y: 130000 },
-
-  { x: -520000, y: 210000 }, { x: -440000, y: 240000 }, { x: -360000, y: 200000 }, { x: -280000, y: 250000 },
-  { x: -200000, y: 210000 }, { x: -120000, y: 260000 }, { x: -40000, y: 220000 }, { x: 40000, y: 270000 },
-  { x: 120000, y: 230000 }, { x: 200000, y: 280000 }, { x: 280000, y: 240000 }, { x: 360000, y: 290000 },
-  { x: 440000, y: 250000 }, { x: 520000, y: 300000 },
-
-  { x: -500000, y: 410000 }, { x: -420000, y: 440000 }, { x: -340000, y: 400000 }, { x: -260000, y: 450000 },
-  { x: -180000, y: 410000 }, { x: -100000, y: 460000 }, { x: -20000, y: 420000 }, { x: 60000, y: 470000 },
-  { x: 140000, y: 430000 }, { x: 220000, y: 480000 }, { x: 300000, y: 440000 }, { x: 380000, y: 490000 },
-  { x: 460000, y: 450000 }, { x: 540000, y: 500000 },
-
-  { x: -420000, y: 620000 }, { x: -320000, y: 650000 }, { x: -220000, y: 610000 }, { x: -120000, y: 660000 },
-  { x: -20000, y: 620000 }, { x: 80000, y: 670000 }, { x: 180000, y: 630000 }, { x: 280000, y: 660000 },
-  { x: 380000, y: 620000 }, { x: 480000, y: 650000 },
+const CARGO_FRENZY_SAFE_POINTS = [
+  { x: 8541, y: 365758 },
+  { x: 216886, y: 484819 },
+  { x: 365701, y: 529466 },
+  { x: -393246, y: 514585 },
+  { x: 187113, y: 291344 },
+  { x: 469823, y: -393257 },
+  { x: -65892, y: -170017 },
+  { x: 23432, y: 544349 },
+  { x: 82927, y: -50956 },
+  { x: 112681, y: -214665 },
+  { x: -184942, y: -155134 },
+  { x: 127578, y: 82987 },
+  { x: 350796, y: 68105 },
+  { x: -80761, y: 82988 },
+  { x: 201978, y: -36074 },
+  { x: -259317, y: 469937 },
+  { x: 365668, y: -125370 },
+  { x: -824829, y: 8575 },
+  { x: 231724, y: -363492 },
+  { x: 68011, y: -735558 },
+  { x: -750439, y: -318843 },
+  { x: -155202, y: -616496 },
+  { x: -199830, y: -289078 },
+  { x: 514497, y: 202048 }
 ];
 
 const SIMPLE_VEHICLE_ALIASES = {
@@ -4736,27 +4722,10 @@ function dedupeCargoPoints(points) {
   return deduped;
 }
 
-function buildCargoGridPoints() {
-  const step = Math.max(40000, Number.isFinite(CARGO_FRENZY_GRID_STEP_UNITS) ? Math.round(CARGO_FRENZY_GRID_STEP_UNITS) : 80000);
-  const points = [];
-  let row = 0;
-
-  for (let y = -660000; y <= 660000; y += step) {
-    const stagger = row % 2 === 0 ? 0 : Math.round(step / 2);
-    for (let x = -560000 + stagger; x <= 560000; x += step) {
-      points.push({ x, y });
-    }
-    row += 1;
-  }
-
-  return points;
-}
-
 function getCargoCandidatePoints() {
-  return dedupeCargoPoints([
-    ...CARGO_FRENZY_HAND_PICKED_POINTS,
-    ...buildCargoGridPoints(),
-  ]);
+  // Curated against the calibrated SCUM map. These locations avoid visible
+  // water, major roads, towns, airports, and orange/yellow POI markings.
+  return dedupeCargoPoints(CARGO_FRENZY_SAFE_POINTS);
 }
 
 function getCargoSafeDistance(flagData) {
@@ -4802,50 +4771,49 @@ function selectSafeCargoFrenzyPoints(flagData, requestedCountOverride = null) {
   const count = Math.max(1, Math.min(25, Number.isFinite(configuredCount) ? Math.floor(configuredCount) : 10));
   const z = Math.round(Number.isFinite(CARGO_FRENZY_Z) ? CARGO_FRENZY_Z : 25000);
   const flags = Array.isArray(flagData?.flags) ? flagData.flags.filter((flag) => flag?.location) : [];
-  const safeDistance = getCargoSafeDistance(flagData);
+  const normalSafeDistance = getCargoSafeDistance(flagData);
+  const relaxedSafeDistance = Math.max(0, normalSafeDistance - Math.min(5000, normalSafeDistance * 0.1));
   const spacing = Number.isFinite(CARGO_FRENZY_DROP_SPACING_UNITS) ? CARGO_FRENZY_DROP_SPACING_UNITS : 75000;
   const candidates = shuffleArray(getCargoCandidatePoints());
-
-  const safeCandidates = [];
-  const blocked = [];
-
-  for (const candidate of candidates) {
-    const nearest = findNearestFlagForPoint(candidate, flags);
-    if (nearest && nearest.distance < safeDistance) {
-      blocked.push({ point: candidate, nearest });
-      continue;
-    }
-
-    safeCandidates.push({
-      ...candidate,
-      z,
-      nearestFlagDistance: nearest?.distance ?? null,
-      nearestFlag: nearest?.flag ?? null,
-    });
-  }
-
   const selected = [];
+  const blocked = [];
+  let usedRelaxedFlagDistance = false;
 
-  for (const candidate of safeCandidates) {
-    if (selected.length >= count) break;
-    if (!isFarEnoughFromSelectedCargo(candidate, selected, spacing)) continue;
-    selected.push(candidate);
+  function addCandidates(requiredDistance) {
+    for (const candidate of candidates) {
+      if (selected.length >= count) break;
+      if (selected.some((existing) => existing.x === candidate.x && existing.y === candidate.y)) continue;
+      const nearest = findNearestFlagForPoint(candidate, flags);
+      if (nearest && nearest.distance < requiredDistance) {
+        blocked.push({ point: candidate, nearest });
+        continue;
+      }
+      if (!isFarEnoughFromSelectedCargo(candidate, selected, spacing)) continue;
+      selected.push({
+        ...candidate,
+        z,
+        nearestFlagDistance: nearest?.distance ?? null,
+        nearestFlag: nearest?.flag ?? null,
+      });
+    }
   }
 
-  // If the spacing rule is the only thing preventing a full frenzy, fill the rest with safe points.
-  for (const candidate of safeCandidates) {
-    if (selected.length >= count) break;
-    if (selected.some((existing) => existing.x === candidate.x && existing.y === candidate.y)) continue;
-    selected.push(candidate);
+  addCandidates(normalSafeDistance);
+  if (selected.length < count && relaxedSafeDistance < normalSafeDistance) {
+    usedRelaxedFlagDistance = true;
+    addCandidates(relaxedSafeDistance);
   }
 
   return {
     requestedCount: count,
     selected,
-    safeDistance,
+    safeDistance: usedRelaxedFlagDistance ? relaxedSafeDistance : normalSafeDistance,
+    normalSafeDistance,
+    relaxedSafeDistance,
+    usedRelaxedFlagDistance,
     spacing,
     totalCandidates: candidates.length,
-    safeCandidateCount: safeCandidates.length,
+    safeCandidateCount: selected.length,
     blockedCount: blocked.length,
     flagsChecked: flags.length,
     closestBlocked: blocked.sort((a, b) => a.nearest.distance - b.nearest.distance).slice(0, 3),
@@ -4946,25 +4914,24 @@ async function runCargoFrenzy(message, options = {}) {
   const plan = selectSafeCargoFrenzyPoints(flagData, requestedCount);
   const points = plan.selected;
 
-  if (points.length < plan.requestedCount) {
+  if (points.length === 0) {
     await message.reply(clampDiscord([
       `📦 **Cargo ${isTest ? "Test" : "Frenzy"} cancelled.**`,
-      "Watcher could not find enough safe drop zones away from player bases.",
-      "",
-      `Safe drops found: ${points.length}/${plan.requestedCount}`,
+      "Watcher could not find any approved drop zone far enough from player bases.",
       "No cargo drops were launched.",
     ].join("\n"))).catch(() => {});
+    console.warn("Cargo Frenzy cancelled - no safe locations", JSON.stringify(plan));
+    return;
+  }
 
-    console.warn("Cargo Frenzy cancelled - not enough safe locations", JSON.stringify({
+  if (points.length < plan.requestedCount) {
+    console.warn("Cargo Frenzy reduced to available safe locations", JSON.stringify({
       requested: plan.requestedCount,
       found: points.length,
       flagsChecked: plan.flagsChecked,
       safeDistance: plan.safeDistance,
-      totalCandidates: plan.totalCandidates,
-      blockedCount: plan.blockedCount,
-      closestBlocked: plan.closestBlocked.slice(0, 5),
+      usedRelaxedFlagDistance: plan.usedRelaxedFlagDistance,
     }));
-    return;
   }
 
 
@@ -5006,7 +4973,7 @@ async function runCargoFrenzy(message, options = {}) {
         `Cargo drops launched: **${successCount}/${points.length}**`,
         "",
         "Cargo drops have been scattered across the island.",
-        "Watcher checked live base flags first and avoided unsafe drop zones.",
+        "Watcher used calibrated land-safe locations and checked live base flags first.",
         "",
         "Move fast, Exiles. Bring ammo. Bring bad decisions.",
       ];

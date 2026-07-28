@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const http = require('http');
 const { URL } = require('url');
 const { createClient } = require('@supabase/supabase-js');
+const { MAP_CALIBRATION } = require('./mapCalibration');
 const { getPortalCatalog, buyPackageForPortal } = require('./shop');
 const { portalCreateRental } = require('./rentals');
 const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance } = require('./insurance');
@@ -47,18 +48,8 @@ const STAFF_ROLE_NAMES = new Set(
     .filter(Boolean)
 );
 
-// Calibrated from the original sector map, then scaled onto the new 2048x2048 high-resolution map.
-// The new map keeps the same world extents, with sector grid/labels overlaid for easier navigation.
-const MAP_CALIBRATION = {
-  width: 2048,
-  height: 2048,
-  uX: -0.0013376289825443235,
-  uY: -1.819491533437014e-7,
-  u0: 832.1871053437013,
-  vX: 2.2322445876635514e-8,
-  vY: -0.001339517672872274,
-  v0: 830.3157528722742,
-};
+// Shared calibration is maintained in mapCalibration.js and used across Watcher.
+
 
 const WORLD = {
   minX: Number(process.env.TRACKER_WORLD_MIN_X || '-900000'),
@@ -472,7 +463,8 @@ async function buildPortalOverview(session) {
     player:{steamId:steamId||null,name:link?.scum_name||playerDetail?.characterName||playerDetail?.name||onlineSample?.name||null,online:!!onlineSample,cash:playerCash(playerDetail),fame:playerFame(playerDetail)},
     vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
     airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,adminTransactions,
-    shopCatalog:getPortalCatalog()
+    shopCatalog:getPortalCatalog(),
+    mapCalibration: MAP_CALIBRATION
   };
 }
 const PORTAL_SECTORS = {D4:[493707,525891],D3:[193707,525891],D2:[-106293,525891],D1:[-406293,525891],D0:[-693133,480558],C4:[493707,225891],C3:[193707,225891],C2:[-152325,290058],C1:[-406293,225891],C0:[-706293,225891],B4:[493707,-74109],B3:[193707,-74109],B2:[-123750,-166083],B1:[-406293,-74109],B0:[-825081,-141941],A4:[493707,-374109],A3:[193707,-374109],A2:[-106293,-374109],A1:[-406293,-374109],A0:[-706293,-374109],Z4:[410705,-755571],Z3:[193707,-674109],Z2:[-106293,-674109],Z1:[-406293,-674109],Z0:[-712773,-706255]};
