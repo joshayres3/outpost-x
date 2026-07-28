@@ -108,13 +108,22 @@ async function prepareTaxi(sector){
   }catch(e){toast(e.message)}
 }
 async function sendTaxi(sector){
-  if(!confirm(`Are you wearing the parachute and ready to launch to sector ${sector}? You will be charged $1,000 now.`))return;
+  if(!confirm(`Are you wearing the parachute and ready to launch to sector ${sector}? After confirming, Watcher will wait 10 seconds so you can return to SCUM. You will be charged $1,000 immediately before teleport.`))return;
+  const panel=$('taxiSelectionPanel');
+  let remaining=10;
+  if(panel)panel.innerHTML=`<div class="taxiSelectedSector prepared launching"><small>AIRLIFT LAUNCH SEQUENCE</small><strong>Sector ${sector}</strong><span>Return to the SCUM game window now. Launching in <b id="taxiCountdown">${remaining}</b> seconds…</span></div><button class="btn primary taxiConfirm" disabled>🚁 Launch Sequence Active</button>`;
+  const timer=setInterval(()=>{remaining=Math.max(0,remaining-1);const el=$('taxiCountdown');if(el)el.textContent=remaining;},1000);
   try{
     await api('/portal/api/action/taxi/send',{method:'POST',body:JSON.stringify({sector})});
+    clearInterval(timer);
     state.taxiPrepared=null;state.taxiSector=null;
     toast(`Airlift launched to ${sector}. Deploy your parachute and land safely.`);
     await refresh();render();
-  }catch(e){toast(e.message)}
+  }catch(e){
+    clearInterval(timer);
+    toast(e.message);
+    const panelNow=$('taxiSelectionPanel');if(panelNow)panelNow.innerHTML=taxiSelectionMarkup(sector,state.data);
+  }
 }
 async function cancelTaxi(){
   try{await api('/portal/api/action/taxi/cancel',{method:'POST',body:'{}'});}catch{}

@@ -86,6 +86,7 @@ const portalAirliftLaunches = new Set();
 const PORTAL_AIRLIFT_PENDING_MS = 10 * 60 * 1000;
 const PORTAL_AIRLIFT_PRICE = Math.max(0, Number(process.env.AIRLIFT_PRICE || '1000'));
 const PORTAL_AIRLIFT_ALTITUDE_Z = Number(process.env.AIRLIFT_ALTITUDE_Z || '150000');
+const PORTAL_AIRLIFT_LAUNCH_DELAY_MS = Math.max(0, Number(process.env.AIRLIFT_LAUNCH_DELAY_MS || '10000'));
 const PORTAL_AIRLIFT_PARACHUTE_ITEM = process.env.AIRLIFT_PARACHUTE_ITEM || 'BeginPlay_Parachute';
 
 function getDb() {
@@ -531,7 +532,17 @@ async function portalTaxiSend(session, body) {
   if (!pending || pending.sector !== sector) throw new Error('This prepared Airlift Taxi expired. Prepare a new ride first.');
   portalAirliftLaunches.add(key);
   try {
-    const { link, player } = await loadPortalAirliftPlayer(session);
+    let { link, player } = await loadPortalAirliftPlayer(session);
+    if (String(link.steam_id) !== String(pending.steamId)) throw new Error('The linked SCUM account changed. Prepare the airlift again.');
+    await verifyPortalAirliftReady(session, link, player);
+
+    // Give the player time to return from the browser to the SCUM game window.
+    if (PORTAL_AIRLIFT_LAUNCH_DELAY_MS > 0) {
+      await new Promise((resolve) => setTimeout(resolve, PORTAL_AIRLIFT_LAUNCH_DELAY_MS));
+    }
+
+    // Re-check online status, linked account, cooldown, and cash immediately before charging.
+    ({ link, player } = await loadPortalAirliftPlayer(session));
     if (String(link.steam_id) !== String(pending.steamId)) throw new Error('The linked SCUM account changed. Prepare the airlift again.');
     const before = await verifyPortalAirliftReady(session, link, player);
     const [x, y] = PORTAL_SECTORS[sector];
