@@ -13,6 +13,19 @@ const ADMIN_CH = process.env.ADMIN_CHANNEL_ID || "1518059656302301245";
 const EVENTS_CH = process.env.EVENTS_CHANNEL_ID || "1516324485865799690";
 const EXILES_ROLE_ID = process.env.EXILES_ROLE_ID || "1516270776272031796";
 const SERVER_TZ = process.env.SERVER_TIMEZONE || "America/New_York";
+const MAX_EVENT_IMAGES = 5;
+const EVENT_MAP = {
+  width: 2048,
+  height: 2048,
+  uX: -0.0013376289825443235,
+  uY: -1.819491533437014e-7,
+  u0: 832.1871053437013,
+  vX: 2.2322445876635514e-8,
+  vY: -0.001339517672872274,
+  v0: 830.3157528722742,
+};
+const EVENT_SECTOR_ROWS = ['D', 'C', 'B', 'A', 'Z'];
+const EVENT_SECTOR_COLS = ['4', '3', '2', '1', '0'];
 
 const createSessions = {};
 let schedulerStarted = false;
@@ -187,17 +200,58 @@ function eventButtons(eventId, disabled = false) {
   ];
 }
 
-function buildEventEmbed(event, rsvpCount = 0, closed = false) {
-  const statusLine = closed ? "\n\n**Status:** Closed" : "";
+function parseEventCoordinates(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { raw: null, x: null, y: null, z: null };
+  const position = raw.split('|')[0];
+  const match = position.match(/\{?\s*X=([-+]?\d+(?:\.\d+)?)\s+Y=([-+]?\d+(?:\.\d+)?)\s+Z=([-+]?\d+(?:\.\d+)?)/i);
+  if (!match) throw new Error('Coordinates must use the SCUM format: {X=221249.375 Y=-291857.969 Z=17184.834|P=348.760956 Y=160.196045 R=0.000000}');
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  const z = Number(match[3]);
+  if (![x, y, z].every(Number.isFinite)) throw new Error('The event coordinates are invalid.');
+  return { raw: raw.slice(0, 500), x, y, z };
+}
 
-  return new EmbedBuilder()
+function eventMapData(event) {
+  const x = Number(event?.coordinate_x);
+  const y = Number(event?.coordinate_y);
+  const z = Number(event?.coordinate_z);
+  if (![x, y, z].every(Number.isFinite)) return null;
+  const mapX = EVENT_MAP.uX * x + EVENT_MAP.uY * y + EVENT_MAP.u0;
+  const mapY = EVENT_MAP.vX * x + EVENT_MAP.vY * y + EVENT_MAP.v0;
+  if (mapX < 0 || mapY < 0 || mapX > EVENT_MAP.width || mapY > EVENT_MAP.height) return null;
+  const tileW = EVENT_MAP.width / 5;
+  const tileH = EVENT_MAP.height / 5;
+  const col = Math.max(0, Math.min(4, Math.floor(mapX / tileW)));
+  const row = Math.max(0, Math.min(4, Math.floor(mapY / tileH)));
+  return {
+    map_x: mapX,
+    map_y: mapY,
+    sector_col: col,
+    sector_row: row,
+    sector: `${EVENT_SECTOR_ROWS[row]}${EVENT_SECTOR_COLS[col]}`,
+    local_x_pct: ((mapX - col * tileW) / tileW) * 100,
+    local_y_pct: ((mapY - row * tileH) / tileH) * 100,
+  };
+}
+
+function buildEventEmbeds(event, rsvpCount = 0, closed = false) {
+  const statusLine = closed ? "\n\n**Status:** Closed" : "";
+  const map = eventMapData(event);
+  const locationLines = [`📍 **Location:** ${event.location}`];
+  if (map) {
+    locationLines.push(`🗺️ **Sector:** ${map.sector}`);
+    locationLines.push(`🎯 **Coordinates:** X ${Number(event.coordinate_x).toFixed(3)} • Y ${Number(event.coordinate_y).toFixed(3)} • Z ${Number(event.coordinate_z).toFixed(3)}`);
+  }
+  const main = new EmbedBuilder()
     .setTitle(`${closed ? "🔒" : "📅"} Outpost X Event`)
     .setDescription(
       [
         `## ${event.title}`,
         "",
         `🕒 **Server Time:** ${formatServerTime(event.event_time)}`,
-        `📍 **Location:** ${event.location}`,
+        ...locationLines,
         `🔁 **Type:** ${recurrenceLabel(event.recurrence)}`,
         `👥 **RSVPs:** ${rsvpCount}`,
         "",
@@ -208,16 +262,31 @@ function buildEventEmbed(event, rsvpCount = 0, closed = false) {
     )
     .setColor(closed ? 0x6b7280 : 0x3b82f6)
     .setFooter({ text: "Outpost X Events" });
+  const images = Array.isArray(event.image_urls) ? event.image_urls.filter(Boolean).slice(0, MAX_EVENT_IMAGES) : [];
+  return [main, ...images.map((url, index) => new EmbedBuilder().setColor(closed ? 0x6b7280 : 0x3b82f6).setImage(url).setFooter({ text: `${event.title} • Image ${index + 1}` }))];
+}
+
+function decodePortalEventImages(images, prefix) {
+  if (!Array.isArray(images)) return [];
+  return images.slice(0, MAX_EVENT_IMAGES).map((item, index) => {
+    const raw = String(item?.data || '');
+    const match = raw.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
+    if (!match) throw new Error(`Image ${index + 1} is invalid.`);
+    const buffer = Buffer.from(match[2], 'base64');
+    if (!buffer.length || buffer.length > 8 * 1024 * 1024) throw new Error(`Image ${index + 1} must be smaller than 8 MB.`);
+    const ext = String(item?.name || '').match(/\.[a-z0-9]{2,5}$/i)?.[0] || (match[1].includes('jpeg') ? '.jpg' : '.png');
+    return { attachment: buffer, name: `${prefix}-${index + 1}${ext}` };
+  });
 }
 
 async function postEvent(bot, db, event) {
   const channel = await bot.channels.fetch(EVENTS_CH);
   const rsvpCount = await getRsvpCount(db, event.id);
-  const embed = buildEventEmbed(event, rsvpCount, false);
+  const embeds = buildEventEmbeds(event, rsvpCount, false);
 
   const msg = await channel.send({
     content: `<@&${EXILES_ROLE_ID}>`,
-    embeds: [embed],
+    embeds,
     components: eventButtons(event.id, false),
     allowedMentions: {
       roles: [EXILES_ROLE_ID],
@@ -248,7 +317,7 @@ async function updateEventPost(bot, db, event, closed = false) {
     const count = await getRsvpCount(db, event.id);
 
     await msg.edit({
-      embeds: [buildEventEmbed(event, count, closed || event.status !== "open")],
+      embeds: buildEventEmbeds(event, count, closed || event.status !== "open"),
       components: eventButtons(event.id, closed || event.status !== "open"),
     });
   } catch (err) {
@@ -449,7 +518,7 @@ function buildPreviewEmbed(session) {
     recurrence: session.data.recurrence,
   };
 
-  return buildEventEmbed(fakeEvent, 0, false).setTitle("📋 Event Preview");
+  return buildEventEmbeds(fakeEvent, 0, false)[0].setTitle("📋 Event Preview");
 }
 
 async function showPreview(interaction, session) {
@@ -656,7 +725,7 @@ async function handleDetails(interaction, db, eventId) {
     const count = await getRsvpCount(db, eventId);
 
     await replyOrEdit(interaction, {
-      embeds: [buildEventEmbed(event, count, event.status !== "open")],
+      embeds: buildEventEmbeds(event, count, event.status !== "open"),
       flags: MessageFlags.Ephemeral,
     });
   } catch (err) {
@@ -1002,6 +1071,11 @@ async function closeAndRepostIfNeeded(bot, db, event) {
       recurrence: event.recurrence,
       status: "open",
       created_by: event.created_by,
+      image_urls: Array.isArray(event.image_urls) ? event.image_urls : [],
+      coordinate_raw: event.coordinate_raw || null,
+      coordinate_x: event.coordinate_x ?? null,
+      coordinate_y: event.coordinate_y ?? null,
+      coordinate_z: event.coordinate_z ?? null,
     })
     .select()
     .single();
@@ -1166,6 +1240,7 @@ async function portalListEvents(ctx) {
     my_rsvp: mine.has(String(event.id)),
     formatted_time: formatServerTime(event.event_time),
     recurrence_label: recurrenceLabel(event.recurrence),
+    map: eventMapData(event),
   }));
 }
 
@@ -1191,6 +1266,7 @@ async function portalRsvpEvent(ctx, eventId, attending) {
 
 async function portalCreateEvent(ctx, body) {
   if (!ctx.isAdmin) throw new Error('Admin access required.');
+  const coordinates = parseEventCoordinates(body.coordinates);
   const payload = {
     title: portalEventText(body.title, 100, 'Event title'),
     description: portalEventText(body.description, 2000, 'Description'),
@@ -1200,6 +1276,11 @@ async function portalCreateEvent(ctx, body) {
     recurrence: portalEventRecurrence(body.recurrence),
     status: 'open',
     created_by: String(ctx.discordId),
+    image_urls: [],
+    coordinate_raw: coordinates.raw,
+    coordinate_x: coordinates.x,
+    coordinate_y: coordinates.y,
+    coordinate_z: coordinates.z,
     reminder_24h_sent: false,
     reminder_1h_sent: false,
     reminder_start_sent: false,
@@ -1207,12 +1288,17 @@ async function portalCreateEvent(ctx, body) {
   const { data: event, error } = await ctx.db.from('events').insert(payload).select().single();
   if (error) throw error;
   try {
-    await postEvent(ctx.bot, ctx.db, event);
+    const message = await postEvent(ctx.bot, ctx.db, event);
+    const postedEvent = { ...event, channel_id: message.channelId, message_id: message.id };
+    if (Array.isArray(body.images) && body.images.length) {
+      const updated = await portalSetEventImages(ctx, postedEvent, body.images);
+      return { ok: true, event: updated };
+    }
+    return { ok: true, event: postedEvent };
   } catch (err) {
     await ctx.db.from('events').delete().eq('id', event.id);
     throw err;
   }
-  return { ok: true, event };
 }
 
 async function portalUpdateEvent(ctx, body) {
@@ -1221,20 +1307,60 @@ async function portalUpdateEvent(ctx, body) {
   if (!id) throw new Error('Event ID is required.');
   const { data: existing, error: loadError } = await ctx.db.from('events').select('*').eq('id', id).single();
   if (loadError) throw loadError;
+  const coordinates = parseEventCoordinates(body.coordinates);
   const payload = {
     title: portalEventText(body.title, 100, 'Event title'),
     description: portalEventText(body.description, 2000, 'Description'),
     location: portalEventText(body.location, 200, 'Location'),
     event_time: portalEventIso(body.eventTime),
     recurrence: portalEventRecurrence(body.recurrence),
+    coordinate_raw: coordinates.raw,
+    coordinate_x: coordinates.x,
+    coordinate_y: coordinates.y,
+    coordinate_z: coordinates.z,
     reminder_24h_sent: false,
     reminder_1h_sent: false,
     reminder_start_sent: false,
   };
   const { data: event, error } = await ctx.db.from('events').update(payload).eq('id', id).select().single();
   if (error) throw error;
-  await updateEventPost(ctx.bot, ctx.db, { ...existing, ...event }, event.status !== 'open');
-  return { ok: true, event };
+  let finalEvent = { ...existing, ...event };
+  if (body.replaceImages === true) {
+    finalEvent = await portalSetEventImages(ctx, finalEvent, Array.isArray(body.images) ? body.images : []);
+  } else {
+    await updateEventPost(ctx.bot, ctx.db, finalEvent, event.status !== 'open');
+  }
+  return { ok: true, event: finalEvent };
+}
+
+async function portalSetEventImages(ctx, event, images) {
+  if (!ctx.isAdmin) throw new Error('Admin access required.');
+  if (!event?.channel_id || !event?.message_id) throw new Error('The Discord event post could not be found.');
+  const channel = await ctx.bot.channels.fetch(String(event.channel_id)).catch(() => null);
+  const message = channel?.messages ? await channel.messages.fetch(String(event.message_id)).catch(() => null) : null;
+  if (!message) throw new Error('The Discord event post could not be found.');
+  const files = decodePortalEventImages(images, `event-${event.id}`);
+  const count = await getRsvpCount(ctx.db, event.id);
+  let urls = [];
+  if (files.length) {
+    const uploaded = await message.edit({
+      embeds: buildEventEmbeds({ ...event, image_urls: [] }, count, event.status !== 'open'),
+      components: eventButtons(event.id, event.status !== 'open'),
+      files,
+      attachments: [],
+    });
+    urls = [...uploaded.attachments.values()].map((attachment) => attachment.url).slice(0, MAX_EVENT_IMAGES);
+  } else {
+    await message.edit({
+      embeds: buildEventEmbeds({ ...event, image_urls: [] }, count, event.status !== 'open'),
+      components: eventButtons(event.id, event.status !== 'open'),
+      attachments: [],
+    });
+  }
+  const { data: updated, error } = await ctx.db.from('events').update({ image_urls: urls }).eq('id', event.id).select('*').single();
+  if (error) throw error;
+  await updateEventPost(ctx.bot, ctx.db, updated, updated.status !== 'open');
+  return updated;
 }
 
 async function portalSetEventStatus(ctx, body) {
