@@ -1959,6 +1959,31 @@ async function buildVehiclePagesBySteamId(steamId, perPage = 5) {
   return buildVehicleReportPagesForPlayer(playerResult.player, String(steamId || ""), perPage);
 }
 
+async function getVehiclesForSteamIdStructured(steamId) {
+  const playerResult = await getPlayerForLookup(String(steamId || ""));
+  if (playerResult.type !== "single") return [];
+
+  const player = playerResult.player;
+  const playerSteamId = String(player.userId || steamId || "").trim();
+  const vehicleData = await ggconGet("/vehicles.json");
+  const vehicles = Array.isArray(vehicleData?.vehicles) ? vehicleData.vehicles : [];
+  const squad = await getSquadForSteamId(playerSteamId);
+  const squadMemberSteamIds = getSquadMemberSteamIds(squad);
+  const hasSquad = !!(squad && squadMemberSteamIds.size > 0);
+
+  return (hasSquad
+    ? vehicles.filter((vehicle) => squadMemberSteamIds.has(String(vehicle.ownerSteamId || "")))
+    : vehicles.filter((vehicle) => String(vehicle.ownerSteamId || "") === playerSteamId)
+  ).map((vehicle) => ({
+    ...vehicle,
+    id: vehicle.id ?? vehicle.vehicleId ?? null,
+    name: vehicle.name || vehicle.class || vehicle.vehicleName || "Vehicle",
+    vehicleId: vehicle.vehicleId ?? vehicle.id ?? null,
+    ownerSteamId: vehicle.ownerSteamId || null,
+    squadName: hasSquad ? (squad.name || "Squad") : null,
+  }));
+}
+
 async function buildVehiclesBySteamId(steamId) {
   const pages = await buildVehiclePagesBySteamId(steamId, 5);
   return pages[0];
@@ -6541,6 +6566,7 @@ module.exports = {
   // Shared by the button-driven player/admin panels.
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
+  getVehiclesForSteamIdStructured,
   buildVehiclePagesBySteamId,
   buildSquadBySteamId,
   buildNearVehiclesBySteamId,

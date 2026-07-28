@@ -14,6 +14,7 @@ const { portalListEvents, portalRsvpEvent, portalCreateEvent, portalUpdateEvent,
 const {
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
+  getVehiclesForSteamIdStructured,
   buildSquadBySteamId,
   buildNearVehiclesBySteamId,
   getPlayerForLookup,
@@ -419,14 +420,18 @@ function currentPlayerBySteam(steamId) {
   const p = latestOnline.get(String(steamId));
   return p || null;
 }
-function playerCash(p){ const n=Number(p?.cash ?? p?.currency ?? p?.money ?? p?.balance); return Number.isFinite(n)?n:null; }
+function playerCash(p){ const n=Number(p?.accountBalance ?? p?.account_balance ?? p?.cash ?? p?.currency ?? p?.money ?? p?.balance ?? p?.wallet?.balance ?? p?.account?.balance); return Number.isFinite(n)?n:null; }
 function playerFame(p){ const n=Number(p?.famePoints ?? p?.fame ?? p?.fame_points); return Number.isFinite(n)?n:null; }
 async function buildPortalOverview(session) {
   const link = await portalLink(session);
   const steamId = String(link?.steam_id || '');
-  let live = steamId ? currentPlayerBySteam(steamId) : null;
+  const onlineSample = steamId ? currentPlayerBySteam(steamId) : null;
+  let playerDetail = onlineSample;
   if (steamId) {
-    try { const d=await ggconGet(`/players/${encodeURIComponent(steamId)}.json`); live=d?.player||d; } catch {}
+    try {
+      const d = await ggconGet(`/players/${encodeURIComponent(steamId)}.json`);
+      playerDetail = d?.player || d?.data?.player || d?.data || d || onlineSample;
+    } catch {}
   }
   const cutoff15 = new Date(Date.now()-15*86400000).toISOString();
   const [insurance,rentals,rides,shops,myShop,squads,mySquad,lore,myLore,transactions,adminTransactions,events] = await Promise.all([
@@ -445,10 +450,26 @@ async function buildPortalOverview(session) {
   ]);
   const lastRide=rides[0]?.completed_at?new Date(rides[0].completed_at):null; const nextRide=lastRide?new Date(lastRide.getTime()+3600000):null;
   const vehicles=[];
-  try { if(steamId){const d=await ggconGet(`/players/${encodeURIComponent(steamId)}.json`); const arr=d?.vehicles||d?.player?.vehicles||[]; for(const x of arr) vehicles.push({...x,id:x.id||x.vehicleId,name:x.name||x.vehicleName,insured:insurance.some(i=>String(i.vehicle_id)===String(x.id||x.vehicleId)&&i.status==='active')});} } catch{}
+  try {
+    if (steamId) {
+      const arr = await getVehiclesForSteamIdStructured(steamId);
+      for (const x of arr) {
+        const vehicleId = x.id ?? x.vehicleId;
+        vehicles.push({
+          ...x,
+          id: vehicleId,
+          vehicleId,
+          name: x.name || x.vehicleName || x.class || 'Vehicle',
+          insured: insurance.some((i) => String(i.vehicle_id) === String(vehicleId) && ['active','claim_available'].includes(String(i.status))),
+        });
+      }
+    }
+  } catch (err) {
+    console.warn(`⚠️ Portal vehicle lookup failed for ${steamId}: ${err.message}`);
+  }
   return {
     me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,sessionExpiresAt:new Date(session.expiresAt).toISOString()},
-    player:{steamId:steamId||null,name:link?.scum_name||live?.characterName||live?.name||null,online:!!live,cash:playerCash(live),fame:playerFame(live)},
+    player:{steamId:steamId||null,name:link?.scum_name||playerDetail?.characterName||playerDetail?.name||onlineSample?.name||null,online:!!onlineSample,cash:playerCash(playerDetail),fame:playerFame(playerDetail)},
     vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
     airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,adminTransactions,
     shopCatalog:getPortalCatalog()
