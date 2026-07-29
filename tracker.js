@@ -469,7 +469,7 @@ async function buildPortalOverview(session) {
   }
   const cutoff15 = new Date(Date.now()-15*86400000).toISOString();
   const permissions = session.isAdmin ? await getAdminPermissions(getDb(), session.guildId) : {};
-  const [insurance,rentals,rides,shops,myShop,squads,mySquad,lore,myLore,transactions,adminTransactions,events] = await Promise.all([
+  const [insurance,rentals,rides,shops,myShop,squads,mySquad,lore,myLore,transactions,events] = await Promise.all([
     steamId?safeRows('watcher_vehicle_insurance',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('purchased_at',{ascending:false}).limit(100)):[],
     steamId?safeRows('watcher_dirtbike_rentals',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('created_at',{ascending:false}).limit(5)):[],
     steamId?safeRows('watcher_airlift_rides',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('completed_at',{ascending:false}).limit(5)):[],
@@ -480,7 +480,6 @@ async function buildPortalOverview(session) {
     safeRows('watcher_player_lore',q=>{let z=q.select('*').eq('guild_id',String(session.guildId));if(!session.isAdmin)z=z.eq('is_published',true);return z.order('updated_at',{ascending:false}).limit(250)}),
     safeRows('watcher_player_lore',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('owner_id',String(session.discordId)).limit(1)),
     steamId?safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).gte('created_at',cutoff15).order('created_at',{ascending:false}).limit(500)):[],
-    (session.isOwner||permissions.view_transactions)?safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).gte('created_at',cutoff15).order('created_at',{ascending:false}).limit(1000)):[],
     portalListEvents({db:getDb(),bot:botRef,guildId:String(session.guildId),discordId:String(session.discordId),isAdmin:!!session.isAdmin}),
   ]);
   const lastRide=rides[0]?.completed_at?new Date(rides[0].completed_at):null; const nextRide=lastRide?new Date(lastRide.getTime()+3600000):null;
@@ -507,12 +506,61 @@ async function buildPortalOverview(session) {
     me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,permissions,permissionCatalog:session.isOwner?permissionCatalog():[],sessionExpiresAt:new Date(session.expiresAt).toISOString()},
     player:{steamId:steamId||null,name:link?.scum_name||playerDetail?.characterName||playerDetail?.name||onlineSample?.name||null,online:!!onlineSample,cash:playerCash(playerDetail),fame:playerFame(playerDetail)},
     vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
-    airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,adminTransactions,
+    airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,
     shopCatalog,
     mapCalibration: MAP_CALIBRATION
   };
 }
 const PORTAL_SECTORS = {D4:[493707,525891],D3:[193707,525891],D2:[-106293,525891],D1:[-406293,525891],D0:[-693133,480558],C4:[493707,225891],C3:[193707,225891],C2:[-152325,290058],C1:[-406293,225891],C0:[-706293,225891],B4:[493707,-74109],B3:[193707,-74109],B2:[-123750,-166083],B1:[-406293,-74109],B0:[-825081,-141941],A4:[493707,-374109],A3:[193707,-374109],A2:[-106293,-374109],A1:[-406293,-374109],A0:[-706293,-374109],Z4:[410705,-755571],Z3:[193707,-674109],Z2:[-106293,-674109],Z1:[-406293,-674109],Z0:[-712773,-706255]};
+
+function cleanLedgerSearch(value) {
+  return String(value || '').trim().replace(/[,%()]/g, ' ').replace(/\s+/g, ' ').slice(0, 100);
+}
+async function fetchAdminTransactionPage(session, url) {
+  await requirePermission(session, 'view_transactions');
+  const pageSize = Math.max(10, Math.min(100, Number(url.searchParams.get('pageSize') || 25)));
+  const page = Math.max(1, Number(url.searchParams.get('page') || 1));
+  const category = String(url.searchParams.get('category') || 'all').toLowerCase();
+  const status = String(url.searchParams.get('status') || 'all').toLowerCase();
+  const search = cleanLedgerSearch(url.searchParams.get('search'));
+  const cutoff = new Date(Date.now() - 15 * 86400000).toISOString();
+
+  let query = getDb()
+    .from(TRANSACTIONS_TABLE)
+    .select('*', { count: 'exact' })
+    .eq('guild_id', String(session.guildId))
+    .gte('created_at', cutoff);
+
+  if (category === 'server_shop') query = query.eq('type', 'server_shop');
+  else if (category === 'insurance') query = query.eq('type', 'vehicle_insurance');
+  else if (category === 'taxi') query = query.eq('type', 'airlift_taxi');
+  else if (category === 'rental') query = query.eq('type', 'dirtbike_rental');
+  else if (category === 'refund') query = query.eq('type', 'refund');
+  else if (category === 'admin') query = query.like('type', 'admin_%');
+
+  if (status !== 'all') {
+    if (status === 'refunded') query = query.in('refund_status', ['partially_refunded', 'fully_refunded']);
+    else query = query.eq('status', status);
+  }
+  if (search) {
+    const pattern = `%${search}%`;
+    query = query.or(`player_name.ilike.${pattern},steam_id.ilike.${pattern},title.ilike.${pattern},type.ilike.${pattern}`);
+  }
+
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+  const { data, error, count } = await query.order('created_at', { ascending: false }).range(from, to);
+  if (error) throw error;
+  const total = Number(count || 0);
+  return {
+    transactions: data || [],
+    total,
+    page,
+    pageSize,
+    pages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
 async function portalTransaction(v){
   const row={guild_id:String(v.guildId),discord_id:String(v.discordId),steam_id:String(v.steamId),player_name:v.playerName||null,type:v.type,title:v.title,amount:Number(v.amount||0),currency:'cash',status:'completed',details:v.details||{},balance_before:v.before??null,balance_after:v.after??null,refundable:Number(v.amount)<0,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
   const {data,error}=await getDb().from(TRANSACTIONS_TABLE).insert(row).select('*').single(); if(error) console.warn('⚠️ Transaction insert failed:',error.message); return data;
@@ -842,6 +890,10 @@ async function handleHttp(req, res) {
   if (url.pathname === '/portal/api/admin/adjust' && req.method === 'POST') { try{await requirePermission(session,'adjust_balances');return json(res,200,await adminAdjust(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/jail' && req.method === 'POST') { try{await requirePermission(session,'jail_release');return json(res,200,await adminJailAction(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/moderate' && req.method === 'POST') { try{const body=await readJsonBody(req);await requirePermission(session,body.action==='ban'||body.action==='unban'?'ban_unban':'search_players');return json(res,200,await adminModeration(session,body));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/transactions' && req.method === 'GET') {
+    try { return json(res, 200, await fetchAdminTransactionPage(session, url)); }
+    catch (err) { return json(res, err.message?.toLowerCase().includes('permission') ? 403 : 400, { error: err.message }); }
+  }
   if (url.pathname === '/portal/api/admin/refund' && req.method === 'POST') {
     try { await requirePermission(session,'issue_refunds'); return json(res, 200, await portalRefund(session, await readJsonBody(req))); }
     catch (err) { return json(res, 400, { error: err.message }); }
