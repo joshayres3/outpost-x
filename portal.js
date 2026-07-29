@@ -149,7 +149,28 @@ async function cancelTaxi(){
 }
 function renderRental(v,d){title('TEMPORARY TRANSPORT','Dirtbike Rental');const r=d.rental||{};v.innerHTML=`<div class="grid"><div class="card span8"><h3>30-Minute Dirtbike Rental</h3><p style="color:var(--muted)">Cost: <b>${money(500)}</b>. Watcher spawns a tracked dirtbike for 30 minutes and removes it automatically when time expires.</p><button class="btn primary" onclick="requestRental()" ${r.status==='active'?'disabled':''}>${r.status==='active'?'Rental Active':'Rent Dirtbike'}</button></div><div class="card span4"><h3>Rental Status</h3>${statusRow('Status',r.status||'None')}${statusRow('Vehicle ID',r.vehicle_id||'—')}${statusRow('Expires',fmt(r.expires_at))}</div></div>`}
 async function requestRental(){if(!confirm('Rent a dirtbike for $500?'))return;try{await api('/portal/api/action/rental',{method:'POST',body:'{}'});toast('Dirtbike rental started.');await refresh()}catch(e){toast(e.message)}}
-function renderServerShop(v,d){title('WATCHER SUPPLY NETWORK','Server Shop');v.innerHTML=`<div class="grid">${(d.shopCatalog||[]).map(x=>`<div class="card span4 shopproduct"><div style="font-size:34px">${esc(x.emoji||'📦')}</div><h3>${esc(x.name)}</h3><p style="color:var(--muted);min-height:42px">${esc(x.description||'Emergency supply package')}</p><div class="list" style="margin:12px 0">${(x.contents||[]).map(i=>`<div class="row"><span>${esc(i.label)}</span><b>×${Number(i.qty||1)}</b></div>`).join('')}</div><b style="font-size:24px">${money(x.price)}</b><div style="margin-top:14px"><button class="btn primary" onclick="buyItem('${esc(x.id)}','${esc(x.name)}',${Number(x.price||0)})">Purchase & Deliver</button></div></div>`).join('')||'<div class="card span12 empty">No server-shop packages are configured.</div>'}</div>`}
+function renderServerShop(v,d){
+  title('WATCHER SUPPLY NETWORK','Server Shop');
+  const canManage=state.me?.isOwner||state.me?.permissions?.manage_server_shop;
+  const canEdit=state.me?.isOwner||state.me?.permissions?.edit_shop_products;
+  const manager=canManage?`<div class="card span12 manageHero"><div><small>${state.me?.isOwner?'OWNER EYES ONLY':'AUTHORIZED SHOP CONTROL'}</small><h2>Server Shop Manager</h2><p>Edit products, prices, quantities, package contents, display order, and availability from the visual inventory manager.</p></div><button class="btn primary" onclick="openServerShopManagerFromStore()">Manage Server Shop</button></div>`:'';
+  v.innerHTML=`<div class="grid">${manager}${(d.shopCatalog||[]).map(x=>`<div class="card span4 shopproduct"><div style="font-size:34px">${esc(x.emoji||'📦')}</div><h3>${esc(x.name)}</h3><p style="color:var(--muted);min-height:42px">${esc(x.description||'Emergency supply package')}</p><div class="list" style="margin:12px 0">${(x.contents||[]).map(i=>`<div class="row"><span>${esc(i.label)}</span><b>×${Number(i.qty||1)}</b></div>`).join('')}</div><b style="font-size:24px">${money(x.price)}</b><div class="adminActions" style="margin-top:14px"><button class="btn primary" onclick="buyItem('${esc(x.id)}','${esc(x.name)}',${Number(x.price||0)})">Purchase & Deliver</button>${canEdit?`<button class="btn" onclick="editServerShopProductFromStore('${esc(x.id)}')">Edit Product</button>`:''}</div></div>`).join('')||'<div class="card span12 empty">No server-shop packages are configured.</div>'}</div>`
+}
+function openServerShopManagerFromStore(){
+  if(!(state.me?.isOwner||state.me?.permissions?.manage_server_shop))return toast('You do not have permission to manage the Server Shop.');
+  go('admin');
+  setTimeout(()=>adminTab('serverShop'),0);
+}
+async function editServerShopProductFromStore(id){
+  if(!(state.me?.isOwner||state.me?.permissions?.edit_shop_products))return toast('You do not have permission to edit Server Shop products.');
+  try{
+    const r=await api('/portal/api/admin/shop/products');
+    shopManagerProducts=r.products||[];
+    const product=shopManagerProducts.find(x=>String(x.id)===String(id)||String(x.slug)===String(id));
+    if(!product)throw new Error('That product could not be found in the managed catalogue.');
+    openShopProductEditor(product.id);
+  }catch(e){toast(e.message)}
+}
 async function buyItem(id,name,price){if(!confirm(`Purchase ${name} for ${money(price)} and deliver it beside your linked SCUM character?`))return;try{const r=await api('/portal/api/action/shop',{method:'POST',body:JSON.stringify({id})});toast(`${r.package?.name||name} delivered near ${r.playerName||'your character'}.`);await refresh()}catch(e){toast(e.message)}}
 function renderCollection(v,eye,t,items,card){title(eye,t);v.innerHTML=`<div class="searchbar"><input id="filter" placeholder="Search ${t.toLowerCase()}" oninput="filterCards()"></div><div class="grid" id="cards">${items.map(card).join('')||'<div class="card span12 empty">Nothing has been published yet.</div>'}</div>`}
 function filterCards(){const q=$('filter').value.toLowerCase();document.querySelectorAll('#cards>[data-search]').forEach(e=>e.style.display=e.dataset.search.includes(q)?'block':'none')}
