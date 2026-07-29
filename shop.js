@@ -12,10 +12,12 @@ const { getPlayerForLookup, getPlayerDisplayName, ggconPost } = require("./ggcon
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
 const PURCHASES_TABLE = process.env.WATCHER_SHOP_PURCHASES_TABLE || "watcher_shop_purchases";
 const PRODUCTS_TABLE = process.env.WATCHER_SERVER_SHOP_PRODUCTS_TABLE || "watcher_server_shop_products";
-const CATALOG_CACHE_MS = 10 * 60 * 1000;
+const CATALOG_CACHE_MS = 6 * 60 * 60 * 1000;
+const PRODUCT_CACHE_MS = 30 * 1000;
 const purchaseLocks = new Set();
 let db = null;
 let catalogCache = { loadedAt: 0, items: [] };
+const productCache = new Map();
 
 const PACKAGES = {
   medical: {
@@ -117,12 +119,18 @@ function normalizeProductRow(row) {
 }
 
 async function listManagedProducts(guildId, includeDisabled = true) {
-  let q = getDb().from(PRODUCTS_TABLE).select('*').eq('guild_id', String(guildId)).order('sort_order', { ascending: true }).order('name', { ascending: true });
-  if (!includeDisabled) q = q.eq('enabled', true);
+  const key = String(guildId);
+  const cached = productCache.get(key);
+  if (cached && Date.now() - cached.loadedAt < PRODUCT_CACHE_MS) {
+    return cached.products.filter((x) => includeDisabled || x.enabled !== false);
+  }
+  let q = getDb().from(PRODUCTS_TABLE).select('*').eq('guild_id', key).order('sort_order', { ascending: true }).order('name', { ascending: true });
   const { data, error } = await q;
   if (error) throw error;
-  if (!data?.length) return (await ensurePortalProducts(guildId)).filter((x) => includeDisabled || x.enabled !== false).map(normalizeProductRow);
-  return data.map(normalizeProductRow);
+  const rows = data?.length ? data : await ensurePortalProducts(guildId);
+  const products = rows.map(normalizeProductRow);
+  productCache.set(key, { loadedAt: Date.now(), products });
+  return products.filter((x) => includeDisabled || x.enabled !== false);
 }
 
 async function getManagedProduct(guildId, productId) {
@@ -168,12 +176,14 @@ async function saveManagedProduct(guildId, actorId, body = {}) {
   if (body.id) result = await getDb().from(PRODUCTS_TABLE).update(row).eq('guild_id', String(guildId)).eq('id', String(body.id)).select('*').single();
   else result = await getDb().from(PRODUCTS_TABLE).insert({ ...row, created_by: String(actorId || '') }).select('*').single();
   if (result.error) throw result.error;
+  productCache.delete(String(guildId));
   return normalizeProductRow(result.data);
 }
 
 async function deleteManagedProduct(guildId, id) {
   const { error } = await getDb().from(PRODUCTS_TABLE).delete().eq('guild_id', String(guildId)).eq('id', String(id));
   if (error) throw error;
+  productCache.delete(String(guildId));
   return { ok: true };
 }
 

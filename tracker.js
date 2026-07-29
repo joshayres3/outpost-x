@@ -36,9 +36,10 @@ const MOVEMENT_TABLE = process.env.TRACKER_MOVEMENT_TABLE || 'watcher_player_mov
 const PLAYERS_TABLE = process.env.TRACKER_PLAYERS_TABLE || 'watcher_tracker_players';
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || 'watcher_player_links';
 const SAMPLE_SECONDS = Math.max(5, Number(process.env.TRACKER_SAMPLE_SECONDS || '15'));
+const IDLE_SAMPLE_SECONDS = Math.max(SAMPLE_SECONDS, Number(process.env.TRACKER_IDLE_SAMPLE_SECONDS || '90'));
 const RETENTION_HOURS = Math.max(1, Number(process.env.TRACKER_RETENTION_HOURS || '48'));
 const MOVE_THRESHOLD_UNITS = Math.max(0, Number(process.env.TRACKER_MOVE_THRESHOLD_UNITS || '1000'));
-const HEARTBEAT_SECONDS = Math.max(30, Number(process.env.TRACKER_HEARTBEAT_SECONDS || '300'));
+const HEARTBEAT_SECONDS = Math.max(30, Number(process.env.TRACKER_HEARTBEAT_SECONDS || '600'));
 const ACCESS_TOKEN_SECONDS = Math.max(30, Number(process.env.TRACKER_ACCESS_TOKEN_SECONDS || '120'));
 const SESSION_MINUTES = Math.max(5, Number(process.env.TRACKER_SESSION_MINUTES || '60'));
 const CLEANUP_MINUTES = Math.max(10, Number(process.env.TRACKER_CLEANUP_MINUTES || '60'));
@@ -77,6 +78,7 @@ let dbClient = null;
 let botRef = null;
 let serverRef = null;
 let sampleTimer = null;
+const portalRevisions = new Map();
 let cleanupTimer = null;
 let sampleRunning = false;
 let latestOnline = new Map();
@@ -90,6 +92,32 @@ const PORTAL_AIRLIFT_PRICE = Math.max(0, Number(process.env.AIRLIFT_PRICE || '10
 const PORTAL_AIRLIFT_ALTITUDE_Z = Number(process.env.AIRLIFT_ALTITUDE_Z || '150000');
 const PORTAL_AIRLIFT_LAUNCH_DELAY_MS = Math.max(0, Number(process.env.AIRLIFT_LAUNCH_DELAY_MS || '10000'));
 const PORTAL_AIRLIFT_PARACHUTE_ITEM = process.env.AIRLIFT_PARACHUTE_ITEM || 'BeginPlay_Parachute';
+
+
+function portalRevisionKey(guildId) {
+  return String(guildId || 'global');
+}
+
+function getPortalRevision(guildId) {
+  return portalRevisions.get(portalRevisionKey(guildId)) || { value: 1, updatedAt: Date.now() };
+}
+
+function bumpPortalRevision(guildId) {
+  const key = portalRevisionKey(guildId);
+  const current = getPortalRevision(key);
+  const next = { value: current.value + 1, updatedAt: Date.now() };
+  portalRevisions.set(key, next);
+  return next;
+}
+
+function scheduleMovementSample(delaySeconds) {
+  if (sampleTimer) clearTimeout(sampleTimer);
+  sampleTimer = setTimeout(async () => {
+    await recordMovementSample();
+    const nextDelay = latestOnline.size > 0 ? SAMPLE_SECONDS : IDLE_SAMPLE_SECONDS;
+    scheduleMovementSample(nextDelay);
+  }, Math.max(5, Number(delaySeconds || SAMPLE_SECONDS)) * 1000);
+}
 
 function getDb() {
   if (dbClient) return dbClient;
@@ -663,8 +691,8 @@ function text(res, status, body, contentType = 'text/plain; charset=utf-8') {
   res.end(body);
 }
 
-function unauthorized(res) {
-  text(res, 403, 'Outpost Command Center access denied or expired. Open it again from the Discord Command Center button.');
+function unauthorized(res, status = 403) {
+  text(res, status, 'Outpost Command Center access denied or expired. Open it again from the Discord Command Center button.');
 }
 
 async function requirePermission(session, key) {
@@ -702,7 +730,7 @@ async function handleHttp(req, res) {
   if (url.pathname === '/tracker/health') return json(res, 200, { ok: true });
 
   const session = getSession(req);
-  if (!session) return unauthorized(res);
+  if (!session) return unauthorized(res, 401);
 
   if (url.pathname === '/tracker') {
     res.writeHead(302, { Location: '/portal?section=surveillance', 'Cache-Control': 'no-store' });
@@ -718,12 +746,21 @@ async function handleHttp(req, res) {
     if (!fs.existsSync(portalHtmlPath)) return text(res, 500, 'portal.html is missing.');
     return text(res, 200, fs.readFileSync(portalHtmlPath, 'utf8'), 'text/html; charset=utf-8');
   }
-  if (url.pathname === '/portal/assets/portal.css') return text(res, 200, fs.readFileSync(portalCssPath, 'utf8'), 'text/css; charset=utf-8');
-  if (url.pathname === '/portal/assets/portal.js') return text(res, 200, fs.readFileSync(portalJsPath, 'utf8'), 'application/javascript; charset=utf-8');
-  if (url.pathname === '/portal/assets/outpost.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'private, max-age=86400'}); return fs.createReadStream(portalOutpostPath).pipe(res); }
-  if (url.pathname === '/portal/assets/watcher.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'private, max-age=86400'}); return fs.createReadStream(portalWatcherPath).pipe(res); }
+  if (url.pathname === '/portal/assets/portal.css') { res.writeHead(200, {'Content-Type':'text/css; charset=utf-8','Cache-Control':'public, max-age=300, stale-while-revalidate=3600'}); return res.end(fs.readFileSync(portalCssPath, 'utf8')); }
+  if (url.pathname === '/portal/assets/portal.js') { res.writeHead(200, {'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=300, stale-while-revalidate=3600'}); return res.end(fs.readFileSync(portalJsPath, 'utf8')); }
+  if (url.pathname === '/portal/assets/outpost.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalOutpostPath).pipe(res); }
+  if (url.pathname === '/portal/assets/watcher.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalWatcherPath).pipe(res); }
   const staffAssetMatch = url.pathname.match(/^\/portal\/assets\/staff\/([a-z-]+)\.webp$/);
-  if (staffAssetMatch && portalStaffAssets.has(staffAssetMatch[1])) { const assetPath = portalStaffAssets.get(staffAssetMatch[1]); if (!fs.existsSync(assetPath)) return text(res, 404, 'Staff image not found.'); res.writeHead(200, {'Content-Type':'image/webp','Cache-Control':'private, max-age=86400'}); return fs.createReadStream(assetPath).pipe(res); }
+  if (staffAssetMatch && portalStaffAssets.has(staffAssetMatch[1])) { const assetPath = portalStaffAssets.get(staffAssetMatch[1]); if (!fs.existsSync(assetPath)) return text(res, 404, 'Staff image not found.'); res.writeHead(200, {'Content-Type':'image/webp','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(assetPath).pipe(res); }
+
+  if (url.pathname === '/portal/api/revision') {
+    const revision = getPortalRevision(session.guildId);
+    return json(res, 200, { revision: revision.value, updatedAt: new Date(revision.updatedAt).toISOString() });
+  }
+
+  if (url.pathname.startsWith('/portal/api/') && ['POST','PUT','PATCH','DELETE'].includes(req.method || 'GET')) {
+    bumpPortalRevision(session.guildId);
+  }
 
   if (url.pathname === '/portal/api/overview') {
     try { return json(res, 200, await buildPortalOverview(session)); }
@@ -819,19 +856,19 @@ async function handleHttp(req, res) {
     if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 7 || y < 0 || y > 7) return text(res, 404, 'Map tile not found.');
     const tilePath = path.join(portalMapTilesPath, 'hi', `${x}_${y}.jpg`);
     if (!fs.existsSync(tilePath)) return text(res, 404, 'Map tile not found.');
-    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=604800, immutable' });
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' });
     return fs.createReadStream(tilePath).pipe(res);
   }
 
   if (url.pathname === '/tracker/map.png') {
     if (!fs.existsSync(mapPath)) return text(res, 404, 'Map image not configured.');
-    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=3600' });
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
     return fs.createReadStream(mapPath).pipe(res);
   }
 
   if (url.pathname === '/tracker/map-hi.webp') {
     if (!fs.existsSync(highResMapPath)) return text(res, 404, 'High-resolution map image not configured.');
-    res.writeHead(200, { 'Content-Type': 'image/webp', 'Cache-Control': 'private, max-age=86400' });
+    res.writeHead(200, { 'Content-Type': 'image/webp', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
     return fs.createReadStream(highResMapPath).pipe(res);
   }
 
@@ -921,12 +958,11 @@ async function startTrackerOnBoot(bot) {
   botRef = bot;
   startWebServer();
   await recordMovementSample();
-  if (sampleTimer) clearInterval(sampleTimer);
-  sampleTimer = setInterval(() => recordMovementSample(), SAMPLE_SECONDS * 1000);
+  scheduleMovementSample(latestOnline.size > 0 ? SAMPLE_SECONDS : IDLE_SAMPLE_SECONDS);
   if (cleanupTimer) clearInterval(cleanupTimer);
   cleanupTimer = setInterval(() => cleanupOldTrackerData(), CLEANUP_MINUTES * 60_000);
   await cleanupOldTrackerData();
-  console.log(`👁️ Movement tracker active: ${SAMPLE_SECONDS}s samples, ${RETENTION_HOURS}h retention.`);
+  console.log(`👁️ Movement tracker active: ${SAMPLE_SECONDS}s online / ${IDLE_SAMPLE_SECONDS}s idle samples, ${RETENTION_HOURS}h retention.`);
 }
 
 async function handleTrackerCommand(message) {
