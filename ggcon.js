@@ -4765,30 +4765,86 @@ function selectSafeCargoFrenzyPoints(flagData, requestedCountOverride = null, re
     };
   });
 
-  function addCandidates({ preferredOnly, ignoreRecent }) {
-    const pool = shuffleArray(evaluated)
-      .filter((candidate) => {
-        if (candidate.flagDistance < CARGO_FRENZY_FLAG_HARD_MIN_UNITS) {
-          blockedByFlag.push(candidate);
-          return false;
-        }
-        if (preferredOnly && candidate.flagDistance < CARGO_FRENZY_FLAG_PREFERRED_UNITS) return false;
-        if (!ignoreRecent && !isFarEnoughFromRecentCargo(candidate, recent, CARGO_FRENZY_RECENT_BUFFER_UNITS)) {
-          blockedByRecent.push(candidate);
-          return false;
-        }
-        return true;
-      })
-      .sort((a, b) => {
-        const aBonus = Number.isFinite(a.flagDistance) ? Math.min(a.flagDistance / 250000, 1) * 0.22 : 0.22;
-        const bBonus = Number.isFinite(b.flagDistance) ? Math.min(b.flagDistance / 250000, 1) * 0.22 : 0.22;
-        return (b.randomScore + bBonus) - (a.randomScore + aBonus);
-      });
+  const candidateXs = evaluated.map((candidate) => candidate.x);
+  const candidateYs = evaluated.map((candidate) => candidate.y);
+  const minCandidateX = Math.min(...candidateXs);
+  const maxCandidateX = Math.max(...candidateXs);
+  const minCandidateY = Math.min(...candidateYs);
+  const maxCandidateY = Math.max(...candidateYs);
+  const gridColumns = 5;
+  const gridRows = 5;
+  const occupiedCells = new Set();
+
+  function cargoCoverageCell(candidate) {
+    const xSpan = Math.max(1, maxCandidateX - minCandidateX);
+    const ySpan = Math.max(1, maxCandidateY - minCandidateY);
+    const column = Math.min(gridColumns - 1, Math.max(0, Math.floor(((candidate.x - minCandidateX) / xSpan) * gridColumns)));
+    const row = Math.min(gridRows - 1, Math.max(0, Math.floor(((candidate.y - minCandidateY) / ySpan) * gridRows)));
+    return `${column}:${row}`;
+  }
+
+  function minimumDistanceFromSelected(candidate) {
+    if (!selected.length) return Number.POSITIVE_INFINITY;
+    let nearest = Number.POSITIVE_INFINITY;
+    for (const existing of selected) {
+      const distance = distance2DUnrealUnits(candidate, existing);
+      if (distance !== null && distance < nearest) nearest = distance;
+    }
+    return nearest;
+  }
+
+  function chooseMostEvenCandidate(pool, requireUnusedCell) {
+    let best = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
 
     for (const candidate of pool) {
-      if (selected.length >= count) break;
       if (selected.some((existing) => existing.x === candidate.x && existing.y === candidate.y)) continue;
-      if (!isFarEnoughFromSelectedCargo(candidate, selected, CARGO_FRENZY_DROP_HARD_SPACING_UNITS)) continue;
+      const minimumDistance = minimumDistanceFromSelected(candidate);
+      if (minimumDistance < CARGO_FRENZY_DROP_HARD_SPACING_UNITS) continue;
+
+      const cell = cargoCoverageCell(candidate);
+      const cellAlreadyUsed = occupiedCells.has(cell);
+      if (requireUnusedCell && cellAlreadyUsed) continue;
+
+      // Farthest-point sampling spreads drops across the whole usable map.
+      // A small random jitter keeps each run organic instead of creating a rigid grid or ring.
+      const spreadScore = Number.isFinite(minimumDistance) ? minimumDistance : 1_000_000;
+      const flagBonus = Number.isFinite(candidate.flagDistance)
+        ? Math.min(candidate.flagDistance, 250000) * 0.12
+        : 30000;
+      const unusedCellBonus = cellAlreadyUsed ? 0 : 90000;
+      const jitter = Math.random() * 45000;
+      const score = spreadScore + flagBonus + unusedCellBonus + jitter;
+
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+
+    return best;
+  }
+
+  function addCandidates({ preferredOnly, ignoreRecent }) {
+    const pool = shuffleArray(evaluated).filter((candidate) => {
+      if (candidate.flagDistance < CARGO_FRENZY_FLAG_HARD_MIN_UNITS) {
+        blockedByFlag.push(candidate);
+        return false;
+      }
+      if (preferredOnly && candidate.flagDistance < CARGO_FRENZY_FLAG_PREFERRED_UNITS) return false;
+      if (!ignoreRecent && !isFarEnoughFromRecentCargo(candidate, recent, CARGO_FRENZY_RECENT_BUFFER_UNITS)) {
+        blockedByRecent.push(candidate);
+        return false;
+      }
+      return true;
+    });
+
+    while (selected.length < count) {
+      // Prefer a new coverage cell first. If no valid unused cell remains,
+      // still choose the farthest valid point so the event can fill all drops.
+      const candidate = chooseMostEvenCandidate(pool, true) || chooseMostEvenCandidate(pool, false);
+      if (!candidate) break;
+
       selected.push({
         x: candidate.x,
         y: candidate.y,
@@ -4796,6 +4852,7 @@ function selectSafeCargoFrenzyPoints(flagData, requestedCountOverride = null, re
         nearestFlagDistance: candidate.nearest?.distance ?? null,
         nearestFlag: candidate.nearest?.flag ?? null,
       });
+      occupiedCells.add(cargoCoverageCell(candidate));
     }
   }
 
