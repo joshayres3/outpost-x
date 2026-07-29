@@ -3,6 +3,7 @@ const { processInsuranceDestructionEvents } = require("./insurance");
 const path = require("path");
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
+const CARGO_FRENZY_SAFE_POINTS = require("./cargoSafePoints");
 
 const DEFAULT_GGCON_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const STATUS_FILE = path.join(__dirname, "data", "ggcon-status.json");
@@ -25,10 +26,12 @@ const MAX_PLAYER_SCAN_PAGES = Number(process.env.GGCON_PLAYER_SCAN_PAGES || "10"
 const DEFAULT_FLAG_PAGE_SIZE = 5;
 const CARGO_FRENZY_COUNT = Number(process.env.GGCON_CARGO_FRENZY_COUNT || "10");
 const CARGO_FRENZY_Z = Number(process.env.GGCON_CARGO_FRENZY_Z || "25000");
-const CARGO_FRENZY_SAFE_DISTANCE_UNITS = Number(process.env.GGCON_CARGO_SAFE_DISTANCE_UNITS || "30000");
-const CARGO_FRENZY_FLAG_BUFFER_UNITS = Number(process.env.GGCON_CARGO_FLAG_BUFFER_UNITS || "25000");
-const CARGO_FRENZY_DROP_SPACING_UNITS = Number(process.env.GGCON_CARGO_DROP_SPACING_UNITS || "75000");
-const CARGO_FRENZY_GRID_STEP_UNITS = Number(process.env.GGCON_CARGO_GRID_STEP_UNITS || "80000");
+// SCUM world coordinates are centimetres: 25,000 units = 250 metres.
+const CARGO_FRENZY_FLAG_HARD_MIN_UNITS = Math.max(25000, Number(process.env.GGCON_CARGO_FLAG_HARD_MIN_UNITS || "25000"));
+const CARGO_FRENZY_FLAG_PREFERRED_UNITS = Math.max(CARGO_FRENZY_FLAG_HARD_MIN_UNITS, Number(process.env.GGCON_CARGO_FLAG_PREFERRED_UNITS || "50000"));
+const CARGO_FRENZY_DROP_HARD_SPACING_UNITS = Math.max(15000, Number(process.env.GGCON_CARGO_DROP_HARD_SPACING_UNITS || "35000"));
+const CARGO_FRENZY_RECENT_BUFFER_UNITS = Math.max(0, Number(process.env.GGCON_CARGO_RECENT_BUFFER_UNITS || "60000"));
+const CARGO_FRENZY_RECENT_HOURS = Math.max(1, Number(process.env.GGCON_CARGO_RECENT_HOURS || "48"));
 const CARGO_FRENZY_EVENT_NAME = process.env.GGCON_CARGO_EVENT_NAME || "BP_CargoDropEvent";
 const CARGO_SCHEDULE_TIMEZONE = process.env.GGCON_CARGO_SCHEDULE_TIMEZONE || "America/Toronto";
 const CARGO_SCHEDULE_HOURS = String(process.env.GGCON_CARGO_SCHEDULE_HOURS || "0,4,8,12,16,20")
@@ -38,32 +41,6 @@ const CARGO_SCHEDULE_HOURS = String(process.env.GGCON_CARGO_SCHEDULE_HOURS || "0
 const CARGO_SCHEDULE_MINUTE = Number(process.env.GGCON_CARGO_SCHEDULE_MINUTE || "30");
 const CARGO_SCHEDULE_WINDOW_MINUTES = Number(process.env.GGCON_CARGO_SCHEDULE_WINDOW_MINUTES || "4");
 const CARGO_SCHEDULE_WAKE_BUFFER_MS = Number(process.env.GGCON_CARGO_SCHEDULE_WAKE_BUFFER_MS || "3000");
-const CARGO_FRENZY_SAFE_POINTS = [
-  { x: 8541, y: 365758 },
-  { x: 216886, y: 484819 },
-  { x: 365701, y: 529466 },
-  { x: -393246, y: 514585 },
-  { x: 187113, y: 291344 },
-  { x: 469823, y: -393257 },
-  { x: -65892, y: -170017 },
-  { x: 23432, y: 544349 },
-  { x: 82927, y: -50956 },
-  { x: 112681, y: -214665 },
-  { x: -184942, y: -155134 },
-  { x: 127578, y: 82987 },
-  { x: 350796, y: 68105 },
-  { x: -80761, y: 82988 },
-  { x: 201978, y: -36074 },
-  { x: -259317, y: 469937 },
-  { x: 365668, y: -125370 },
-  { x: -824829, y: 8575 },
-  { x: 231724, y: -363492 },
-  { x: 68011, y: -735558 },
-  { x: -750439, y: -318843 },
-  { x: -155202, y: -616496 },
-  { x: -199830, y: -289078 },
-  { x: 514497, y: 202048 }
-];
 
 const SIMPLE_VEHICLE_ALIASES = {
   duster: ["BPC_Duster", "Duster"],
@@ -4723,100 +4700,126 @@ function dedupeCargoPoints(points) {
 }
 
 function getCargoCandidatePoints() {
-  // Curated against the calibrated SCUM map. These locations avoid visible
-  // water, major roads, towns, airports, and orange/yellow POI markings.
+  // This pool was generated from the high-resolution Outpost X map and
+  // pre-screened away from visible roads, water, and orange/yellow POIs.
   return dedupeCargoPoints(CARGO_FRENZY_SAFE_POINTS);
-}
-
-function getCargoSafeDistance(flagData) {
-  const configured = Number.isFinite(CARGO_FRENZY_SAFE_DISTANCE_UNITS) ? CARGO_FRENZY_SAFE_DISTANCE_UNITS : 30000;
-  const flagRadius = Number(flagData?.flagInfluenceRadius);
-  const buffer = Number.isFinite(CARGO_FRENZY_FLAG_BUFFER_UNITS) ? CARGO_FRENZY_FLAG_BUFFER_UNITS : 25000;
-
-  if (Number.isFinite(flagRadius) && flagRadius > 0) {
-    return Math.max(configured, flagRadius + buffer);
-  }
-
-  return configured;
 }
 
 function findNearestFlagForPoint(point, flags) {
   let nearest = null;
-
   for (const flag of flags || []) {
     if (!flag?.location) continue;
     const distance = distance2DUnrealUnits(point, flag.location);
     if (distance === null) continue;
-
-    if (!nearest || distance < nearest.distance) {
-      nearest = { flag, distance };
-    }
+    if (!nearest || distance < nearest.distance) nearest = { flag, distance };
   }
-
   return nearest;
 }
 
 function isFarEnoughFromSelectedCargo(point, selected, minimumSpacing) {
-  if (!selected.length) return true;
-  if (!Number.isFinite(minimumSpacing) || minimumSpacing <= 0) return true;
-
+  if (!selected.length || !Number.isFinite(minimumSpacing) || minimumSpacing <= 0) return true;
   return selected.every((existing) => {
     const distance = distance2DUnrealUnits(point, existing);
     return distance === null || distance >= minimumSpacing;
   });
 }
 
-function selectSafeCargoFrenzyPoints(flagData, requestedCountOverride = null) {
+function isFarEnoughFromRecentCargo(point, recentPoints, minimumSpacing) {
+  if (!Array.isArray(recentPoints) || !recentPoints.length || minimumSpacing <= 0) return true;
+  return recentPoints.every((recent) => {
+    const distance = distance2DUnrealUnits(point, recent);
+    return distance === null || distance >= minimumSpacing;
+  });
+}
+
+function normalizeRecentCargoPoints(raw) {
+  const cutoff = Date.now() - (CARGO_FRENZY_RECENT_HOURS * 3600_000);
+  return (Array.isArray(raw) ? raw : [])
+    .map((row) => ({
+      x: Number(row?.x),
+      y: Number(row?.y),
+      usedAt: Number(row?.usedAt || Date.parse(row?.used_at || row?.usedAtIso || "")),
+    }))
+    .filter((row) => Number.isFinite(row.x) && Number.isFinite(row.y) && Number.isFinite(row.usedAt) && row.usedAt >= cutoff)
+    .slice(-250);
+}
+
+function selectSafeCargoFrenzyPoints(flagData, requestedCountOverride = null, recentPoints = []) {
   const configuredCount = requestedCountOverride ?? CARGO_FRENZY_COUNT;
   const count = Math.max(1, Math.min(25, Number.isFinite(configuredCount) ? Math.floor(configuredCount) : 10));
   const z = Math.round(Number.isFinite(CARGO_FRENZY_Z) ? CARGO_FRENZY_Z : 25000);
   const flags = Array.isArray(flagData?.flags) ? flagData.flags.filter((flag) => flag?.location) : [];
-  const normalSafeDistance = getCargoSafeDistance(flagData);
-  const relaxedSafeDistance = Math.max(0, normalSafeDistance - Math.min(5000, normalSafeDistance * 0.1));
-  const spacing = Number.isFinite(CARGO_FRENZY_DROP_SPACING_UNITS) ? CARGO_FRENZY_DROP_SPACING_UNITS : 75000;
   const candidates = shuffleArray(getCargoCandidatePoints());
+  const recent = normalizeRecentCargoPoints(recentPoints);
   const selected = [];
-  const blocked = [];
-  let usedRelaxedFlagDistance = false;
+  const blockedByFlag = [];
+  const blockedByRecent = [];
 
-  function addCandidates(requiredDistance) {
-    for (const candidate of candidates) {
+  const evaluated = candidates.map((candidate) => {
+    const nearest = findNearestFlagForPoint(candidate, flags);
+    return {
+      ...candidate,
+      nearest,
+      flagDistance: nearest?.distance ?? Number.POSITIVE_INFINITY,
+      randomScore: Math.random(),
+    };
+  });
+
+  function addCandidates({ preferredOnly, ignoreRecent }) {
+    const pool = shuffleArray(evaluated)
+      .filter((candidate) => {
+        if (candidate.flagDistance < CARGO_FRENZY_FLAG_HARD_MIN_UNITS) {
+          blockedByFlag.push(candidate);
+          return false;
+        }
+        if (preferredOnly && candidate.flagDistance < CARGO_FRENZY_FLAG_PREFERRED_UNITS) return false;
+        if (!ignoreRecent && !isFarEnoughFromRecentCargo(candidate, recent, CARGO_FRENZY_RECENT_BUFFER_UNITS)) {
+          blockedByRecent.push(candidate);
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const aBonus = Number.isFinite(a.flagDistance) ? Math.min(a.flagDistance / 250000, 1) * 0.22 : 0.22;
+        const bBonus = Number.isFinite(b.flagDistance) ? Math.min(b.flagDistance / 250000, 1) * 0.22 : 0.22;
+        return (b.randomScore + bBonus) - (a.randomScore + aBonus);
+      });
+
+    for (const candidate of pool) {
       if (selected.length >= count) break;
       if (selected.some((existing) => existing.x === candidate.x && existing.y === candidate.y)) continue;
-      const nearest = findNearestFlagForPoint(candidate, flags);
-      if (nearest && nearest.distance < requiredDistance) {
-        blocked.push({ point: candidate, nearest });
-        continue;
-      }
-      if (!isFarEnoughFromSelectedCargo(candidate, selected, spacing)) continue;
+      if (!isFarEnoughFromSelectedCargo(candidate, selected, CARGO_FRENZY_DROP_HARD_SPACING_UNITS)) continue;
       selected.push({
-        ...candidate,
+        x: candidate.x,
+        y: candidate.y,
         z,
-        nearestFlagDistance: nearest?.distance ?? null,
-        nearestFlag: nearest?.flag ?? null,
+        nearestFlagDistance: candidate.nearest?.distance ?? null,
+        nearestFlag: candidate.nearest?.flag ?? null,
       });
     }
   }
 
-  addCandidates(normalSafeDistance);
-  if (selected.length < count && relaxedSafeDistance < normalSafeDistance) {
-    usedRelaxedFlagDistance = true;
-    addCandidates(relaxedSafeDistance);
-  }
+  // Prefer points 500 m+ from flags and not used recently.
+  addCandidates({ preferredOnly: true, ignoreRecent: false });
+  // Allow 250–500 m from a flag only if needed.
+  if (selected.length < count) addCandidates({ preferredOnly: false, ignoreRecent: false });
+  // Last resort may reuse an older area, but never violates map screening,
+  // the 250 m flag minimum, or drop-to-drop spacing.
+  if (selected.length < count) addCandidates({ preferredOnly: false, ignoreRecent: true });
 
   return {
     requestedCount: count,
     selected,
-    safeDistance: usedRelaxedFlagDistance ? relaxedSafeDistance : normalSafeDistance,
-    normalSafeDistance,
-    relaxedSafeDistance,
-    usedRelaxedFlagDistance,
-    spacing,
+    hardFlagDistance: CARGO_FRENZY_FLAG_HARD_MIN_UNITS,
+    preferredFlagDistance: CARGO_FRENZY_FLAG_PREFERRED_UNITS,
+    spacing: CARGO_FRENZY_DROP_HARD_SPACING_UNITS,
+    recentBuffer: CARGO_FRENZY_RECENT_BUFFER_UNITS,
     totalCandidates: candidates.length,
     safeCandidateCount: selected.length,
-    blockedCount: blocked.length,
+    blockedByFlagCount: blockedByFlag.length,
+    blockedByRecentCount: blockedByRecent.length,
     flagsChecked: flags.length,
-    closestBlocked: blocked.sort((a, b) => a.nearest.distance - b.nearest.distance).slice(0, 3),
+    closestBlocked: blockedByFlag.sort((a, b) => a.flagDistance - b.flagDistance).slice(0, 3),
   };
 }
 
@@ -4911,7 +4914,8 @@ async function runCargoFrenzy(message, options = {}) {
     return;
   }
 
-  const plan = selectSafeCargoFrenzyPoints(flagData, requestedCount);
+  const recentCargo = normalizeRecentCargoPoints(await loadRuntimeValue("cargo_frenzy_recent_points"));
+  const plan = selectSafeCargoFrenzyPoints(flagData, requestedCount, recentCargo);
   const points = plan.selected;
 
   if (points.length === 0) {
@@ -4929,8 +4933,8 @@ async function runCargoFrenzy(message, options = {}) {
       requested: plan.requestedCount,
       found: points.length,
       flagsChecked: plan.flagsChecked,
-      safeDistance: plan.safeDistance,
-      usedRelaxedFlagDistance: plan.usedRelaxedFlagDistance,
+      hardFlagDistance: plan.hardFlagDistance,
+      preferredFlagDistance: plan.preferredFlagDistance,
     }));
   }
 
@@ -4957,6 +4961,17 @@ async function runCargoFrenzy(message, options = {}) {
 
   const successCount = results.filter((entry) => entry.ok).length;
   const failed = results.filter((entry) => !entry.ok);
+  const successfulPoints = results.filter((entry) => entry.ok).map((entry) => entry.point);
+  if (successfulPoints.length) {
+    const usedAt = Date.now();
+    const updatedRecent = normalizeRecentCargoPoints([
+      ...recentCargo,
+      ...successfulPoints.map((point) => ({ x: point.x, y: point.y, usedAt })),
+    ]);
+    await saveRuntimeValue("cargo_frenzy_recent_points", updatedRecent).catch((err) => {
+      console.warn("Could not persist recent cargo positions:", err.message);
+    });
+  }
 
   const lines = isTest
     ? [
@@ -4987,10 +5002,13 @@ async function runCargoFrenzy(message, options = {}) {
     requested: points.length,
     successCount,
     flagsChecked: plan.flagsChecked,
-    safeDistance: plan.safeDistance,
+    hardFlagDistance: plan.hardFlagDistance,
+    preferredFlagDistance: plan.preferredFlagDistance,
+    recentBuffer: plan.recentBuffer,
     totalCandidates: plan.totalCandidates,
     safeCandidateCount: plan.safeCandidateCount,
-    blockedCount: plan.blockedCount,
+    blockedByFlagCount: plan.blockedByFlagCount,
+    blockedByRecentCount: plan.blockedByRecentCount,
     eventName: CARGO_FRENZY_EVENT_NAME,
     locations: results.map((entry) => ({
       ok: entry.ok,
