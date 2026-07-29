@@ -69,6 +69,7 @@ const portalCssPath = path.join(__dirname, 'portal.css');
 const portalJsPath = path.join(__dirname, 'portal.js');
 const portalOutpostPath = path.join(__dirname, 'portal-outpost.jpg');
 const portalWatcherPath = path.join(__dirname, 'portal-watcher.jpg');
+const portalStaffAssets = new Map(['josh','nivy','cat','deathbloom','crazylady','oneeyeddude','watcher-staff'].map((name) => [name, path.join(__dirname, `staff-${name}.webp`)]));
 const TRANSACTIONS_TABLE = process.env.WATCHER_TRANSACTIONS_TABLE || 'watcher_transactions';
 
 let dbClient = null;
@@ -709,6 +710,8 @@ async function handleHttp(req, res) {
   if (url.pathname === '/portal/assets/portal.js') return text(res, 200, fs.readFileSync(portalJsPath, 'utf8'), 'application/javascript; charset=utf-8');
   if (url.pathname === '/portal/assets/outpost.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'private, max-age=86400'}); return fs.createReadStream(portalOutpostPath).pipe(res); }
   if (url.pathname === '/portal/assets/watcher.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'private, max-age=86400'}); return fs.createReadStream(portalWatcherPath).pipe(res); }
+  const staffAssetMatch = url.pathname.match(/^\/portal\/assets\/staff\/([a-z-]+)\.webp$/);
+  if (staffAssetMatch && portalStaffAssets.has(staffAssetMatch[1])) { const assetPath = portalStaffAssets.get(staffAssetMatch[1]); if (!fs.existsSync(assetPath)) return text(res, 404, 'Staff image not found.'); res.writeHead(200, {'Content-Type':'image/webp','Cache-Control':'private, max-age=86400'}); return fs.createReadStream(assetPath).pipe(res); }
 
   if (url.pathname === '/portal/api/overview') {
     try { return json(res, 200, await buildPortalOverview(session)); }
