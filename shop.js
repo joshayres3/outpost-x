@@ -139,14 +139,23 @@ function safeSlug(value) {
 }
 
 async function saveManagedProduct(guildId, actorId, body = {}) {
-  const items = (Array.isArray(body.items) ? body.items : []).map((item) => ({
-    label: String(item.label || item.displayName || item.itemClass || '').trim(),
-    qty: Math.max(1, Math.min(1000, Math.floor(Number(item.qty || 1)))),
-    itemClass: String(item.itemClass || item.class || '').trim(),
-    aliases: [item.label, item.itemClass].filter(Boolean).map(String),
-  })).filter((item) => item.label && item.itemClass);
+  const items = (Array.isArray(body.items) ? body.items : []).map((item) => {
+    const label = String(item.label || item.displayName || item.itemClass || '').trim();
+    const itemClass = String(item.itemClass || item.class || '').trim();
+    const aliases = [...new Set([
+      ...(Array.isArray(item.aliases) ? item.aliases : []),
+      label,
+      itemClass,
+    ].filter(Boolean).map(String))];
+    return {
+      label,
+      qty: Math.max(1, Math.min(1000, Math.floor(Number(item.qty || 1)))),
+      itemClass: itemClass || null,
+      aliases,
+    };
+  }).filter((item) => item.label && (item.itemClass || item.aliases.length));
   if (!String(body.name || '').trim()) throw new Error('Product name is required.');
-  if (!items.length) throw new Error('Add at least one valid SCUM item.');
+  if (!items.length) throw new Error('This product has no usable package items. Add an item from the catalogue or restore its existing package contents.');
   const price = Math.max(0, Math.floor(Number(body.price || 0)));
   const row = {
     guild_id: String(guildId), slug: safeSlug(body.slug || body.name), name: String(body.name).trim().slice(0, 100),
