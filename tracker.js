@@ -5,7 +5,8 @@ const http = require('http');
 const { URL } = require('url');
 const { createClient } = require('@supabase/supabase-js');
 const { MAP_CALIBRATION } = require('./mapCalibration');
-const { getPortalCatalog, buyPackageForPortal } = require('./shop');
+const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, deleteManagedProduct, searchItemCatalog } = require('./shop');
+const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { portalCreateRental } = require('./rentals');
 const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance } = require('./insurance');
 const { portalCreateShop, portalUpdateShop, portalToggleShop, portalDeleteShop, portalSetShopImages, portalAdminShop } = require('./playerShops');
@@ -138,6 +139,9 @@ async function ggconPost(endpoint, body = {}) {
   return data;
 }
 
+function hasOwnerRole(member) {
+  return !!member?.roles?.cache?.some((role) => ['owner','owners'].includes(String(role.name || '').toLowerCase()));
+}
 function hasTrackerRole(member) {
   return !!member?.roles?.cache?.some((role) => STAFF_ROLE_NAMES.has(String(role.name || '').toLowerCase()));
 }
@@ -165,6 +169,7 @@ function createAccessToken(discordId, guildId, profile = {}) {
     displayName: profile.displayName || 'Outpost Player',
     avatar: profile.avatar || null,
     isAdmin: !!profile.isAdmin,
+    isOwner: !!profile.isOwner,
     expiresAt: Date.now() + ACCESS_TOKEN_SECONDS * 1000,
   });
   return token;
@@ -435,6 +440,7 @@ async function buildPortalOverview(session) {
     } catch {}
   }
   const cutoff15 = new Date(Date.now()-15*86400000).toISOString();
+  const permissions = session.isAdmin ? await getAdminPermissions(getDb(), session.guildId) : {};
   const [insurance,rentals,rides,shops,myShop,squads,mySquad,lore,myLore,transactions,adminTransactions,events] = await Promise.all([
     steamId?safeRows('watcher_vehicle_insurance',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('purchased_at',{ascending:false}).limit(100)):[],
     steamId?safeRows('watcher_dirtbike_rentals',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).order('created_at',{ascending:false}).limit(5)):[],
@@ -446,7 +452,7 @@ async function buildPortalOverview(session) {
     safeRows('watcher_player_lore',q=>{let z=q.select('*').eq('guild_id',String(session.guildId));if(!session.isAdmin)z=z.eq('is_published',true);return z.order('updated_at',{ascending:false}).limit(250)}),
     safeRows('watcher_player_lore',q=>q.select('*').eq('guild_id',String(session.guildId)).eq('owner_id',String(session.discordId)).limit(1)),
     steamId?safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).eq('steam_id',steamId).gte('created_at',cutoff15).order('created_at',{ascending:false}).limit(500)):[],
-    session.isAdmin?safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).gte('created_at',cutoff15).order('created_at',{ascending:false}).limit(1000)):[],
+    (session.isOwner||permissions.view_transactions)?safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).gte('created_at',cutoff15).order('created_at',{ascending:false}).limit(1000)):[],
     portalListEvents({db:getDb(),bot:botRef,guildId:String(session.guildId),discordId:String(session.discordId),isAdmin:!!session.isAdmin}),
   ]);
   const lastRide=rides[0]?.completed_at?new Date(rides[0].completed_at):null; const nextRide=lastRide?new Date(lastRide.getTime()+3600000):null;
@@ -468,12 +474,13 @@ async function buildPortalOverview(session) {
   } catch (err) {
     console.warn(`⚠️ Portal vehicle lookup failed for ${steamId}: ${err.message}`);
   }
+  const shopCatalog = await getPortalCatalog(session.guildId);
   return {
-    me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,sessionExpiresAt:new Date(session.expiresAt).toISOString()},
+    me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,permissions,permissionCatalog:session.isOwner?permissionCatalog():[],sessionExpiresAt:new Date(session.expiresAt).toISOString()},
     player:{steamId:steamId||null,name:link?.scum_name||playerDetail?.characterName||playerDetail?.name||onlineSample?.name||null,online:!!onlineSample,cash:playerCash(playerDetail),fame:playerFame(playerDetail)},
     vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
     airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,adminTransactions,
-    shopCatalog:getPortalCatalog(),
+    shopCatalog,
     mapCalibration: MAP_CALIBRATION
   };
 }
@@ -638,7 +645,7 @@ async function adminModeration(session,body){
   return {ok:true,message:'Player unbanned from SCUM. Linked Discord ban was removed when available.'};
 }
 
-function portalCtx(session){return {guildId:String(session.guildId),discordId:String(session.discordId),displayName:session.displayName||'Player',isAdmin:!!session.isAdmin,db:getDb(),bot:botRef};}
+function portalCtx(session){return {guildId:String(session.guildId),discordId:String(session.discordId),displayName:session.displayName||'Player',isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,db:getDb(),bot:botRef};}
 async function portalInsuranceData(session){const link=await portalLink(session);if(!link?.steam_id)return{policies:[],claims:[],vehicles:[]};return portalInsuranceOptions({...portalCtx(session),steamId:String(link.steam_id)});}
 
 function json(res, status, body) {
@@ -660,6 +667,10 @@ function unauthorized(res) {
   text(res, 403, 'Outpost Command Center access denied or expired. Open it again from the Discord Command Center button.');
 }
 
+async function requirePermission(session, key) {
+  if (!(await canUse(getDb(), session, key))) throw new Error('Your role does not have permission to use this tool.');
+}
+
 async function handleHttp(req, res) {
   pruneAuthState();
   const host = req.headers.host || 'localhost';
@@ -677,6 +688,7 @@ async function handleHttp(req, res) {
       displayName: grant.displayName,
       avatar: grant.avatar,
       isAdmin: !!grant.isAdmin,
+      isOwner: !!grant.isOwner,
       expiresAt: Date.now() + SESSION_MINUTES * 60_000,
     });
     res.writeHead(302, {
@@ -697,7 +709,7 @@ async function handleHttp(req, res) {
     return res.end();
   }
   if (url.pathname === '/tracker/view') {
-    if (!session.isAdmin) return unauthorized(res);
+    try { await requirePermission(session, 'use_surveillance'); } catch { return unauthorized(res); }
     if (!fs.existsSync(htmlPath)) return text(res, 500, 'surveillance.html is missing.');
     return text(res, 200, fs.readFileSync(htmlPath, 'utf8'), 'text/html; charset=utf-8');
   }
@@ -738,10 +750,10 @@ async function handleHttp(req, res) {
     catch (err) { return json(res,400,{error:err.message}); }
   }
   if (url.pathname === '/portal/api/events/rsvp' && req.method === 'POST') { try{const b=await readJsonBody(req);return json(res,200,await portalRsvpEvent(portalCtx(session),b.id,b.attending!==false));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/events/create' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res);try{return json(res,200,await portalCreateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/events/update' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res);try{return json(res,200,await portalUpdateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/events/status' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res);try{return json(res,200,await portalSetEventStatus(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/events/delete' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res);try{return json(res,200,await portalDeleteEvent(portalCtx(session),(await readJsonBody(req)).id));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/create' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalCreateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/update' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalUpdateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/status' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalSetEventStatus(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/delete' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalDeleteEvent(portalCtx(session),(await readJsonBody(req)).id));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/options') { try{return json(res,200,await portalInsuranceData(session));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/buy' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalBuyInsurance({...portalCtx(session),steamId:link?.steam_id},b.vehicleId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/redeem' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalRedeemInsurance({...portalCtx(session),steamId:link?.steam_id},b.claimId));}catch(err){return json(res,400,{error:err.message});} }
@@ -759,15 +771,42 @@ async function handleHttp(req, res) {
   if (url.pathname === '/portal/api/lore/toggle' && req.method === 'POST') { try{return json(res,200,await portalToggleLore(portalCtx(session)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/lore/delete' && req.method === 'POST') { try{return json(res,200,await portalDeleteLore(portalCtx(session)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/lore/images' && req.method === 'POST') { try{return json(res,200,await portalSetLoreImages(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/content' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res);try{const b=await readJsonBody(req);const ctx=portalCtx(session);if(b.kind==='shop')return json(res,200,await portalAdminShop(ctx,b));if(b.kind==='squad')return json(res,200,await portalAdminSquad(ctx,b));if(b.kind==='lore')return json(res,200,await portalAdminLore(ctx,b));throw new Error('Unknown content type.');}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/search' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res); try{return json(res,200,await adminSearchPlayers(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/player' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res); try{const b=await readJsonBody(req);return json(res,200,await adminPlayerInfo(session,b.steamId,b.view));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/adjust' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res); try{return json(res,200,await adminAdjust(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/jail' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res); try{return json(res,200,await adminJailAction(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/moderate' && req.method === 'POST') { if(!session.isAdmin)return unauthorized(res); try{return json(res,200,await adminModeration(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
+
+  if (url.pathname === '/portal/api/owner/permissions' && req.method === 'GET') {
+    if (!session.isOwner) return unauthorized(res);
+    try { return json(res, 200, { permissions: await getAdminPermissions(getDb(), session.guildId), catalog: permissionCatalog() }); }
+    catch (err) { return json(res, 400, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/owner/permissions' && req.method === 'POST') {
+    if (!session.isOwner) return unauthorized(res);
+    try { const body = await readJsonBody(req); return json(res, 200, { ok:true, row: await saveAdminPermissions(getDb(), session.guildId, body.permissions || {}, session.discordId) }); }
+    catch (err) { return json(res, 400, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/admin/shop/products' && req.method === 'GET') {
+    try { await requirePermission(session, 'manage_server_shop'); return json(res, 200, { products: await listManagedProducts(session.guildId, true) }); }
+    catch (err) { return json(res, 403, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/admin/shop/items' && req.method === 'GET') {
+    try { await requirePermission(session, 'manage_server_shop'); return json(res, 200, { items: await searchItemCatalog(url.searchParams.get('q') || '', 80) }); }
+    catch (err) { return json(res, 403, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/admin/shop/product' && req.method === 'POST') {
+    try { await requirePermission(session, 'edit_shop_products'); const body=await readJsonBody(req); if(body.id){const old=(await listManagedProducts(session.guildId,true)).find(x=>String(x.id)===String(body.id)); if(old&&Number(old.price)!==Number(body.price))await requirePermission(session,'edit_shop_prices');} return json(res, 200, { product: await saveManagedProduct(session.guildId, session.discordId, body) }); }
+    catch (err) { return json(res, 403, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/admin/shop/delete' && req.method === 'POST') {
+    try { await requirePermission(session, 'delete_shop_products'); const body=await readJsonBody(req); return json(res, 200, await deleteManagedProduct(session.guildId, body.id)); }
+    catch (err) { return json(res, 403, { error: err.message }); }
+  }
+
+  if (url.pathname === '/portal/api/admin/content' && req.method === 'POST') { try{const b=await readJsonBody(req);const ctx=portalCtx(session);if(b.kind==='shop'){await requirePermission(session,'moderate_player_shops');return json(res,200,await portalAdminShop(ctx,b));}if(b.kind==='squad'){await requirePermission(session,'moderate_squads');return json(res,200,await portalAdminSquad(ctx,b));}if(b.kind==='lore'){await requirePermission(session,'moderate_player_lore');return json(res,200,await portalAdminLore(ctx,b));}throw new Error('Unknown content type.');}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/search' && req.method === 'POST') { try{await requirePermission(session,'search_players');return json(res,200,await adminSearchPlayers(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/player' && req.method === 'POST') { try{await requirePermission(session,'search_players');const b=await readJsonBody(req);return json(res,200,await adminPlayerInfo(session,b.steamId,b.view));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/adjust' && req.method === 'POST') { try{await requirePermission(session,'adjust_balances');return json(res,200,await adminAdjust(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/jail' && req.method === 'POST') { try{await requirePermission(session,'jail_release');return json(res,200,await adminJailAction(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/moderate' && req.method === 'POST') { try{const body=await readJsonBody(req);await requirePermission(session,body.action==='ban'||body.action==='unban'?'ban_unban':'search_players');return json(res,200,await adminModeration(session,body));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/refund' && req.method === 'POST') {
-    if (!session.isAdmin) return unauthorized(res);
-    try { return json(res, 200, await portalRefund(session, await readJsonBody(req))); }
+    try { await requirePermission(session,'issue_refunds'); return json(res, 200, await portalRefund(session, await readJsonBody(req))); }
     catch (err) { return json(res, 400, { error: err.message }); }
   }
 
@@ -932,7 +971,7 @@ async function handleTrackerInteraction(interaction) {
     return true;
   }
 
-  const token = createAccessToken(interaction.user.id, interaction.guild.id, { displayName: interaction.member?.displayName || interaction.user.globalName || interaction.user.username, avatar: interaction.user.displayAvatarURL({ extension: 'png', size: 128 }), isAdmin: hasTrackerRole(interaction.member) });
+  const token = createAccessToken(interaction.user.id, interaction.guild.id, { displayName: interaction.member?.displayName || interaction.user.globalName || interaction.user.username, avatar: interaction.user.displayAvatarURL({ extension: 'png', size: 128 }), isAdmin: hasTrackerRole(interaction.member), isOwner: hasOwnerRole(interaction.member) });
   const link = `${base}/tracker/access?token=${encodeURIComponent(token)}`;
   await interaction.reply({
     content: `👁️ **Private Outpost Command Center Access**\nThis link is one-time use and expires in ${ACCESS_TOKEN_SECONDS} seconds. The browser session lasts ${SESSION_MINUTES} minutes.`,

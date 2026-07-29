@@ -11,6 +11,7 @@ const { getPlayerForLookup, getPlayerDisplayName, ggconPost } = require("./ggcon
 
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
 const PURCHASES_TABLE = process.env.WATCHER_SHOP_PURCHASES_TABLE || "watcher_shop_purchases";
+const PRODUCTS_TABLE = process.env.WATCHER_SERVER_SHOP_PRODUCTS_TABLE || "watcher_server_shop_products";
 const CATALOG_CACHE_MS = 10 * 60 * 1000;
 const purchaseLocks = new Set();
 let db = null;
@@ -74,6 +75,110 @@ const PACKAGES = {
     ],
   },
 };
+
+
+
+function defaultProductRows(guildId) {
+  return Object.values(PACKAGES).map((pkg, index) => ({
+    guild_id: String(guildId),
+    slug: pkg.id,
+    name: pkg.name,
+    emoji: pkg.emoji || '📦',
+    description: pkg.description || '',
+    category: pkg.id === 'medical' ? 'Medical' : pkg.id === 'gas' ? 'Supplies' : 'Weapons',
+    price: Number(pkg.price || 0),
+    enabled: true,
+    sort_order: index,
+    items: pkg.items.map((item) => ({
+      label: item.label, qty: Number(item.qty || 1), itemClass: item.itemClass || null, aliases: item.aliases || [item.label],
+    })),
+  }));
+}
+
+async function ensurePortalProducts(guildId) {
+  const db = getDb();
+  const { data, error } = await db.from(PRODUCTS_TABLE).select('*').eq('guild_id', String(guildId)).order('sort_order', { ascending: true });
+  if (error) throw error;
+  if (data?.length) return data;
+  const { data: seeded, error: seedError } = await db.from(PRODUCTS_TABLE).insert(defaultProductRows(guildId)).select('*');
+  if (seedError) throw seedError;
+  return seeded || [];
+}
+
+function normalizeProductRow(row) {
+  const items = Array.isArray(row?.items) ? row.items : [];
+  return {
+    id: row.id, slug: row.slug, name: row.name, emoji: row.emoji || '📦', description: row.description || '',
+    category: row.category || 'General', price: Number(row.price || 0), enabled: row.enabled !== false,
+    sortOrder: Number(row.sort_order || 0), purchaseLimit: row.purchase_limit == null ? null : Number(row.purchase_limit),
+    cooldownMinutes: Number(row.cooldown_minutes || 0),
+    items: items.map((item) => ({ label: String(item.label || item.displayName || item.itemClass || 'Item'), qty: Math.max(1, Number(item.qty || 1)), itemClass: item.itemClass || item.class || null, aliases: item.aliases || [item.label, item.itemClass].filter(Boolean) })),
+  };
+}
+
+async function listManagedProducts(guildId, includeDisabled = true) {
+  let q = getDb().from(PRODUCTS_TABLE).select('*').eq('guild_id', String(guildId)).order('sort_order', { ascending: true }).order('name', { ascending: true });
+  if (!includeDisabled) q = q.eq('enabled', true);
+  const { data, error } = await q;
+  if (error) throw error;
+  if (!data?.length) return (await ensurePortalProducts(guildId)).filter((x) => includeDisabled || x.enabled !== false).map(normalizeProductRow);
+  return data.map(normalizeProductRow);
+}
+
+async function getManagedProduct(guildId, productId) {
+  let q = getDb().from(PRODUCTS_TABLE).select('*').eq('guild_id', String(guildId));
+  if (/^[0-9a-f-]{30,}$/i.test(String(productId || ''))) q = q.eq('id', String(productId));
+  else q = q.eq('slug', String(productId || ''));
+  const { data, error } = await q.maybeSingle();
+  if (error) throw error;
+  return data ? normalizeProductRow(data) : null;
+}
+
+function safeSlug(value) {
+  return String(value || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `product-${Date.now()}`;
+}
+
+async function saveManagedProduct(guildId, actorId, body = {}) {
+  const items = (Array.isArray(body.items) ? body.items : []).map((item) => ({
+    label: String(item.label || item.displayName || item.itemClass || '').trim(),
+    qty: Math.max(1, Math.min(1000, Math.floor(Number(item.qty || 1)))),
+    itemClass: String(item.itemClass || item.class || '').trim(),
+    aliases: [item.label, item.itemClass].filter(Boolean).map(String),
+  })).filter((item) => item.label && item.itemClass);
+  if (!String(body.name || '').trim()) throw new Error('Product name is required.');
+  if (!items.length) throw new Error('Add at least one valid SCUM item.');
+  const price = Math.max(0, Math.floor(Number(body.price || 0)));
+  const row = {
+    guild_id: String(guildId), slug: safeSlug(body.slug || body.name), name: String(body.name).trim().slice(0, 100),
+    emoji: String(body.emoji || '📦').trim().slice(0, 16), description: String(body.description || '').trim().slice(0, 500),
+    category: String(body.category || 'General').trim().slice(0, 60), price, enabled: body.enabled !== false,
+    sort_order: Math.floor(Number(body.sortOrder || 0)), purchase_limit: body.purchaseLimit ? Math.max(1, Math.floor(Number(body.purchaseLimit))) : null,
+    cooldown_minutes: Math.max(0, Math.floor(Number(body.cooldownMinutes || 0))), items, updated_by: String(actorId || ''), updated_at: new Date().toISOString(),
+  };
+  let result;
+  if (body.id) result = await getDb().from(PRODUCTS_TABLE).update(row).eq('guild_id', String(guildId)).eq('id', String(body.id)).select('*').single();
+  else result = await getDb().from(PRODUCTS_TABLE).insert({ ...row, created_by: String(actorId || '') }).select('*').single();
+  if (result.error) throw result.error;
+  return normalizeProductRow(result.data);
+}
+
+async function deleteManagedProduct(guildId, id) {
+  const { error } = await getDb().from(PRODUCTS_TABLE).delete().eq('guild_id', String(guildId)).eq('id', String(id));
+  if (error) throw error;
+  return { ok: true };
+}
+
+async function searchItemCatalog(query = '', limit = 60) {
+  const catalog = await loadCatalog();
+  const wanted = normalize(query);
+  return catalog.map((item) => {
+    const names = catalogNames(item);
+    const itemClass = catalogClass(item);
+    const label = String(item?.dn || item?.displayName || item?.display_name || item?.name || item?.label || itemClass || 'Unknown Item');
+    const haystack = normalize(`${label} ${itemClass} ${names.join(' ')}`);
+    return { label, itemClass, category: String(item?.category || item?.cat || item?.type || 'SCUM Item'), score: !wanted ? 1 : haystack.includes(wanted) ? (normalize(label).startsWith(wanted) ? 3 : 2) : 0 };
+  }).filter((item) => item.itemClass && item.score > 0).sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)).slice(0, Math.max(1, Math.min(100, Number(limit || 60))));
+}
 
 function getDb() {
   if (db) return db;
@@ -370,20 +475,24 @@ async function handleShopInteraction(interaction) {
 }
 
 
-function getPortalCatalog() {
-  return Object.values(PACKAGES).map((pkg) => ({
-    id: pkg.id,
-    name: pkg.name,
-    emoji: pkg.emoji,
-    description: pkg.description,
-    price: pkg.price,
-    contents: pkg.items.map((item) => ({ label: item.label, qty: item.qty })),
-  }));
+async function getPortalCatalog(guildId) {
+  try {
+    const products = await listManagedProducts(guildId, false);
+    return products.map((pkg) => ({ id: pkg.id, slug: pkg.slug, name: pkg.name, emoji: pkg.emoji, description: pkg.description, category: pkg.category, price: pkg.price, enabled: pkg.enabled, contents: pkg.items.map((item) => ({ label: item.label, qty: item.qty })) }));
+  } catch (error) {
+    console.warn('⚠️ Dynamic server shop unavailable; using built-in catalogue:', error.message);
+    return Object.values(PACKAGES).map((pkg) => ({ id: pkg.id, slug: pkg.id, name: pkg.name, emoji: pkg.emoji, description: pkg.description, category: 'General', price: pkg.price, enabled: true, contents: pkg.items.map((item) => ({ label: item.label, qty: item.qty })) }));
+  }
 }
 
 async function buyPackageForPortal({ guildId, discordId, steamId, playerName, packageId }) {
-  const pkg = PACKAGES[String(packageId || '')];
-  if (!pkg) throw new Error('That shop package no longer exists.');
+  let pkg = null;
+  try { pkg = await getManagedProduct(guildId, packageId); } catch {}
+  if (!pkg) {
+    const fallback = PACKAGES[String(packageId || '')];
+    if (fallback) pkg = { ...fallback, slug: fallback.id, enabled: true };
+  }
+  if (!pkg || pkg.enabled === false) throw new Error('That shop package no longer exists or is disabled.');
   const lockKey = `${guildId}:${discordId}`;
   if (purchaseLocks.has(lockKey)) throw new Error('A shop purchase is already being processed for you.');
   purchaseLocks.add(lockKey);
@@ -397,18 +506,18 @@ async function buyPackageForPortal({ guildId, discordId, steamId, playerName, pa
     if (cash === null) throw new Error('Watcher could not verify your current in-game cash.');
     if (cash < pkg.price) throw new Error(`You need $${formatMoney(pkg.price)}. Your current balance is $${formatMoney(cash)}.`);
     const resolved = [];
-    for (const item of pkg.items) resolved.push({ ...item, itemClass: await resolveItemClass(item) });
+    for (const item of pkg.items) resolved.push({ ...item, itemClass: item.itemClass || await resolveItemClass(item) });
     await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -pkg.price });
     try {
       for (const item of resolved) await ggconPost('/spawn', { steamId: String(link.steam_id), item: item.itemClass, qty: item.qty });
     } catch (error) {
       await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: pkg.price }).catch(() => {});
-      await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.id, package_name:pkg.name, price:pkg.price, status:'refunded', error_message:error.message, created_at:new Date().toISOString() });
+      await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.slug||pkg.id, package_name:pkg.name, price:pkg.price, status:'refunded', error_message:error.message, created_at:new Date().toISOString() });
       throw new Error(`Delivery failed, so your $${formatMoney(pkg.price)} was refunded. ${error.message}`);
     }
-    await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.id, package_name:pkg.name, price:pkg.price, status:'delivered', error_message:null, created_at:new Date().toISOString() });
+    await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.slug||pkg.id, package_name:pkg.name, price:pkg.price, status:'delivered', error_message:null, created_at:new Date().toISOString() });
     await recordTransaction({ guildId, discordId, steamId:link.steam_id, playerName:link.scum_name||getPlayerDisplayName(player), type:'server_shop', title:`Server Shop: ${pkg.name}`, amount:-pkg.price, balanceBefore:cash, balanceAfter:cash-pkg.price, details:{ packageId:pkg.id, packageName:pkg.name, items:pkg.items } });
     return { ok:true, package:pkg, playerName:link.scum_name||getPlayerDisplayName(player), balanceBefore:cash, balanceAfter:cash-pkg.price };
   } finally { purchaseLocks.delete(lockKey); }
 }
-module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal };
+module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, deleteManagedProduct, searchItemCatalog };
