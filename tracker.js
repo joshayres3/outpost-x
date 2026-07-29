@@ -69,6 +69,15 @@ const htmlPath = path.join(__dirname, 'surveillance.html');
 const portalHtmlPath = path.join(__dirname, 'portal.html');
 const portalCssPath = path.join(__dirname, 'portal.css');
 const portalJsPath = path.join(__dirname, 'portal.js');
+function portalAssetVersion() {
+  try {
+    const mtimes = [portalHtmlPath, portalCssPath, portalJsPath].map((file) => fs.statSync(file).mtimeMs);
+    return String(Math.max(...mtimes).toFixed(0));
+  } catch {
+    return String(Date.now());
+  }
+}
+
 const portalOutpostPath = path.join(__dirname, 'portal-outpost.jpg');
 const portalWatcherPath = path.join(__dirname, 'portal-watcher.jpg');
 const portalStaffAssets = new Map(['josh','nivy','cat','deathbloom','crazylady','oneeyeddude','watcher-staff'].map((name) => [name, path.join(__dirname, `staff-${name}.webp`)]));
@@ -792,10 +801,11 @@ async function handleHttp(req, res) {
 
   if (url.pathname === '/portal') {
     if (!fs.existsSync(portalHtmlPath)) return text(res, 500, 'portal.html is missing.');
-    return text(res, 200, fs.readFileSync(portalHtmlPath, 'utf8'), 'text/html; charset=utf-8');
+    const html = fs.readFileSync(portalHtmlPath, 'utf8').replaceAll('__PORTAL_ASSET_VERSION__', portalAssetVersion());
+    return text(res, 200, html, 'text/html; charset=utf-8');
   }
-  if (url.pathname === '/portal/assets/portal.css') { res.writeHead(200, {'Content-Type':'text/css; charset=utf-8','Cache-Control':'public, max-age=300, stale-while-revalidate=3600'}); return res.end(fs.readFileSync(portalCssPath, 'utf8')); }
-  if (url.pathname === '/portal/assets/portal.js') { res.writeHead(200, {'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=300, stale-while-revalidate=3600'}); return res.end(fs.readFileSync(portalJsPath, 'utf8')); }
+  if (url.pathname === '/portal/assets/portal.css') { res.writeHead(200, {'Content-Type':'text/css; charset=utf-8','Cache-Control':'public, max-age=31536000, immutable'}); return res.end(fs.readFileSync(portalCssPath, 'utf8')); }
+  if (url.pathname === '/portal/assets/portal.js') { res.writeHead(200, {'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=31536000, immutable'}); return res.end(fs.readFileSync(portalJsPath, 'utf8')); }
   if (url.pathname === '/portal/assets/outpost.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalOutpostPath).pipe(res); }
   if (url.pathname === '/portal/assets/watcher.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalWatcherPath).pipe(res); }
   const staffAssetMatch = url.pathname.match(/^\/portal\/assets\/staff\/([a-z-]+)\.webp$/);
