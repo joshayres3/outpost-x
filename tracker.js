@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const http = require('http');
+const net = require('net');
 const zlib = require('zlib');
 const { URL } = require('url');
 const { createClient } = require('@supabase/supabase-js');
@@ -24,6 +25,7 @@ const {
   buildNearVehiclesBySteamId,
   getPlayerForLookup,
   getPlayerDisplayName,
+  getPlayerIpInfo,
   jailPlayerBySteamId,
   unjailPlayerBySteamId,
 } = require('./ggcon');
@@ -48,6 +50,11 @@ const PORTAL_SESSION_DAYS = Math.max(1, Number(process.env.PORTAL_SESSION_DAYS |
 const PORTAL_SESSION_MS = PORTAL_SESSION_DAYS * 24 * 60 * 60 * 1000;
 const PORTAL_ROLE_RECHECK_MS = Math.max(60_000, Number(process.env.PORTAL_ROLE_RECHECK_MINUTES || '15') * 60_000);
 const CLEANUP_MINUTES = Math.max(10, Number(process.env.TRACKER_CLEANUP_MINUTES || '60'));
+const IP_GEOLOOKUP_ENABLED = String(process.env.PORTAL_IP_GEOLOOKUP_ENABLED || 'true').toLowerCase() !== 'false';
+const IP_GEOLOOKUP_BASE_URL = String(process.env.PORTAL_IP_GEOLOOKUP_BASE_URL || 'https://ipwho.is').trim().replace(/\/+$/, '');
+const IP_GEOLOOKUP_CACHE_MS = Math.max(60_000, Number(process.env.PORTAL_IP_GEOLOOKUP_CACHE_HOURS || '24') * 60 * 60 * 1000);
+const ipGeoCache = new Map();
+
 const STAFF_ROLE_NAMES = new Set(
   String(process.env.TRACKER_STAFF_ROLES || 'Owner,Owners,Admin,Trial Admin,Baby Admin')
     .split(',')
@@ -740,6 +747,97 @@ async function portalAttentionCounts(session){
   return {total:failedEvents+failedTransactions.length+pendingInsurance.length,failedEvents,failedTransactions:failedTransactions.length,pendingInsurance:pendingInsurance.length};
 }
 
+function isPublicLookupIp(ip) {
+  const value = String(ip || '').trim();
+  const kind = net.isIP(value);
+  if (!kind) return false;
+  if (kind === 4) {
+    const parts = value.split('.').map(Number);
+    const [a,b] = parts;
+    if (a === 10 || a === 127 || a === 0) return false;
+    if (a === 169 && b === 254) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a >= 224) return false;
+    return true;
+  }
+  const lower = value.toLowerCase();
+  if (lower === '::1' || lower === '::' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) return false;
+  return true;
+}
+
+function formatApproximateIpLocation(data) {
+  const place = [data.city, data.region, data.country].filter(Boolean).join(', ') || 'Location unavailable';
+  const provider = data.connection?.isp || data.connection?.org || 'Unknown';
+  const asn = data.connection?.asn ? `AS${data.connection.asn}` : 'Unknown';
+  const timezone = data.timezone?.id || data.timezone?.utc || 'Unknown';
+  return [
+    '🌐 Approximate IP Location',
+    '',
+    `IP: ${data.ip || 'Unknown'}`,
+    `Approximate Location: ${place}`,
+    `Provider: ${provider}`,
+    `ASN: ${asn}`,
+    `Time Zone: ${timezone}`,
+    '',
+    'This is an IP-network estimate, not a home address. Mobile networks, VPNs, proxies, and ISP routing can show a different city or region.',
+  ].join('\n');
+}
+
+async function lookupApproximateIp(ip) {
+  if (!IP_GEOLOOKUP_ENABLED) throw new Error('IP location lookup is disabled.');
+  const value = String(ip || '').trim();
+  if (!isPublicLookupIp(value)) throw new Error('No public IP address is available for this player.');
+  const cached = ipGeoCache.get(value);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  timeout.unref?.();
+  try {
+    const endpoint = `${IP_GEOLOOKUP_BASE_URL}/${encodeURIComponent(value)}?fields=ip,success,message,country,region,city,connection,time_zone,timezone`;
+    const response = await fetch(endpoint, { signal: controller.signal, headers: { Accept: 'application/json', 'User-Agent': 'Outpost-X-Watcher/1.0' } });
+    if (!response.ok) throw new Error(response.status === 429 ? 'IP lookup limit reached. Try again later.' : `IP lookup service returned ${response.status}.`);
+    const data = await response.json();
+    if (data?.success === false) throw new Error(data.message || 'IP location lookup failed.');
+    const normalized = {
+      ip: data.ip || value,
+      city: data.city || null,
+      region: data.region || null,
+      country: data.country || null,
+      connection: data.connection || {},
+      timezone: data.timezone || data.time_zone || {},
+      lookedUpAt: new Date().toISOString(),
+    };
+    ipGeoCache.set(value, { data: normalized, expiresAt: Date.now() + IP_GEOLOOKUP_CACHE_MS });
+    return normalized;
+  } catch (err) {
+    if (err?.name === 'AbortError') throw new Error('IP location lookup timed out.');
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function portalAdminIpLocation(session, steamId) {
+  if (!session.isAdmin) throw new Error('Admin access required.');
+  const id = String(steamId || '').trim();
+  if (!/^\d{15,20}$/.test(id)) throw new Error('A valid Steam64 ID is required.');
+  const result = await getPlayerForLookup(id);
+  if (result.type !== 'single') throw new Error('Player could not be found in current or recent server data.');
+  const ipInfo = await getPlayerIpInfo(result.player).catch(() => null);
+  if (!ipInfo?.ip) throw new Error('No recent public IP was found for this player.');
+  const location = await lookupApproximateIp(ipInfo.ip);
+  return {
+    steamId: id,
+    playerName: getPlayerDisplayName(result.player),
+    source: ipInfo.source || 'server data',
+    seenAt: ipInfo.seenAt || null,
+    location,
+    content: formatApproximateIpLocation(location),
+  };
+}
+
 async function portalActiveUnregisteredPlayers(session) {
   if (!session.isAdmin) throw new Error('Admin access required.');
   const players = [...latestOnline.values()];
@@ -1316,6 +1414,7 @@ async function handleHttp(req, res) {
 
   if (url.pathname === '/portal/api/admin/content' && req.method === 'POST') { try{const b=await readJsonBody(req);const ctx=portalCtx(session);if(b.kind==='shop'){await requirePermission(session,'moderate_player_shops');return json(res,200,await portalAdminShop(ctx,b));}if(b.kind==='squad'){await requirePermission(session,'moderate_squads');return json(res,200,await portalAdminSquad(ctx,b));}if(b.kind==='lore'){await requirePermission(session,'moderate_player_lore');return json(res,200,await portalAdminLore(ctx,b));}throw new Error('Unknown content type.');}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/search' && req.method === 'POST') { try{await requirePermission(session,'search_players');return json(res,200,await adminSearchPlayers(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/ip-location' && req.method === 'POST') { try{await requirePermission(session,'search_players');const b=await readJsonBody(req);return json(res,200,await portalAdminIpLocation(session,b.steamId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/player' && req.method === 'POST') { try{await requirePermission(session,'search_players');const b=await readJsonBody(req);return json(res,200,await adminPlayerInfo(session,b.steamId,b.view));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/adjust' && req.method === 'POST') { try{await requirePermission(session,'adjust_balances');return json(res,200,await adminAdjust(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/jail' && req.method === 'POST') { try{await requirePermission(session,'jail_release');return json(res,200,await adminJailAction(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }

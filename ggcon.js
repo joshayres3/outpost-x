@@ -6624,6 +6624,7 @@ module.exports = {
   getOnlinePlayers,
   getServerSummary,
   getPlayerDisplayName,
+  getPlayerIpInfo,
   ggconPost,
   ggconGet,
   triggerCargoFrenzyFromPortal,
