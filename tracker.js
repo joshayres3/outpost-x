@@ -2,9 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const http = require('http');
+const zlib = require('zlib');
 const { URL } = require('url');
 const { createClient } = require('@supabase/supabase-js');
 const { MAP_CALIBRATION } = require('./mapCalibration');
+const watcherScheduler = require('./watcherScheduler');
 const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, deleteManagedProduct, searchItemCatalog } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
@@ -125,6 +127,13 @@ let serverRef = null;
 let sampleTimer = null;
 const portalRevisions = new Map();
 let cleanupTimer = null;
+const responseCache = new Map();
+const inFlight = new Map();
+const revisionStreams = new Map();
+const retryQueue = [];
+let retryWorkerRunning = false;
+const RUNTIME_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || 'watcher_runtime_state';
+const PORTAL_SETTINGS_KEY_PREFIX = 'portal_settings:';
 let sampleRunning = false;
 let latestOnline = new Map();
 const lastSaved = new Map();
@@ -153,6 +162,12 @@ function bumpPortalRevision(guildId) {
   const current = getPortalRevision(key);
   const next = { value: current.value + 1, updatedAt: Date.now() };
   portalRevisions.set(key, next);
+  responseCache.clear();
+  const listeners = revisionStreams.get(key);
+  if (listeners) {
+    const payload = `event: revision\ndata: ${JSON.stringify(next)}\n\n`;
+    for (const res of [...listeners]) { try { res.write(payload); } catch { listeners.delete(res); } }
+  }
   return next;
 }
 
@@ -607,6 +622,85 @@ async function getRecordedPoint(steamId, recordedAt) {
 }
 
 
+function cacheGet(key) {
+  const item = responseCache.get(key);
+  if (!item || item.expiresAt <= Date.now()) { responseCache.delete(key); return null; }
+  return item.value;
+}
+function cacheSet(key, value, ttlMs) { responseCache.set(key, { value, expiresAt: Date.now() + Math.max(250, ttlMs) }); return value; }
+async function singleFlight(key, fn) {
+  if (inFlight.has(key)) return inFlight.get(key);
+  const promise = Promise.resolve().then(fn).finally(() => inFlight.delete(key));
+  inFlight.set(key, promise);
+  return promise;
+}
+async function cachedFlight(key, ttlMs, fn) {
+  const hit = cacheGet(key); if (hit !== null) return hit;
+  return singleFlight(key, async () => cacheSet(key, await fn(), ttlMs));
+}
+function defaultPortalSettings() {
+  return {
+    maintenanceTitle: String(process.env.PORTAL_MAINTENANCE_TITLE || 'WATCHER NOTICE').trim(),
+    maintenanceMessage: String(process.env.PORTAL_MAINTENANCE_MESSAGE || '').trim(),
+    maintenanceLevel: String(process.env.PORTAL_MAINTENANCE_LEVEL || 'notice').trim().toLowerCase(),
+    announcement: '',
+    features: { purchases:true, rentals:true, airlift:true, insurance:true, eventCreation:true, surveillanceTeleport:true },
+  };
+}
+async function loadPortalSettings(guildId) {
+  const key = `${PORTAL_SETTINGS_KEY_PREFIX}${guildId}`;
+  return cachedFlight(`settings:${key}`, 30_000, async () => {
+    const base = defaultPortalSettings();
+    try {
+      const { data, error } = await getDb().from(RUNTIME_TABLE).select('value').eq('key', key).maybeSingle();
+      if (error) throw error;
+      const value = data?.value || {};
+      return { ...base, ...value, features: { ...base.features, ...(value.features || {}) } };
+    } catch (error) {
+      console.warn(`⚠️ Portal settings fallback: ${error.message}`);
+      return base;
+    }
+  });
+}
+async function savePortalSettings(guildId, input) {
+  const current = await loadPortalSettings(guildId);
+  const next = {
+    ...current,
+    maintenanceTitle: String(input.maintenanceTitle ?? current.maintenanceTitle).slice(0,80),
+    maintenanceMessage: String(input.maintenanceMessage ?? current.maintenanceMessage).slice(0,1000),
+    maintenanceLevel: ['info','notice','critical'].includes(String(input.maintenanceLevel)) ? String(input.maintenanceLevel) : current.maintenanceLevel,
+    announcement: String(input.announcement ?? current.announcement).slice(0,1000),
+    features: { ...current.features, ...(input.features || {}) },
+  };
+  const key = `${PORTAL_SETTINGS_KEY_PREFIX}${guildId}`;
+  const { error } = await getDb().from(RUNTIME_TABLE).upsert({ key, value: next, updated_at: new Date().toISOString() }, { onConflict:'key' });
+  if (error) throw error;
+  responseCache.delete(`settings:${key}`);
+  bumpPortalRevision(guildId);
+  return next;
+}
+async function featureEnabled(guildId, feature) { return (await loadPortalSettings(guildId)).features?.[feature] !== false; }
+async function requireFeature(guildId, feature, label) { if (!(await featureEnabled(guildId, feature))) throw new Error(`${label || feature} is temporarily disabled by the Owner.`); }
+function queueRetry(name, handler, options={}) {
+  retryQueue.push({ id: crypto.randomUUID(), name, handler, attempts:0, maxAttempts:Math.max(1,Number(options.maxAttempts||3)), nextAt:Date.now()+Math.max(1000,Number(options.delayMs||3000)), lastError:null });
+  runRetryWorker().catch(()=>{});
+}
+async function runRetryWorker() {
+  if (retryWorkerRunning) return;
+  retryWorkerRunning = true;
+  try {
+    while (retryQueue.length) {
+      retryQueue.sort((a,b)=>a.nextAt-b.nextAt);
+      const item=retryQueue[0], wait=item.nextAt-Date.now();
+      if(wait>0){await new Promise(r=>setTimeout(r,Math.min(wait,30000)));continue;}
+      retryQueue.shift(); item.attempts++;
+      try { await item.handler(); }
+      catch(error){ item.lastError=String(error?.message||error); if(item.attempts<item.maxAttempts){item.nextAt=Date.now()+Math.min(60000,3000*(2**item.attempts));retryQueue.push(item);} }
+    }
+  } finally { retryWorkerRunning=false; }
+}
+
+
 async function safeRows(table, build) {
   try { const q = build(getDb().from(table)); const { data, error } = await q; if (error) throw error; return data || []; }
   catch (err) { console.warn(`⚠️ Portal could not read ${table}: ${err.message}`); return []; }
@@ -622,12 +716,16 @@ function currentPlayerBySteam(steamId) {
 function playerCash(p){ const n=Number(p?.accountBalance ?? p?.account_balance ?? p?.cash ?? p?.currency ?? p?.money ?? p?.balance ?? p?.wallet?.balance ?? p?.account?.balance); return Number.isFinite(n)?n:null; }
 function playerFame(p){ const n=Number(p?.famePoints ?? p?.fame ?? p?.fame_points); return Number.isFinite(n)?n:null; }
 async function portalHealthSnapshot(session){
+  return cachedFlight(`health:${session.guildId}`,15000,async()=>{
   const now=new Date().toISOString();
   const checks={watcher:{ok:!!botRef?.isReady?.(),detail:botRef?.isReady?.()?'Discord bot connected':'Discord bot is not ready'},supabase:{ok:false,detail:'Not checked'},ggcon:{ok:false,detail:'Not checked'},eventPosting:{ok:false,detail:'Not checked'},surveillance:{ok:!!externalMapAssetBaseUrl(),detail:externalMapAssetBaseUrl()?'Supabase map storage configured':'Map asset URL is not configured'}};
   try{const {error}=await getDb().from(PLAYER_LINKS_TABLE).select('discord_id').limit(1);if(error)throw error;checks.supabase={ok:true,detail:'Database reachable'};}catch(e){checks.supabase={ok:false,detail:e.message};}
   try{const data=await ggconGet('/players.json');checks.ggcon={ok:true,detail:`GGCON reachable • ${Array.isArray(data?.players)?data.players.length:0} online`};}catch(e){checks.ggcon={ok:false,detail:e.message};}
   try{const guild=botRef?.guilds?.cache?.get(String(session.guildId));const channelId=String(process.env.EVENTS_CHANNEL_ID||'');const ch=guild?.channels?.cache?.get(channelId)||await botRef?.channels?.fetch(channelId).catch(()=>null);checks.eventPosting={ok:!!ch?.isTextBased?.(),detail:ch?.isTextBased?.()?`Ready in #${ch.name}`:'Configured event channel is unavailable'};}catch(e){checks.eventPosting={ok:false,detail:e.message};}
-  return {ok:true,checkedAt:now,version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT,checks};
+  const settings=await loadPortalSettings(session.guildId);
+  const config={eventsChannel:!!String(process.env.EVENTS_CHANNEL_ID||''),supabase:!!(process.env.SUPABASE_URL&&process.env.SUPABASE_KEY),ggcon:!!process.env.GGCON_PASSWORD,discordOAuth:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),mapStorage:!!externalMapAssetBaseUrl()};
+  return {ok:true,checkedAt:now,version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT,checks,config,settings,scheduler:watcherScheduler.snapshot(),retryQueue:retryQueue.map(x=>({id:x.id,name:x.name,attempts:x.attempts,maxAttempts:x.maxAttempts,nextAt:new Date(x.nextAt).toISOString(),lastError:x.lastError}))};
+  });
 }
 async function portalAttentionCounts(session){
   if(!session.isAdmin)return {};
@@ -695,25 +793,22 @@ async function buildPortalOverview(session) {
     console.warn(`⚠️ Portal vehicle lookup failed for ${steamId}: ${err.message}`);
   }
   const shopCatalog = await getPortalCatalog(session.guildId);
+  const portalSettings = await loadPortalSettings(session.guildId);
   return {
     me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,permissions,permissionCatalog:session.isOwner?permissionCatalog():[],sessionExpiresAt:new Date(session.expiresAt).toISOString()},
     player:{steamId:steamId||null,name:link?.scum_name||playerDetail?.characterName||playerDetail?.name||onlineSample?.name||null,online:!!onlineSample,cash:playerCash(playerDetail),fame:playerFame(playerDetail)},
     vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
     airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,
     shopCatalog,
-    system:{
-      verifiedAt:new Date().toISOString(),
-      onlinePlayers:latestOnline.size,
-      maintenance:String(process.env.PORTAL_MAINTENANCE_MESSAGE||'').trim()?{
-        id:require('crypto').createHash('sha1').update(String(process.env.PORTAL_MAINTENANCE_MESSAGE)).digest('hex').slice(0,12),
-        title:String(process.env.PORTAL_MAINTENANCE_TITLE||'WATCHER NOTICE').trim(),
-        message:String(process.env.PORTAL_MAINTENANCE_MESSAGE).trim(),
-        level:String(process.env.PORTAL_MAINTENANCE_LEVEL||'notice').trim().toLowerCase()
-      }:null
-    },
     mapCalibration: MAP_CALIBRATION,
     attention: await portalAttentionCounts(session),
     adminRecentActivity: await portalAdminRecentActivity(session),
+    settings: portalSettings,
+    system:{
+      verifiedAt:new Date().toISOString(),
+      onlinePlayers:latestOnline.size,
+      maintenance:portalSettings.maintenanceMessage?{id:crypto.createHash('sha1').update(portalSettings.maintenanceMessage).digest('hex').slice(0,12),title:portalSettings.maintenanceTitle,message:portalSettings.maintenanceMessage,level:portalSettings.maintenanceLevel}:null
+    },
     build:{version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT}
   };
 }
@@ -930,19 +1025,33 @@ async function adminModeration(session,body){
 function portalCtx(session){return {guildId:String(session.guildId),discordId:String(session.discordId),displayName:session.displayName||'Player',isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,db:getDb(),bot:botRef};}
 async function portalInsuranceData(session){const link=await portalLink(session);if(!link?.steam_id)return{policies:[],claims:[],vehicles:[]};return portalInsuranceOptions({...portalCtx(session),steamId:String(link.steam_id)});}
 
-function json(res, status, body) {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    'Content-Length': Buffer.byteLength(payload),
-  });
+function acceptsCompression(req) {
+  const value = String(req?.headers?.['accept-encoding'] || '');
+  if (/\bbr\b/.test(value)) return 'br';
+  if (/\bgzip\b/.test(value)) return 'gzip';
+  return '';
+}
+function sendPayload(res, status, body, contentType, cacheControl='no-store') {
+  const raw = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
+  const encoding = raw.length >= 1024 ? acceptsCompression(res._watcherReq) : '';
+  let payload = raw;
+  if (encoding === 'br') payload = zlib.brotliCompressSync(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } });
+  else if (encoding === 'gzip') payload = zlib.gzipSync(raw, { level: 6 });
+  const headers = {
+    'Content-Type': contentType,
+    'Cache-Control': cacheControl,
+    'Content-Length': payload.length,
+    'Vary': 'Accept-Encoding',
+  };
+  if (encoding) headers['Content-Encoding'] = encoding;
+  res.writeHead(status, headers);
   res.end(payload);
 }
-
-function text(res, status, body, contentType = 'text/plain; charset=utf-8') {
-  res.writeHead(status, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
-  res.end(body);
+function json(res, status, body, cacheControl='no-store') {
+  sendPayload(res, status, JSON.stringify(body), 'application/json; charset=utf-8', cacheControl);
+}
+function text(res, status, body, contentType = 'text/plain; charset=utf-8', cacheControl='no-store') {
+  sendPayload(res, status, body, contentType, cacheControl);
 }
 
 function unauthorized(res, status = 403) {
@@ -954,6 +1063,7 @@ async function requirePermission(session, key) {
 }
 
 async function handleHttp(req, res) {
+  res._watcherReq = req;
   pruneAuthState();
   const host = req.headers.host || 'localhost';
   const url = new URL(req.url, `http://${host}`);
@@ -1054,12 +1164,28 @@ async function handleHttp(req, res) {
     const html = fs.readFileSync(portalHtmlPath, 'utf8').replaceAll('__PORTAL_ASSET_VERSION__', portalAssetVersion());
     return text(res, 200, html, 'text/html; charset=utf-8');
   }
-  if (url.pathname === '/portal/assets/portal.css') { res.writeHead(200, {'Content-Type':'text/css; charset=utf-8','Cache-Control':'public, max-age=31536000, immutable'}); return res.end(fs.readFileSync(portalCssPath, 'utf8')); }
-  if (url.pathname === '/portal/assets/portal.js') { res.writeHead(200, {'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=31536000, immutable'}); return res.end(fs.readFileSync(portalJsPath, 'utf8')); }
+  if (url.pathname === '/portal/assets/portal.css') return text(res,200,fs.readFileSync(portalCssPath,'utf8'),'text/css; charset=utf-8','public, max-age=31536000, immutable');
+  if (url.pathname === '/portal/assets/portal.js') return text(res,200,fs.readFileSync(portalJsPath,'utf8'),'application/javascript; charset=utf-8','public, max-age=31536000, immutable');
   if (url.pathname === '/portal/assets/outpost.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalOutpostPath).pipe(res); }
   if (url.pathname === '/portal/assets/watcher.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalWatcherPath).pipe(res); }
   const staffAssetMatch = url.pathname.match(/^\/portal\/assets\/staff\/([a-z-]+)\.webp$/);
   if (staffAssetMatch && portalStaffAssets.has(staffAssetMatch[1])) { const assetPath = portalStaffAssets.get(staffAssetMatch[1]); if (!fs.existsSync(assetPath)) return text(res, 404, 'Staff image not found.'); res.writeHead(200, {'Content-Type':'image/webp','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(assetPath).pipe(res); }
+
+  if (url.pathname === '/portal/api/stream') {
+    const key = portalRevisionKey(session.guildId);
+    res.writeHead(200, {
+      'Content-Type':'text/event-stream; charset=utf-8',
+      'Cache-Control':'no-cache, no-transform',
+      'Connection':'keep-alive',
+      'X-Accel-Buffering':'no',
+    });
+    res.write(`event: ready\ndata: ${JSON.stringify(getPortalRevision(session.guildId))}\n\n`);
+    const listeners = revisionStreams.get(key) || new Set();
+    listeners.add(res); revisionStreams.set(key,listeners);
+    const heartbeat=setInterval(()=>{try{res.write(': heartbeat\n\n')}catch{}},25000); heartbeat.unref?.();
+    req.on('close',()=>{clearInterval(heartbeat);listeners.delete(res);if(!listeners.size)revisionStreams.delete(key)});
+    return;
+  }
 
   if (url.pathname === '/portal/api/revision') {
     const revision = getPortalRevision(session.guildId);
@@ -1071,11 +1197,11 @@ async function handleHttp(req, res) {
   }
 
   if (url.pathname === '/portal/api/overview') {
-    try { return json(res, 200, await buildPortalOverview(session)); }
+    try { const key=`overview:${session.guildId}:${session.discordId}`; return json(res,200,await cachedFlight(key,8000,()=>buildPortalOverview(session))); }
     catch (err) { return json(res, 500, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/taxi/prepare' && req.method === 'POST') {
-    try { return json(res, 200, await portalTaxiPrepare(session, await readJsonBody(req))); }
+    try { await requireFeature(session.guildId,'airlift','Airlift Taxi'); return json(res, 200, await portalTaxiPrepare(session, await readJsonBody(req))); }
     catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/taxi/send' && req.method === 'POST') {
@@ -1087,23 +1213,26 @@ async function handleHttp(req, res) {
     catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/rental' && req.method === 'POST') {
-    try { return json(res, 200, await portalRental(session)); }
+    try { await requireFeature(session.guildId,'rentals','Dirtbike rentals'); return json(res, 200, await portalRental(session)); }
     catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/shop' && req.method === 'POST') {
-    try { const link=await portalLink(session); return json(res,200,await buyPackageForPortal({guildId:session.guildId,discordId:session.discordId,steamId:link?.steam_id,playerName:link?.scum_name,packageId:(await readJsonBody(req)).id})); }
+    try { await requireFeature(session.guildId,'purchases','Server purchases'); const link=await portalLink(session); return json(res,200,await buyPackageForPortal({guildId:session.guildId,discordId:session.discordId,steamId:link?.steam_id,playerName:link?.scum_name,packageId:(await readJsonBody(req)).id})); }
     catch (err) { return json(res,400,{error:err.message}); }
   }
   if (url.pathname === '/portal/api/events/rsvp' && req.method === 'POST') { try{const b=await readJsonBody(req);return json(res,200,await portalRsvpEvent(portalCtx(session),b.id,b.attending!==false));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/events/create' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalCreateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/create' && req.method === 'POST') { try{await requirePermission(session,'manage_events');await requireFeature(session.guildId,'eventCreation','Event creation');return json(res,200,await portalCreateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/update' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalUpdateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/status' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalSetEventStatus(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/delete' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalDeleteEvent(portalCtx(session),(await readJsonBody(req)).id));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/retry-post' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalRetryEventPost(portalCtx(session),(await readJsonBody(req)).id));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/health' && req.method === 'GET') { try{if(!session.isAdmin)throw new Error('Admin access required.');return json(res,200,await portalHealthSnapshot(session));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/owner/export' && req.method === 'GET') { try{return json(res,200,await portalBackupExport(session));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/owner/settings' && req.method === 'GET') { try{if(!session.isOwner)throw new Error('Owner access required.');return json(res,200,{settings:await loadPortalSettings(session.guildId)});}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/owner/settings' && req.method === 'POST') { try{if(!session.isOwner)throw new Error('Owner access required.');return json(res,200,{settings:await savePortalSettings(session.guildId,await readJsonBody(req))});}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/inbox' && req.method === 'GET') { try{if(!session.isAdmin)throw new Error('Admin access required.');const attention=await portalAttentionCounts(session);return json(res,200,{attention,retryQueue:retryQueue.map(x=>({name:x.name,attempts:x.attempts,maxAttempts:x.maxAttempts,nextAt:new Date(x.nextAt).toISOString(),lastError:x.lastError}))});}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/options') { try{return json(res,200,await portalInsuranceData(session));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/insurance/buy' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalBuyInsurance({...portalCtx(session),steamId:link?.steam_id},b.vehicleId));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/insurance/buy' && req.method === 'POST') { try{await requireFeature(session.guildId,'insurance','Vehicle insurance');const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalBuyInsurance({...portalCtx(session),steamId:link?.steam_id},b.vehicleId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/redeem' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalRedeemInsurance({...portalCtx(session),steamId:link?.steam_id},b.claimId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/player-shop/create' && req.method === 'POST') { try{return json(res,200,await portalCreateShop(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/player-shop/update' && req.method === 'POST') { try{return json(res,200,await portalUpdateShop(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
@@ -1244,6 +1373,7 @@ async function handleHttp(req, res) {
 
   if (url.pathname === '/tracker/api/teleport-me' && req.method === 'POST') {
     try {
+      await requireFeature(session.guildId,'surveillanceTeleport','Surveillance teleporting');
       const body = await readJsonBody(req);
       const targetSteamId = String(body.targetSteamId || '').trim();
       const recordedAt = String(body.recordedAt || '').trim();
@@ -1295,8 +1425,7 @@ async function startTrackerOnBoot(bot) {
   startWebServer();
   await recordMovementSample();
   scheduleMovementSample(latestOnline.size > 0 ? SAMPLE_SECONDS : IDLE_SAMPLE_SECONDS);
-  if (cleanupTimer) clearInterval(cleanupTimer);
-  cleanupTimer = setInterval(() => cleanupOldTrackerData(), CLEANUP_MINUTES * 60_000);
+  watcherScheduler.registerTask('movement-retention-cleanup', CLEANUP_MINUTES*60_000, cleanupOldTrackerData, {initialDelayMs:5000,jitterMs:30000,essential:true});
   await cleanupOldTrackerData();
   console.log(`👁️ Movement tracker active: ${SAMPLE_SECONDS}s online / ${IDLE_SAMPLE_SECONDS}s idle samples, ${RETENTION_HOURS}h retention.`);
 }
