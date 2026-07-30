@@ -6,6 +6,7 @@ const {
   getPlayerDisplayName,
   triggerCargoFrenzyFromPortal,
 } = require('./ggcon');
+const CARGO_SAFE_POINTS = require('./cargoSafePoints');
 
 const RUNTIME_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || 'watcher_runtime_state';
 const STATE_KEY = 'watcher_special_events';
@@ -53,10 +54,72 @@ function posOf(p) {
 }
 function distanceUnits(a, b) { return Math.hypot(Number(a.x) - Number(b.x), Number(a.y) - Number(b.y)); }
 function metres(units) { return Math.max(0, Math.round(units / 100)); }
-function compass(dx, dy) {
-  const angle = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+function compassFromTo(origin, target) {
+  // SCUM map orientation used by Outpost X:
+  // higher Y = north, lower Y = south, lower X = east, higher X = west.
+  const eastWest = Number(origin.x) - Number(target.x);
+  const northSouth = Number(target.y) - Number(origin.y);
+  const angle = (Math.atan2(eastWest, northSouth) * 180 / Math.PI + 360) % 360;
   const dirs = ['north','northeast','east','southeast','south','southwest','west','northwest'];
   return dirs[Math.round(angle / 45) % 8];
+}
+
+function randomChoice(list) {
+  return list[Math.floor(Math.random() * list.length)] || null;
+}
+
+function nearestSafePointDistance(point) {
+  let best = Infinity;
+  for (const safe of CARGO_SAFE_POINTS) {
+    const d = distanceUnits(point, safe);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+function routeStaysOnSafeLand(from, to) {
+  // Endpoints come from the pre-screened safe-land pool. Sampling the route
+  // prevents a clue from pointing across bays, coastlines, or open water.
+  for (const ratio of [0.2, 0.4, 0.6, 0.8]) {
+    const sample = {
+      x: Number(from.x) + (Number(to.x) - Number(from.x)) * ratio,
+      y: Number(from.y) + (Number(to.y) - Number(from.y)) * ratio,
+    };
+    if (nearestSafePointDistance(sample) > 28000) return false;
+  }
+  return true;
+}
+
+function chooseSafeDecoyPoint(origin, previous = null) {
+  const ranges = [
+    { min: 30000, max: 90000 }, // preferred: 300-900 m
+    { min: 15000, max: 60000 }, // fallback: 150-600 m
+    { min: 5000, max: 45000 },  // final nearby-land fallback
+  ];
+
+  for (const range of ranges) {
+    let candidates = CARGO_SAFE_POINTS.filter((point) => {
+      const d = distanceUnits(origin, point);
+      if (d < range.min || d > range.max) return false;
+      if (!routeStaysOnSafeLand(origin, point)) return false;
+      // Keep later fake scans believable: prefer a nearby shift, not a jump
+      // to the opposite side of the bounty.
+      if (previous && distanceUnits(previous, point) > 45000) return false;
+      return true;
+    });
+
+    if (!candidates.length && previous) {
+      candidates = CARGO_SAFE_POINTS.filter((point) => {
+        const d = distanceUnits(origin, point);
+        return d >= range.min && d <= range.max && routeStaysOnSafeLand(origin, point);
+      });
+    }
+    if (candidates.length) return randomChoice(candidates);
+  }
+
+  // Never fabricate an unsafe point. Returning null gives the bounty a
+  // temporary signal-unavailable message rather than sending them to water.
+  return null;
 }
 function roundedDistance(m) {
   if (m < 100) return 'less than 100 metres';
@@ -149,12 +212,18 @@ async function joinHunt(event, steamId, name, players) {
   await privateMessage(steamId, 'WATCHER HUNT: You are registered. When the hunt begins, type !scan for a private directional signal.', '#47d67d', 7);
 }
 
-function decoyTarget(event, hunterId, players) {
-  if (hunterId !== event.bounty.steamId) return players.get(event.bounty.steamId);
-  const choices = [...players.values()].filter(p => steamIdOf(p) !== hunterId);
-  if (!choices.length) return null;
-  const idx = Math.abs([...hunterId].reduce((a,c)=>a+c.charCodeAt(0),0) + Math.floor(Date.now()/60000)) % choices.length;
-  return choices[idx];
+function targetForScan(event, participant, steamId, players) {
+  if (steamId !== event.bounty.steamId) return players.get(event.bounty.steamId);
+  const bounty = players.get(steamId);
+  const origin = posOf(bounty);
+  if (!origin) return null;
+  const previous = participant.decoyPoint && Number.isFinite(Number(participant.decoyPoint.x))
+    ? participant.decoyPoint
+    : null;
+  const point = chooseSafeDecoyPoint(origin, previous);
+  if (!point) return null;
+  participant.decoyPoint = { x: Number(point.x), y: Number(point.y), z: origin.z || 0 };
+  return participant.decoyPoint;
 }
 
 async function scanHunt(event, steamId, players) {
@@ -164,10 +233,10 @@ async function scanHunt(event, steamId, players) {
   const now = Date.now(), cd = event.scanCooldownSeconds * 1000;
   const remaining = Math.ceil((participant.lastScanAt + cd - now) / 1000);
   if (remaining > 0) return privateMessage(steamId, `WATCHER: Scanner recharging. Next scan available in ${remaining} seconds.`, '#e9c46a', 5);
-  const hunter = players.get(steamId), target = decoyTarget(event, steamId, players);
+  const hunter = players.get(steamId), target = targetForScan(event, participant, steamId, players);
   const hp = posOf(hunter), tp = posOf(target);
   if (!hp || !tp) return privateMessage(steamId, 'WATCHER: Signal unavailable. Remain online and try again.', '#ff6b6b', 5);
-  const units = distanceUnits(hp, tp), m = metres(units), dir = compass(tp.x - hp.x, tp.y - hp.y);
+  const units = distanceUnits(hp, tp), m = metres(units), dir = compassFromTo(hp, tp);
   const trend = participant.previousDistance == null ? '' : units < participant.previousDistance - 2500 ? ' You are getting closer.' : units > participant.previousDistance + 2500 ? ' The signal is getting farther away.' : ' Signal distance is steady.';
   participant.previousDistance = units; participant.lastScanAt = now; participant.rechargeNoticeAt = now + cd;
   await privateMessage(steamId, `WATCHER SCAN: The hidden signal is ${roundedDistance(m)} ${dir} of you. Signal strength: ${strength(m)}.${trend} Next scan available in ${event.scanCooldownSeconds} seconds.`, m <= 100 ? '#ff4d4d' : '#3d97ff', 10);
