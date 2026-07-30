@@ -238,7 +238,8 @@ function buildEventEmbeds(event, rsvpCount = 0, closed = false) {
     .setColor(closed ? 0x6b7280 : 0x3b82f6)
     .setFooter({ text: "Outpost X Events" });
   const images = Array.isArray(event.image_urls) ? event.image_urls.filter(Boolean).slice(0, MAX_EVENT_IMAGES) : [];
-  return [main, ...images.map((url, index) => new EmbedBuilder().setColor(closed ? 0x6b7280 : 0x3b82f6).setImage(url).setFooter({ text: `${event.title} • Image ${index + 1}` }))];
+  if (images[0]) main.setImage(images[0]);
+  return [main];
 }
 
 function decodePortalEventImages(images, prefix) {
@@ -1269,11 +1270,16 @@ async function portalCreateEvent(ctx, body) {
   };
   const { data: event, error } = await ctx.db.from('events').insert(payload).select().single();
   if (error) throw error;
+
+  let finalEvent = event;
   if (Array.isArray(body.images) && body.images.length) {
-    const updated = await portalSetEventImages(ctx, event, body.images);
-    return { ok: true, event: updated };
+    finalEvent = await portalSetEventImages(ctx, event, body.images);
   }
-  return { ok: true, event };
+
+  await postEvent(ctx.bot, ctx.db, finalEvent);
+  const { data: postedEvent, error: reloadError } = await ctx.db.from('events').select('*').eq('id', finalEvent.id).single();
+  if (reloadError) throw reloadError;
+  return { ok: true, event: postedEvent };
 }
 
 async function portalUpdateEvent(ctx, body) {
@@ -1285,20 +1291,37 @@ async function portalUpdateEvent(ctx, body) {
   const { data: event, error } = await ctx.db.from('events').update(payload).eq('id', id).select().single(); if (error) throw error;
   let finalEvent={...existing,...event};
   if(body.replaceImages===true) finalEvent=await portalSetEventImages(ctx,finalEvent,Array.isArray(body.images)?body.images:[]);
-  else if(finalEvent.channel_id&&finalEvent.message_id&&String(finalEvent.message_id)!=='portal') await updateEventPost(ctx.bot,ctx.db,finalEvent,finalEvent.status!=='open').catch(()=>{});
-  return {ok:true,event:finalEvent};
+
+  const hasPublicPost = finalEvent.channel_id && finalEvent.message_id
+    && String(finalEvent.message_id) !== 'portal'
+    && String(finalEvent.channel_id) === String(EVENTS_CH);
+  if (hasPublicPost) await updateEventPost(ctx.bot,ctx.db,finalEvent,finalEvent.status!=='open');
+  else await postEvent(ctx.bot,ctx.db,finalEvent);
+
+  const {data:reloaded,error:reloadError}=await ctx.db.from('events').select('*').eq('id',id).single();
+  if(reloadError)throw reloadError;
+  return {ok:true,event:reloaded};
 }
 
 async function portalSetEventImages(ctx, event, images) {
   if (!ctx.isAdmin) throw new Error('Admin access required.');
   const files=decodePortalEventImages(images,`event-${event.id}`);
-  let message=await getPortalEventMediaMessage(ctx,event);
-  if(!message&&files.length){const channel=await getPortalEventMediaChannel(ctx);message=await channel.send({content:`Portal media storage • Event • ${event.title}`,allowedMentions:{parse:[]}});}
   let urls=[];
-  if(message&&files.length){const uploaded=await message.edit({content:`Portal media storage • Event • ${event.title}`,embeds:[],files,attachments:[]});urls=[...uploaded.attachments.values()].map(a=>a.url).slice(0,MAX_EVENT_IMAGES);}
-  else if(message&&!files.length){await message.delete().catch(()=>{});message=null;}
-  const patch={image_urls:urls,channel_id:message?String(message.channelId):String(PORTAL_MEDIA_CHANNEL_ID),message_id:message?String(message.id):'portal'};
-  const {data:updated,error}=await ctx.db.from('events').update(patch).eq('id',event.id).select('*').single();if(error)throw error;return updated;
+
+  if(files.length){
+    const channel=await getPortalEventMediaChannel(ctx);
+    const storageMessage=await channel.send({
+      content:`Portal media storage • Event • ${event.title}`,
+      files,
+      allowedMentions:{parse:[]},
+    });
+    urls=[...storageMessage.attachments.values()].map(a=>a.url).slice(0,MAX_EVENT_IMAGES);
+  }
+
+  const patch={image_urls:urls};
+  const {data:updated,error}=await ctx.db.from('events').update(patch).eq('id',event.id).select('*').single();
+  if(error)throw error;
+  return updated;
 }
 
 async function portalSetEventStatus(ctx, body) {
