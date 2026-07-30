@@ -1315,7 +1315,7 @@ async function portalCreateEvent(ctx, body) {
   await postEvent(ctx.bot, ctx.db, finalEvent);
   const { data: postedEvent, error: reloadError } = await ctx.db.from('events').select('*').eq('id', finalEvent.id).single();
   if (reloadError) throw reloadError;
-  return { ok: true, event: postedEvent };
+  return { ok: true, event: postedEvent, discordPost:{ok:!!postedEvent.channel_id&&!!postedEvent.message_id&&String(postedEvent.message_id)!=='portal',channelId:postedEvent.channel_id||null,messageId:postedEvent.message_id||null} };
 }
 
 async function portalUpdateEvent(ctx, body) {
@@ -1332,7 +1332,23 @@ async function portalUpdateEvent(ctx, body) {
 
   const {data:reloaded,error:reloadError}=await ctx.db.from('events').select('*').eq('id',id).single();
   if(reloadError)throw reloadError;
-  return {ok:true,event:reloaded};
+  return {ok:true,event:reloaded,discordPost:{ok:!!reloaded.channel_id&&!!reloaded.message_id&&String(reloaded.message_id)!=='portal',channelId:reloaded.channel_id||null,messageId:reloaded.message_id||null}};
+}
+
+async function uploadPortalEventImagesToStorage(ctx, event, files) {
+  const bucket=String(process.env.PORTAL_EVENT_IMAGE_BUCKET||process.env.PORTAL_MAP_STORAGE_BUCKET||'outpost-x-static').trim();
+  if(!bucket||!ctx.db?.storage||!files.length)return [];
+  const urls=[];
+  for(let i=0;i<files.length;i++){
+    const file=files[i];
+    const ext=(String(file.name||'image.png').split('.').pop()||'png').replace(/[^a-z0-9]/gi,'').toLowerCase()||'png';
+    const objectPath=`event-images/${event.id}/${Date.now()}-${i}.${ext}`;
+    const {error}=await ctx.db.storage.from(bucket).upload(objectPath,file.attachment,{contentType:file.contentType||'image/png',cacheControl:'31536000',upsert:true});
+    if(error)throw error;
+    const {data}=ctx.db.storage.from(bucket).getPublicUrl(objectPath);
+    if(data?.publicUrl)urls.push(data.publicUrl);
+  }
+  return urls;
 }
 
 async function portalSetEventImages(ctx, event, images) {
@@ -1341,13 +1357,14 @@ async function portalSetEventImages(ctx, event, images) {
   let urls=[];
 
   if(files.length){
-    const channel=await getPortalEventMediaChannel(ctx);
-    const storageMessage=await channel.send({
-      content:`Portal media storage • Event • ${event.title}`,
-      files,
-      allowedMentions:{parse:[]},
-    });
-    urls=[...storageMessage.attachments.values()].map(a=>a.url).slice(0,MAX_EVENT_IMAGES);
+    try{
+      urls=(await uploadPortalEventImagesToStorage(ctx,event,files)).slice(0,MAX_EVENT_IMAGES);
+    }catch(storageError){
+      console.warn(`⚠️ Event image Supabase mirror failed; using Discord storage: ${storageError.message}`);
+      const channel=await getPortalEventMediaChannel(ctx);
+      const storageMessage=await channel.send({content:`Portal media storage • Event • ${event.title}`,files,allowedMentions:{parse:[]}});
+      urls=[...storageMessage.attachments.values()].map(a=>a.url).slice(0,MAX_EVENT_IMAGES);
+    }
   }
 
   const patch={image_urls:urls};
@@ -1364,6 +1381,18 @@ async function portalSetEventStatus(ctx, body) {
   const {data:reloaded,error:reloadError}=await ctx.db.from('events').select('*').eq('id',id).single();
   if(reloadError)throw reloadError;
   return {ok:true,event:reloaded};
+}
+
+
+async function portalRetryEventPost(ctx, eventId) {
+  if (!ctx.isAdmin) throw new Error('Admin access required.');
+  const id=String(eventId||'');
+  const {data:event,error}=await ctx.db.from('events').select('*').eq('id',id).single();
+  if(error)throw error;
+  const message=await ensurePublicEventPost(ctx.bot,ctx.db,event,event.status!=='open');
+  const {data:reloaded,error:reloadError}=await ctx.db.from('events').select('*').eq('id',id).single();
+  if(reloadError)throw reloadError;
+  return {ok:true,event:reloaded,discordPost:{ok:true,channelId:reloaded.channel_id,messageId:reloaded.message_id,url:message?.url||null}};
 }
 
 async function portalDeleteEvent(ctx, eventId) {
@@ -1387,4 +1416,5 @@ module.exports = {
   portalUpdateEvent,
   portalSetEventStatus,
   portalDeleteEvent,
+  portalRetryEventPost,
 };

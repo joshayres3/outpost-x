@@ -13,7 +13,7 @@ const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance } = re
 const { portalCreateShop, portalUpdateShop, portalToggleShop, portalDeleteShop, portalSetShopImages, portalAdminShop } = require('./playerShops');
 const { portalCreateSquad, portalUpdateSquad, portalToggleSquad, portalDeleteSquad, portalAdminSquad } = require('./squadFinder');
 const { portalCreateLore, portalUpdateLore, portalToggleLore, portalDeleteLore, portalSetLoreImages, portalAdminLore } = require('./playerLore');
-const { portalListEvents, portalRsvpEvent, portalCreateEvent, portalUpdateEvent, portalSetEventStatus, portalDeleteEvent } = require('./events');
+const { portalListEvents, portalRsvpEvent, portalCreateEvent, portalUpdateEvent, portalSetEventStatus, portalDeleteEvent, portalRetryEventPost } = require('./events');
 const {
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
@@ -68,6 +68,36 @@ const WORLD = {
 const mapPath = path.join(__dirname, 'tracker-map.png');
 const highResMapPath = path.join(__dirname, 'tracker-map-hi.webp');
 const portalMapTilesPath = path.join(__dirname, 'portal-map-tiles');
+const MAP_STORAGE_BUCKET = String(process.env.PORTAL_MAP_STORAGE_BUCKET || 'outpost-x-static').trim();
+const MAP_STORAGE_PREFIX = String(process.env.PORTAL_MAP_STORAGE_PREFIX || 'maps').trim().replace(/^\/+|\/+$/g, '');
+
+function externalMapAssetBaseUrl() {
+  const explicit = String(process.env.PORTAL_MAP_ASSET_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (explicit) return explicit;
+  const supabaseUrl = String(process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
+  if (!supabaseUrl || !MAP_STORAGE_BUCKET) return '';
+  const bucket = encodeURIComponent(MAP_STORAGE_BUCKET);
+  const prefix = MAP_STORAGE_PREFIX.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  return `${supabaseUrl}/storage/v1/object/public/${bucket}${prefix ? `/${prefix}` : ''}`;
+}
+
+function externalMapAssetUrl(relativePath) {
+  const base = externalMapAssetBaseUrl();
+  if (!base) return '';
+  const encodedPath = String(relativePath || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  return encodedPath ? `${base}/${encodedPath}` : base;
+}
+
+function redirectToMapAsset(res, relativePath) {
+  const target = externalMapAssetUrl(relativePath);
+  if (!target) return false;
+  res.writeHead(302, {
+    Location: target,
+    'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
+  });
+  res.end();
+  return true;
+}
 const htmlPath = path.join(__dirname, 'surveillance.html');
 const portalHtmlPath = path.join(__dirname, 'portal.html');
 const portalCssPath = path.join(__dirname, 'portal.css');
@@ -86,6 +116,8 @@ const portalWatcherPath = path.join(__dirname, 'portal-watcher.jpg');
 const portalFaviconPath = path.join(__dirname, 'portal-favicon.png');
 const portalStaffAssets = new Map(['josh','nivy','cat','deathbloom','crazylady','oneeyeddude','watcher-staff'].map((name) => [name, path.join(__dirname, `staff-${name}.webp`)]));
 const TRANSACTIONS_TABLE = process.env.WATCHER_TRANSACTIONS_TABLE || 'watcher_transactions';
+const WATCHER_VERSION = String(process.env.WATCHER_VERSION || process.env.RAILWAY_GIT_COMMIT_SHA || require('./package.json').version || 'development').slice(0,12);
+const WATCHER_DEPLOYED_AT = String(process.env.WATCHER_DEPLOYED_AT || process.env.RAILWAY_DEPLOYMENT_ID || 'Current deployment');
 
 let dbClient = null;
 let botRef = null;
@@ -589,6 +621,34 @@ function currentPlayerBySteam(steamId) {
 }
 function playerCash(p){ const n=Number(p?.accountBalance ?? p?.account_balance ?? p?.cash ?? p?.currency ?? p?.money ?? p?.balance ?? p?.wallet?.balance ?? p?.account?.balance); return Number.isFinite(n)?n:null; }
 function playerFame(p){ const n=Number(p?.famePoints ?? p?.fame ?? p?.fame_points); return Number.isFinite(n)?n:null; }
+async function portalHealthSnapshot(session){
+  const now=new Date().toISOString();
+  const checks={watcher:{ok:!!botRef?.isReady?.(),detail:botRef?.isReady?.()?'Discord bot connected':'Discord bot is not ready'},supabase:{ok:false,detail:'Not checked'},ggcon:{ok:false,detail:'Not checked'},eventPosting:{ok:false,detail:'Not checked'},surveillance:{ok:!!externalMapAssetBaseUrl(),detail:externalMapAssetBaseUrl()?'Supabase map storage configured':'Map asset URL is not configured'}};
+  try{const {error}=await getDb().from(PLAYER_LINKS_TABLE).select('discord_id').limit(1);if(error)throw error;checks.supabase={ok:true,detail:'Database reachable'};}catch(e){checks.supabase={ok:false,detail:e.message};}
+  try{const data=await ggconGet('/players.json');checks.ggcon={ok:true,detail:`GGCON reachable • ${Array.isArray(data?.players)?data.players.length:0} online`};}catch(e){checks.ggcon={ok:false,detail:e.message};}
+  try{const guild=botRef?.guilds?.cache?.get(String(session.guildId));const channelId=String(process.env.EVENTS_CHANNEL_ID||'');const ch=guild?.channels?.cache?.get(channelId)||await botRef?.channels?.fetch(channelId).catch(()=>null);checks.eventPosting={ok:!!ch?.isTextBased?.(),detail:ch?.isTextBased?.()?`Ready in #${ch.name}`:'Configured event channel is unavailable'};}catch(e){checks.eventPosting={ok:false,detail:e.message};}
+  return {ok:true,checkedAt:now,version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT,checks};
+}
+async function portalAttentionCounts(session){
+  if(!session.isAdmin)return {};
+  const events=await safeRows('events',q=>q.select('id,channel_id,message_id,status').eq('status','open').limit(250));
+  const failedEvents=events.filter(e=>!e.channel_id||!e.message_id||String(e.message_id)==='portal').length;
+  const failedTransactions=await safeRows(TRANSACTIONS_TABLE,q=>q.select('id').eq('guild_id',String(session.guildId)).eq('status','failed').gte('created_at',new Date(Date.now()-15*86400000).toISOString()).limit(250));
+  const pendingInsurance=await safeRows('watcher_vehicle_insurance',q=>q.select('id').eq('guild_id',String(session.guildId)).in('status',['claim_available','pending']).limit(250));
+  return {total:failedEvents+failedTransactions.length+pendingInsurance.length,failedEvents,failedTransactions:failedTransactions.length,pendingInsurance:pendingInsurance.length};
+}
+async function portalAdminRecentActivity(session){
+  if(!session.isAdmin)return [];
+  return safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).gte('created_at',new Date(Date.now()-15*86400000).toISOString()).order('created_at',{ascending:false}).limit(12));
+}
+async function portalBackupExport(session){
+  if(!session.isOwner)throw new Error('Owner access required.');
+  const tables=['events','watcher_server_shop_products','watcher_vehicle_insurance','watcher_dirtbike_rentals','watcher_player_shops','watcher_squad_listings','watcher_player_lore',TRANSACTIONS_TABLE];
+  const data={exportedAt:new Date().toISOString(),watcherVersion:WATCHER_VERSION,guildId:String(session.guildId),tables:{}};
+  for(const table of tables)data.tables[table]=await safeRows(table,q=>{let x=q.select('*');if(table!== 'events')x=x.eq('guild_id',String(session.guildId));return x.limit(5000)});
+  return data;
+}
+
 async function buildPortalOverview(session) {
   const link = await portalLink(session);
   const steamId = String(link?.steam_id || '');
@@ -651,7 +711,10 @@ async function buildPortalOverview(session) {
         level:String(process.env.PORTAL_MAINTENANCE_LEVEL||'notice').trim().toLowerCase()
       }:null
     },
-    mapCalibration: MAP_CALIBRATION
+    mapCalibration: MAP_CALIBRATION,
+    attention: await portalAttentionCounts(session),
+    adminRecentActivity: await portalAdminRecentActivity(session),
+    build:{version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT}
   };
 }
 const PORTAL_SECTORS = {D4:[493707,525891],D3:[193707,525891],D2:[-106293,525891],D1:[-406293,525891],D0:[-693133,480558],C4:[493707,225891],C3:[193707,225891],C2:[-152325,290058],C1:[-406293,225891],C0:[-706293,225891],B4:[493707,-74109],B3:[193707,-74109],B2:[-123750,-166083],B1:[-406293,-74109],B0:[-825081,-141941],A4:[493707,-374109],A3:[193707,-374109],A2:[-106293,-374109],A1:[-406293,-374109],A0:[-706293,-374109],Z4:[410705,-755571],Z3:[193707,-674109],Z2:[-106293,-674109],Z1:[-406293,-674109],Z0:[-712773,-706255]};
@@ -1036,6 +1099,9 @@ async function handleHttp(req, res) {
   if (url.pathname === '/portal/api/events/update' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalUpdateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/status' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalSetEventStatus(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/delete' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalDeleteEvent(portalCtx(session),(await readJsonBody(req)).id));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/retry-post' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalRetryEventPost(portalCtx(session),(await readJsonBody(req)).id));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/health' && req.method === 'GET') { try{if(!session.isAdmin)throw new Error('Admin access required.');return json(res,200,await portalHealthSnapshot(session));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/owner/export' && req.method === 'GET') { try{return json(res,200,await portalBackupExport(session));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/options') { try{return json(res,200,await portalInsuranceData(session));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/buy' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalBuyInsurance({...portalCtx(session),steamId:link?.steam_id},b.vehicleId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/redeem' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalRedeemInsurance({...portalCtx(session),steamId:link?.steam_id},b.claimId));}catch(err){return json(res,400,{error:err.message});} }
@@ -1113,29 +1179,40 @@ async function handleHttp(req, res) {
     const x = Number(match[1]);
     const y = Number(match[2]);
     if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 7 || y < 0 || y > 7) return text(res, 404, 'Map tile not found.');
-    const tilePath = path.join(portalMapTilesPath, 'hi', `${x}_${y}.jpg`);
-    if (!fs.existsSync(tilePath)) return text(res, 404, 'Map tile not found.');
-    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' });
-    return fs.createReadStream(tilePath).pipe(res);
+    const tileName = `${x}_${y}.jpg`;
+    const tilePath = path.join(portalMapTilesPath, 'hi', tileName);
+    if (fs.existsSync(tilePath)) {
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' });
+      return fs.createReadStream(tilePath).pipe(res);
+    }
+    if (redirectToMapAsset(res, `tiles/hi/${tileName}`)) return;
+    return text(res, 404, 'Map tile not configured.');
   }
 
   if (url.pathname === '/tracker/map.png') {
-    if (!fs.existsSync(mapPath)) return text(res, 404, 'Map image not configured.');
-    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
-    return fs.createReadStream(mapPath).pipe(res);
+    if (fs.existsSync(mapPath)) {
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
+      return fs.createReadStream(mapPath).pipe(res);
+    }
+    if (redirectToMapAsset(res, 'tracker-map.png')) return;
+    return text(res, 404, 'Map image not configured.');
   }
 
   if (url.pathname === '/tracker/map-hi.webp') {
-    if (!fs.existsSync(highResMapPath)) return text(res, 404, 'High-resolution map image not configured.');
-    res.writeHead(200, { 'Content-Type': 'image/webp', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
-    return fs.createReadStream(highResMapPath).pipe(res);
+    if (fs.existsSync(highResMapPath)) {
+      res.writeHead(200, { 'Content-Type': 'image/webp', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
+      return fs.createReadStream(highResMapPath).pipe(res);
+    }
+    if (redirectToMapAsset(res, 'tracker-map-hi.webp')) return;
+    return text(res, 404, 'High-resolution map image not configured.');
   }
 
   if (url.pathname === '/tracker/api/config') {
     return json(res, 200, {
       retentionHours: RETENTION_HOURS,
       sampleSeconds: SAMPLE_SECONDS,
-      mapAvailable: fs.existsSync(mapPath),
+      mapAvailable: fs.existsSync(mapPath) || !!externalMapAssetBaseUrl(),
+      mapAssetsExternal: !fs.existsSync(mapPath) && !!externalMapAssetBaseUrl(),
       map: MAP_CALIBRATION,
       world: WORLD,
       sessionExpiresAt: new Date(session.expiresAt).toISOString(),
