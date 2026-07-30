@@ -641,6 +641,16 @@ async function buildPortalOverview(session) {
     vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
     airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,
     shopCatalog,
+    system:{
+      verifiedAt:new Date().toISOString(),
+      onlinePlayers:latestOnline.size,
+      maintenance:String(process.env.PORTAL_MAINTENANCE_MESSAGE||'').trim()?{
+        id:require('crypto').createHash('sha1').update(String(process.env.PORTAL_MAINTENANCE_MESSAGE)).digest('hex').slice(0,12),
+        title:String(process.env.PORTAL_MAINTENANCE_TITLE||'WATCHER NOTICE').trim(),
+        message:String(process.env.PORTAL_MAINTENANCE_MESSAGE).trim(),
+        level:String(process.env.PORTAL_MAINTENANCE_LEVEL||'notice').trim().toLowerCase()
+      }:null
+    },
     mapCalibration: MAP_CALIBRATION
   };
 }
