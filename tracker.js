@@ -136,6 +136,7 @@ const RUNTIME_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || 'watcher_runtim
 const PORTAL_SETTINGS_KEY_PREFIX = 'portal_settings:';
 let sampleRunning = false;
 let latestOnline = new Map();
+const onlineFirstSeen = new Map();
 const lastSaved = new Map();
 const accessTokens = new Map();
 const oauthStates = new Map();
@@ -481,6 +482,9 @@ async function recordMovementSample() {
       }
     }
 
+    const nowOnlineIds = new Set(online.keys());
+    for (const steamId of nowOnlineIds) if (!onlineFirstSeen.has(steamId)) onlineFirstSeen.set(steamId, nowMs);
+    for (const steamId of [...onlineFirstSeen.keys()]) if (!nowOnlineIds.has(steamId)) onlineFirstSeen.delete(steamId);
     latestOnline = online;
     const db = getDb();
     if (summaryRows.length) {
@@ -735,6 +739,29 @@ async function portalAttentionCounts(session){
   const pendingInsurance=await safeRows('watcher_vehicle_insurance',q=>q.select('id').eq('guild_id',String(session.guildId)).in('status',['claim_available','pending']).limit(250));
   return {total:failedEvents+failedTransactions.length+pendingInsurance.length,failedEvents,failedTransactions:failedTransactions.length,pendingInsurance:pendingInsurance.length};
 }
+
+async function portalActiveUnregisteredPlayers(session) {
+  if (!session.isAdmin) throw new Error('Admin access required.');
+  const players = [...latestOnline.values()];
+  if (!players.length) return { players: [], count: 0, sampledAt: new Date().toISOString() };
+  const steamIds = players.map((p) => String(p.steamId || '')).filter(Boolean);
+  const links = await safeRows(PLAYER_LINKS_TABLE, (q) => q.select('steam_id,discord_id,scum_name').eq('guild_id', String(session.guildId)).in('steam_id', steamIds));
+  const linked = new Set(links.map((row) => String(row.steam_id || '')));
+  const now = Date.now();
+  const unknown = players.filter((p) => !linked.has(String(p.steamId))).map((p) => {
+    const firstSeenMs = onlineFirstSeen.get(String(p.steamId)) || now;
+    return {
+      steamId: String(p.steamId),
+      name: p.name || 'Unknown',
+      firstSeenAt: new Date(firstSeenMs).toISOString(),
+      sessionMinutes: Math.max(0, Math.floor((now - firstSeenMs) / 60000)),
+      lastSeenAt: p.seenAt || new Date().toISOString(),
+      status: 'No known Discord registration',
+    };
+  }).sort((a,b) => b.sessionMinutes-a.sessionMinutes || a.name.localeCompare(b.name));
+  return { players: unknown, count: unknown.length, sampledAt: new Date().toISOString(), note: 'Watcher can confirm there is no linked Discord registration. A player may still use a different Discord name.' };
+}
+
 async function portalAdminRecentActivity(session){
   if(!session.isAdmin)return [];
   return safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).gte('created_at',new Date(Date.now()-15*86400000).toISOString()).order('created_at',{ascending:false}).limit(12));
@@ -1230,6 +1257,7 @@ async function handleHttp(req, res) {
   if (url.pathname === '/portal/api/owner/export' && req.method === 'GET') { try{return json(res,200,await portalBackupExport(session));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/owner/settings' && req.method === 'GET') { try{if(!session.isOwner)throw new Error('Owner access required.');return json(res,200,{settings:await loadPortalSettings(session.guildId)});}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/owner/settings' && req.method === 'POST') { try{if(!session.isOwner)throw new Error('Owner access required.');return json(res,200,{settings:await savePortalSettings(session.guildId,await readJsonBody(req))});}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/unregistered-active' && req.method === 'GET') { try{return json(res,200,await cachedFlight(`unregistered:${session.guildId}`,10000,()=>portalActiveUnregisteredPlayers(session)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/inbox' && req.method === 'GET') { try{if(!session.isAdmin)throw new Error('Admin access required.');const attention=await portalAttentionCounts(session);return json(res,200,{attention,retryQueue:retryQueue.map(x=>({name:x.name,attempts:x.attempts,maxAttempts:x.maxAttempts,nextAt:new Date(x.nextAt).toISOString(),lastError:x.lastError}))});}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/options') { try{return json(res,200,await portalInsuranceData(session));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/buy' && req.method === 'POST') { try{await requireFeature(session.guildId,'insurance','Vehicle insurance');const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalBuyInsurance({...portalCtx(session),steamId:link?.steam_id},b.vehicleId));}catch(err){return json(res,400,{error:err.message});} }
