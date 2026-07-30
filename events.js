@@ -284,18 +284,54 @@ async function postEvent(bot, db, event) {
   return msg;
 }
 
+function isPublicEventMessage(message, eventId) {
+  if (!message) return false;
+  const expectedIds = new Set([
+    `event_rsvp:${eventId}`,
+    `event_unrsvp:${eventId}`,
+    `event_details:${eventId}`,
+  ]);
+  return (message.components || []).some((row) =>
+    (row.components || []).some((component) => expectedIds.has(String(component.customId || component.custom_id || '')))
+  );
+}
+
+async function fetchPublicEventMessage(bot, event) {
+  if (!event?.channel_id || !event?.message_id || String(event.message_id) === 'portal') return null;
+  if (String(event.channel_id) !== String(EVENTS_CH)) return null;
+  const channel = await bot.channels.fetch(String(event.channel_id)).catch(() => null);
+  if (!channel?.messages) return null;
+  const message = await channel.messages.fetch(String(event.message_id)).catch(() => null);
+  return isPublicEventMessage(message, event.id) ? message : null;
+}
+
+async function editPublicEventMessage(db, event, message, closed = false) {
+  const count = await getRsvpCount(db, event.id);
+  await message.edit({
+    content: `<@&${EXILES_ROLE_ID}>`,
+    embeds: buildEventEmbeds(event, count, closed || event.status !== "open"),
+    components: eventButtons(event.id, closed || event.status !== "open"),
+    allowedMentions: { roles: [EXILES_ROLE_ID] },
+  });
+  return message;
+}
+
+async function ensurePublicEventPost(bot, db, event, closed = false) {
+  const existingMessage = await fetchPublicEventMessage(bot, event);
+  if (existingMessage) return editPublicEventMessage(db, event, existingMessage, closed);
+
+  // Older Command Center events sometimes stored an image-upload message ID in
+  // channel_id/message_id. Never treat that storage message as the public event post.
+  return postEvent(bot, db, event);
+}
+
 async function updateEventPost(bot, db, event, closed = false) {
   if (!event.channel_id || !event.message_id) return;
 
   try {
-    const channel = await bot.channels.fetch(event.channel_id);
-    const msg = await channel.messages.fetch(event.message_id);
-    const count = await getRsvpCount(db, event.id);
-
-    await msg.edit({
-      embeds: buildEventEmbeds(event, count, closed || event.status !== "open"),
-      components: eventButtons(event.id, closed || event.status !== "open"),
-    });
+    const message = await fetchPublicEventMessage(bot, event);
+    if (!message) throw new Error('The saved Discord message is not a public event post.');
+    await editPublicEventMessage(db, event, message, closed);
   } catch (err) {
     console.error("❌ Failed to update event post:", err.message);
   }
@@ -1292,11 +1328,7 @@ async function portalUpdateEvent(ctx, body) {
   let finalEvent={...existing,...event};
   if(body.replaceImages===true) finalEvent=await portalSetEventImages(ctx,finalEvent,Array.isArray(body.images)?body.images:[]);
 
-  const hasPublicPost = finalEvent.channel_id && finalEvent.message_id
-    && String(finalEvent.message_id) !== 'portal'
-    && String(finalEvent.channel_id) === String(EVENTS_CH);
-  if (hasPublicPost) await updateEventPost(ctx.bot,ctx.db,finalEvent,finalEvent.status!=='open');
-  else await postEvent(ctx.bot,ctx.db,finalEvent);
+  await ensurePublicEventPost(ctx.bot,ctx.db,finalEvent,finalEvent.status!=='open');
 
   const {data:reloaded,error:reloadError}=await ctx.db.from('events').select('*').eq('id',id).single();
   if(reloadError)throw reloadError;
@@ -1328,8 +1360,10 @@ async function portalSetEventStatus(ctx, body) {
   if (!ctx.isAdmin) throw new Error('Admin access required.');
   const id=String(body.id||''); const status=body.status==='open'?'open':'closed';
   const {data:event,error}=await ctx.db.from('events').update({status}).eq('id',id).select().single();if(error)throw error;
-  if(event.channel_id&&event.message_id&&String(event.message_id)!=='portal') await updateEventPost(ctx.bot,ctx.db,event,status!=='open').catch(()=>{});
-  return {ok:true,event};
+  await ensurePublicEventPost(ctx.bot,ctx.db,event,status!=='open');
+  const {data:reloaded,error:reloadError}=await ctx.db.from('events').select('*').eq('id',id).single();
+  if(reloadError)throw reloadError;
+  return {ok:true,event:reloaded};
 }
 
 async function portalDeleteEvent(ctx, eventId) {
