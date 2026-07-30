@@ -42,7 +42,9 @@ const RETENTION_HOURS = Math.max(1, Number(process.env.TRACKER_RETENTION_HOURS |
 const MOVE_THRESHOLD_UNITS = Math.max(0, Number(process.env.TRACKER_MOVE_THRESHOLD_UNITS || '1000'));
 const HEARTBEAT_SECONDS = Math.max(30, Number(process.env.TRACKER_HEARTBEAT_SECONDS || '600'));
 const ACCESS_TOKEN_SECONDS = Math.max(30, Number(process.env.TRACKER_ACCESS_TOKEN_SECONDS || '120'));
-const SESSION_MINUTES = Math.max(5, Number(process.env.TRACKER_SESSION_MINUTES || '60'));
+const PORTAL_SESSION_DAYS = Math.max(1, Number(process.env.PORTAL_SESSION_DAYS || '30'));
+const PORTAL_SESSION_MS = PORTAL_SESSION_DAYS * 24 * 60 * 60 * 1000;
+const PORTAL_ROLE_RECHECK_MS = Math.max(60_000, Number(process.env.PORTAL_ROLE_RECHECK_MINUTES || '15') * 60_000);
 const CLEANUP_MINUTES = Math.max(10, Number(process.env.TRACKER_CLEANUP_MINUTES || '60'));
 const STAFF_ROLE_NAMES = new Set(
   String(process.env.TRACKER_STAFF_ROLES || 'Owner,Owners,Admin,Trial Admin,Baby Admin')
@@ -211,26 +213,56 @@ function createOAuthState() {
   return state;
 }
 
-function portalSessionFromMember(user, member, guildId) {
-  const sid = randomToken(32);
-  sessions.set(sid, {
+function portalSessionSecret() {
+  const secret = String(process.env.PORTAL_SESSION_SECRET || process.env.DISCORD_CLIENT_SECRET || process.env.DISCORD_TOKEN || '').trim();
+  if (!secret) throw new Error('Portal session signing is not configured.');
+  return secret;
+}
+
+function createPortalSession(user, member, guildId) {
+  const now = Date.now();
+  return {
     discordId: String(user.id),
     guildId: String(guildId),
     displayName: member?.displayName || user.global_name || user.username || 'Outpost Player',
     avatar: user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=128` : null,
     isAdmin: hasTrackerRole(member),
     isOwner: hasOwnerRole(member),
-    expiresAt: Date.now() + SESSION_MINUTES * 60_000,
-  });
-  return sid;
+    roleCheckedAt: now,
+    expiresAt: now + PORTAL_SESSION_MS,
+  };
 }
 
-function setPortalSessionCookie(res, sid, location = '/portal') {
-  res.writeHead(302, {
-    Location: location,
-    'Set-Cookie': `watcher_tracker_session=${encodeURIComponent(sid)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_MINUTES * 60}`,
-    'Cache-Control': 'no-store',
-  });
+function signPortalSession(session) {
+  const payload = Buffer.from(JSON.stringify(session)).toString('base64url');
+  const signature = crypto.createHmac('sha256', portalSessionSecret()).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function verifyPortalSession(token) {
+  const [payload, signature, extra] = String(token || '').split('.');
+  if (!payload || !signature || extra) return null;
+  const expected = crypto.createHmac('sha256', portalSessionSecret()).update(payload).digest();
+  let supplied;
+  try { supplied = Buffer.from(signature, 'base64url'); } catch { return null; }
+  if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return null;
+  try {
+    const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!session?.discordId || !session?.guildId || Number(session.expiresAt || 0) <= Date.now()) return null;
+    return session;
+  } catch { return null; }
+}
+
+function attachPortalSessionCookie(res, session) {
+  session.expiresAt = Date.now() + PORTAL_SESSION_MS;
+  const token = signPortalSession(session);
+  res.setHeader('Set-Cookie', `watcher_tracker_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(PORTAL_SESSION_MS / 1000)}`);
+  res.setHeader('X-Watcher-Session-Expires', new Date(session.expiresAt).toISOString());
+}
+
+function setPortalSessionCookie(res, session, location = '/portal') {
+  attachPortalSessionCookie(res, session);
+  res.writeHead(302, { Location: location, 'Cache-Control': 'no-store' });
   res.end();
 }
 
@@ -299,15 +331,32 @@ function parseCookies(req) {
 }
 
 function getSession(req) {
-  const sid = parseCookies(req).watcher_tracker_session;
-  if (!sid) return null;
-  const session = sessions.get(sid);
-  if (!session || session.expiresAt <= Date.now()) {
-    sessions.delete(sid);
+  const token = parseCookies(req).watcher_tracker_session;
+  if (!token) return null;
+  const signed = verifyPortalSession(token);
+  if (signed) return signed;
+
+  // Temporary compatibility for sessions created before this update.
+  const legacy = sessions.get(token);
+  if (!legacy || legacy.expiresAt <= Date.now()) {
+    sessions.delete(token);
     return null;
   }
-  // Command Center sessions use a fixed lifetime. Requests do not extend the expiry.
-  return { sid, ...session };
+  return { ...legacy };
+}
+
+async function refreshPortalSessionAccess(session, force = false) {
+  const checkedAt = Number(session.roleCheckedAt || 0);
+  if (!force && Date.now() - checkedAt < PORTAL_ROLE_RECHECK_MS) return session;
+  const guild = botRef?.guilds?.cache?.get(String(session.guildId)) || await botRef?.guilds?.fetch(String(session.guildId)).catch(() => null);
+  if (!guild) return null;
+  const member = await guild.members.fetch({ user: String(session.discordId), force: true }).catch(() => null);
+  if (!member || !hasPortalAccess(member)) return null;
+  session.displayName = member.displayName || session.displayName || 'Outpost Player';
+  session.isAdmin = hasTrackerRole(member);
+  session.isOwner = hasOwnerRole(member);
+  session.roleCheckedAt = Date.now();
+  return session;
 }
 
 function pruneAuthState() {
@@ -836,11 +885,9 @@ async function handleHttp(req, res) {
   const url = new URL(req.url, `http://${host}`);
 
   if (url.pathname === '/portal/login') {
-    const existing = getSession(req);
-    if (existing) {
-      res.writeHead(302, { Location: '/portal', 'Cache-Control': 'no-store' });
-      return res.end();
-    }
+    let existing = getSession(req);
+    if (existing) existing = await refreshPortalSessionAccess(existing, true);
+    if (existing) return setPortalSessionCookie(res, existing, '/portal');
     const config = discordOAuthConfig();
     if (!config.base || !config.clientId || !config.clientSecret || !config.redirectUri) {
       return oauthErrorPage(res, 'Single-click Discord login is not configured yet. Add DISCORD_CLIENT_SECRET in Railway and register the portal callback URL in the Discord Developer Portal.');
@@ -872,8 +919,8 @@ async function handleHttp(req, res) {
       const member = await guild.members.fetch(user.id).catch(() => null);
       if (!member) throw new Error('You must be a member of the Outpost X Discord server.');
       if (!hasPortalAccess(member)) throw new Error('You need the Outpost X player role before entering the Command Center.');
-      const sid = portalSessionFromMember(user, member, config.guildId);
-      return setPortalSessionCookie(res, sid, '/portal');
+      const session = createPortalSession(user, member, config.guildId);
+      return setPortalSessionCookie(res, session, '/portal');
     } catch (err) {
       return oauthErrorPage(res, err.message);
     }
@@ -884,22 +931,24 @@ async function handleHttp(req, res) {
     const grant = accessTokens.get(token);
     if (!grant || grant.expiresAt <= Date.now()) return unauthorized(res);
     accessTokens.delete(token);
-    const sid = randomToken(32);
-    sessions.set(sid, {
+    const now = Date.now();
+    const session = {
       discordId: grant.discordId,
       guildId: grant.guildId,
       displayName: grant.displayName,
       avatar: grant.avatar,
       isAdmin: !!grant.isAdmin,
       isOwner: !!grant.isOwner,
-      expiresAt: Date.now() + SESSION_MINUTES * 60_000,
-    });
-    return setPortalSessionCookie(res, sid, '/portal');
+      roleCheckedAt: now,
+      expiresAt: now + PORTAL_SESSION_MS,
+    };
+    return setPortalSessionCookie(res, session, '/portal');
   }
 
   if (url.pathname === '/tracker/health') return json(res, 200, { ok: true });
 
-  const session = getSession(req);
+  let session = getSession(req);
+  if (session) session = await refreshPortalSessionAccess(session, url.pathname === '/portal');
   if (!session) {
     if (url.pathname === '/portal' || url.pathname === '/tracker') {
       res.writeHead(302, { Location: '/portal/login', 'Cache-Control': 'no-store' });
@@ -907,6 +956,8 @@ async function handleHttp(req, res) {
     }
     return unauthorized(res, 401);
   }
+  // Rolling login: every authenticated visit renews the signed cookie for another 30 days.
+  attachPortalSessionCookie(res, session);
 
   if (url.pathname === '/tracker') {
     res.writeHead(302, { Location: '/portal?section=surveillance', 'Cache-Control': 'no-store' });
@@ -1201,7 +1252,7 @@ async function handleTrackerInteraction(interaction) {
   const token = createAccessToken(interaction.user.id, interaction.guild.id, { displayName: interaction.member?.displayName || interaction.user.globalName || interaction.user.username, avatar: interaction.user.displayAvatarURL({ extension: 'png', size: 128 }), isAdmin: hasTrackerRole(interaction.member), isOwner: hasOwnerRole(interaction.member) });
   const link = `${base}/tracker/access?token=${encodeURIComponent(token)}`;
   await interaction.reply({
-    content: `👁️ **Private Outpost Command Center Access**\nThis link is one-time use and expires in ${ACCESS_TOKEN_SECONDS} seconds. The browser session lasts ${SESSION_MINUTES} minutes.`,
+    content: `👁️ **Private Outpost Command Center Access**\nThis link is one-time use and expires in ${ACCESS_TOKEN_SECONDS} seconds. The browser stays signed in for ${PORTAL_SESSION_DAYS} rolling days, with access rechecked against Discord.`,
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setLabel('Enter Command Center').setStyle(ButtonStyle.Link).setURL(link).setEmoji('👁️')
