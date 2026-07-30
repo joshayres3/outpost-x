@@ -83,6 +83,7 @@ function portalAssetVersion() {
 
 const portalOutpostPath = path.join(__dirname, 'portal-outpost.jpg');
 const portalWatcherPath = path.join(__dirname, 'portal-watcher.jpg');
+const portalFaviconPath = path.join(__dirname, 'portal-favicon.png');
 const portalStaffAssets = new Map(['josh','nivy','cat','deathbloom','crazylady','oneeyeddude','watcher-staff'].map((name) => [name, path.join(__dirname, `staff-${name}.webp`)]));
 const TRANSACTIONS_TABLE = process.env.WATCHER_TRANSACTIONS_TABLE || 'watcher_transactions';
 
@@ -946,6 +947,12 @@ async function handleHttp(req, res) {
   }
 
   if (url.pathname === '/tracker/health') return json(res, 200, { ok: true });
+  // Public favicon so browsers can load the Watcher emblem before or after login.
+  if (url.pathname === '/portal/assets/favicon.png' || url.pathname === '/favicon.ico') {
+    if (!fs.existsSync(portalFaviconPath)) return text(res, 404, 'Portal favicon is missing.');
+    res.writeHead(200, {'Content-Type':'image/png','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'});
+    return fs.createReadStream(portalFaviconPath).pipe(res);
+  }
 
   let session = getSession(req);
   if (session) session = await refreshPortalSessionAccess(session, url.pathname === '/portal');
