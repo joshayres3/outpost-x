@@ -101,6 +101,7 @@ const {
   handleRulesAcceptInteraction,
 } = require("./rulesAccept");
 const { startTrackerOnBoot, handleTrackerCommand, handleTrackerInteraction, handleCommandCenterCommand } = require("./tracker");
+const { startSpecialEventsOnBoot } = require("./watcherSpecialEvents");
 const {
   registerPlayerPanelCommands,
   handlePlayerPanelCommand,
@@ -237,6 +238,7 @@ bot.once(Events.ClientReady, async () => {
 
     startEventScheduler(bot, db);
     startGgconStatusOnBoot(bot);
+  startSpecialEventsOnBoot(bot).catch((err) => console.error("❌ Special events startup failed:", err.message));
     startInsuranceOnBoot(bot);
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));
     startLotteryOnBoot(bot).catch((err) => console.error("❌ Lottery startup failed:", err.message));

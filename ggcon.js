@@ -5081,6 +5081,14 @@ async function runCargoFrenzy(message, options = {}) {
 
 }
 
+
+async function triggerCargoFrenzyFromPortal(options = {}) {
+  let replyText = '';
+  const fakeMessage = { reply: async (text) => { replyText = String(text || ''); return null; } };
+  await runCargoFrenzy(fakeMessage, { count: Number(options.count || CARGO_FRENZY_COUNT), isTest: false });
+  return { ok: true, message: replyText || 'Cargo Frenzy trigger completed.' };
+}
+
 async function handleCargoFrenzyCommand(message) {
   await runCargoFrenzy(message, { count: CARGO_FRENZY_COUNT, isTest: false });
 }
@@ -6617,6 +6625,8 @@ module.exports = {
   getServerSummary,
   getPlayerDisplayName,
   ggconPost,
+  ggconGet,
+  triggerCargoFrenzyFromPortal,
   jailPlayerBySteamId,
   unjailPlayerBySteamId,
 };

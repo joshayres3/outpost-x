@@ -7,6 +7,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { MAP_CALIBRATION } = require('./mapCalibration');
 const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, deleteManagedProduct, searchItemCatalog } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
+const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
 const { portalCreateRental } = require('./rentals');
 const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance } = require('./insurance');
 const { portalCreateShop, portalUpdateShop, portalToggleShop, portalDeleteShop, portalSetShopImages, portalAdminShop } = require('./playerShops');
@@ -455,31 +456,6 @@ async function safeRows(table, build) {
   try { const q = build(getDb().from(table)); const { data, error } = await q; if (error) throw error; return data || []; }
   catch (err) { console.warn(`⚠️ Portal could not read ${table}: ${err.message}`); return []; }
 }
-
-const PORTAL_RULE_META = {
-  general: 'General Rules',
-  pvp: 'PvP Rules',
-  base: 'Base Building Rules',
-  vehicles: 'Vehicle Rules',
-  shops: 'Bots, Shop, Taxi & Delivery',
-  map: 'Map Information',
-  server: 'Server Information',
-};
-async function fetchPortalRules() {
-  const { data, error } = await getDb()
-    .from('rules')
-    .select('*')
-    .in('section', Object.keys(PORTAL_RULE_META));
-  if (error) throw error;
-  const rows = new Map((data || []).map((row) => [String(row.section || '').toLowerCase(), row]));
-  return Object.keys(PORTAL_RULE_META).map((section) => ({
-    section,
-    label: PORTAL_RULE_META[section],
-    content: rows.get(section)?.content || '',
-    updated_at: rows.get(section)?.updated_at || null,
-  }));
-}
-
 async function portalLink(session) {
   const { data, error } = await getDb().from(PLAYER_LINKS_TABLE).select('*').eq('guild_id', String(session.guildId)).eq('discord_id', String(session.discordId)).maybeSingle();
   if (error) throw error; return data || null;
@@ -845,11 +821,6 @@ async function handleHttp(req, res) {
     bumpPortalRevision(session.guildId);
   }
 
-  if (url.pathname === '/portal/api/rules' && req.method === 'GET') {
-    try { return json(res, 200, { rules: await fetchPortalRules() }); }
-    catch (err) { return json(res, 500, { error: err.message }); }
-  }
-
   if (url.pathname === '/portal/api/overview') {
     try { return json(res, 200, await buildPortalOverview(session)); }
     catch (err) { return json(res, 500, { error: err.message }); }
@@ -907,6 +878,16 @@ async function handleHttp(req, res) {
     try { const body = await readJsonBody(req); return json(res, 200, { ok:true, row: await saveAdminPermissions(getDb(), session.guildId, body.permissions || {}, session.discordId) }); }
     catch (err) { return json(res, 400, { error: err.message }); }
   }
+
+  if (url.pathname === '/portal/api/admin/event-triggers' && req.method === 'GET') {
+    try { await requirePermission(session, 'manage_events'); return json(res, 200, await getSpecialEventAdminStatus()); }
+    catch (err) { return json(res, 403, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/admin/event-triggers' && req.method === 'POST') {
+    try { await requirePermission(session, 'manage_events'); const body = await readJsonBody(req); return json(res, 200, await triggerSpecialEvent(body.action, { ...(body.options || {}), createdBy: session.discordId })); }
+    catch (err) { return json(res, 400, { error: err.message }); }
+  }
+
   if (url.pathname === '/portal/api/admin/shop/products' && req.method === 'GET') {
     try { await requirePermission(session, 'manage_server_shop'); return json(res, 200, { products: await listManagedProducts(session.guildId, true) }); }
     catch (err) { return json(res, 403, { error: err.message }); }
