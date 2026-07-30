@@ -455,6 +455,31 @@ async function safeRows(table, build) {
   try { const q = build(getDb().from(table)); const { data, error } = await q; if (error) throw error; return data || []; }
   catch (err) { console.warn(`⚠️ Portal could not read ${table}: ${err.message}`); return []; }
 }
+
+const PORTAL_RULE_META = {
+  general: 'General Rules',
+  pvp: 'PvP Rules',
+  base: 'Base Building Rules',
+  vehicles: 'Vehicle Rules',
+  shops: 'Bots, Shop, Taxi & Delivery',
+  map: 'Map Information',
+  server: 'Server Information',
+};
+async function fetchPortalRules() {
+  const { data, error } = await getDb()
+    .from('rules')
+    .select('*')
+    .in('section', Object.keys(PORTAL_RULE_META));
+  if (error) throw error;
+  const rows = new Map((data || []).map((row) => [String(row.section || '').toLowerCase(), row]));
+  return Object.keys(PORTAL_RULE_META).map((section) => ({
+    section,
+    label: PORTAL_RULE_META[section],
+    content: rows.get(section)?.content || '',
+    updated_at: rows.get(section)?.updated_at || null,
+  }));
+}
+
 async function portalLink(session) {
   const { data, error } = await getDb().from(PLAYER_LINKS_TABLE).select('*').eq('guild_id', String(session.guildId)).eq('discord_id', String(session.discordId)).maybeSingle();
   if (error) throw error; return data || null;
@@ -818,6 +843,11 @@ async function handleHttp(req, res) {
 
   if (url.pathname.startsWith('/portal/api/') && ['POST','PUT','PATCH','DELETE'].includes(req.method || 'GET')) {
     bumpPortalRevision(session.guildId);
+  }
+
+  if (url.pathname === '/portal/api/rules' && req.method === 'GET') {
+    try { return json(res, 200, { rules: await fetchPortalRules() }); }
+    catch (err) { return json(res, 500, { error: err.message }); }
   }
 
   if (url.pathname === '/portal/api/overview') {
