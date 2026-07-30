@@ -94,6 +94,7 @@ let sampleRunning = false;
 let latestOnline = new Map();
 const lastSaved = new Map();
 const accessTokens = new Map();
+const oauthStates = new Map();
 const sessions = new Map();
 const portalAirliftPending = new Map();
 const portalAirliftLaunches = new Set();
@@ -195,6 +196,77 @@ function publicBaseUrl() {
   return railwayDomain ? `https://${railwayDomain}` : null;
 }
 
+function discordOAuthConfig() {
+  const base = publicBaseUrl();
+  const clientId = String(process.env.DISCORD_CLIENT_ID || botRef?.user?.id || '').trim();
+  const clientSecret = String(process.env.DISCORD_CLIENT_SECRET || '').trim();
+  const guildId = String(process.env.DISCORD_GUILD_ID || process.env.GUILD_ID || '1516269432538661025').trim();
+  const redirectUri = String(process.env.DISCORD_OAUTH_REDIRECT_URI || (base ? `${base}/portal/oauth/callback` : '')).trim();
+  return { base, clientId, clientSecret, guildId, redirectUri };
+}
+
+function createOAuthState() {
+  const state = randomToken(24);
+  oauthStates.set(state, { expiresAt: Date.now() + 10 * 60_000 });
+  return state;
+}
+
+function portalSessionFromMember(user, member, guildId) {
+  const sid = randomToken(32);
+  sessions.set(sid, {
+    discordId: String(user.id),
+    guildId: String(guildId),
+    displayName: member?.displayName || user.global_name || user.username || 'Outpost Player',
+    avatar: user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=128` : null,
+    isAdmin: hasTrackerRole(member),
+    isOwner: hasOwnerRole(member),
+    expiresAt: Date.now() + SESSION_MINUTES * 60_000,
+  });
+  return sid;
+}
+
+function setPortalSessionCookie(res, sid, location = '/portal') {
+  res.writeHead(302, {
+    Location: location,
+    'Set-Cookie': `watcher_tracker_session=${encodeURIComponent(sid)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_MINUTES * 60}`,
+    'Cache-Control': 'no-store',
+  });
+  res.end();
+}
+
+function oauthErrorPage(res, message) {
+  const safe = String(message || 'Discord authorization failed.').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  return text(res, 400, `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Command Center Access</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#060a0f;color:#eaf4ff;font-family:system-ui}.box{max-width:560px;margin:24px;padding:28px;border:1px solid #284963;border-radius:14px;background:#0a1119;text-align:center}.box h1{margin-top:0}.box p{color:#9bb1c3;line-height:1.5}.box a{display:inline-block;margin-top:10px;padding:10px 16px;border-radius:9px;background:#12365a;color:#fff;text-decoration:none}</style></head><body><div class="box"><h1>Watcher Access Denied</h1><p>${safe}</p><a href="/portal/login">Try Again</a></div></body></html>`, 'text/html; charset=utf-8');
+}
+
+async function exchangeDiscordOAuthCode(code, config) {
+  const body = new URLSearchParams({
+    client_id: config.clientId,
+    client_secret: config.clientSecret,
+    grant_type: 'authorization_code',
+    code: String(code),
+    redirect_uri: config.redirectUri,
+  });
+  const response = await fetch('https://discord.com/api/v10/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) throw new Error(data.error_description || data.message || 'Discord token exchange failed.');
+  return data.access_token;
+}
+
+async function fetchDiscordOAuthUser(accessToken) {
+  const response = await fetch('https://discord.com/api/v10/users/@me', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.id) throw new Error(data.message || 'Discord account lookup failed.');
+  return data;
+}
+
+
 function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString('base64url');
 }
@@ -241,6 +313,7 @@ function getSession(req) {
 function pruneAuthState() {
   const now = Date.now();
   for (const [token, grant] of accessTokens) if (grant.expiresAt <= now) accessTokens.delete(token);
+  for (const [state, grant] of oauthStates) if (grant.expiresAt <= now) oauthStates.delete(state);
   for (const [sid, session] of sessions) if (session.expiresAt <= now) sessions.delete(sid);
 }
 
@@ -762,6 +835,50 @@ async function handleHttp(req, res) {
   const host = req.headers.host || 'localhost';
   const url = new URL(req.url, `http://${host}`);
 
+  if (url.pathname === '/portal/login') {
+    const existing = getSession(req);
+    if (existing) {
+      res.writeHead(302, { Location: '/portal', 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+    const config = discordOAuthConfig();
+    if (!config.base || !config.clientId || !config.clientSecret || !config.redirectUri) {
+      return oauthErrorPage(res, 'Single-click Discord login is not configured yet. Add DISCORD_CLIENT_SECRET in Railway and register the portal callback URL in the Discord Developer Portal.');
+    }
+    const state = createOAuthState();
+    const authorize = new URL('https://discord.com/oauth2/authorize');
+    authorize.searchParams.set('client_id', config.clientId);
+    authorize.searchParams.set('response_type', 'code');
+    authorize.searchParams.set('redirect_uri', config.redirectUri);
+    authorize.searchParams.set('scope', 'identify');
+    authorize.searchParams.set('state', state);
+    res.writeHead(302, { Location: authorize.toString(), 'Cache-Control': 'no-store' });
+    return res.end();
+  }
+
+  if (url.pathname === '/portal/oauth/callback') {
+    const config = discordOAuthConfig();
+    const state = String(url.searchParams.get('state') || '');
+    const code = String(url.searchParams.get('code') || '');
+    const oauthState = oauthStates.get(state);
+    oauthStates.delete(state);
+    if (url.searchParams.get('error')) return oauthErrorPage(res, 'Discord authorization was cancelled or denied.');
+    if (!oauthState || oauthState.expiresAt <= Date.now() || !code) return oauthErrorPage(res, 'That secure Discord login request expired. Please try again.');
+    try {
+      const accessToken = await exchangeDiscordOAuthCode(code, config);
+      const user = await fetchDiscordOAuthUser(accessToken);
+      const guild = botRef?.guilds?.cache?.get(config.guildId) || await botRef?.guilds?.fetch(config.guildId).catch(() => null);
+      if (!guild) throw new Error('Outpost X Discord server could not be verified.');
+      const member = await guild.members.fetch(user.id).catch(() => null);
+      if (!member) throw new Error('You must be a member of the Outpost X Discord server.');
+      if (!hasPortalAccess(member)) throw new Error('You need the Outpost X player role before entering the Command Center.');
+      const sid = portalSessionFromMember(user, member, config.guildId);
+      return setPortalSessionCookie(res, sid, '/portal');
+    } catch (err) {
+      return oauthErrorPage(res, err.message);
+    }
+  }
+
   if (url.pathname === '/tracker/access') {
     const token = String(url.searchParams.get('token') || '');
     const grant = accessTokens.get(token);
@@ -777,18 +894,19 @@ async function handleHttp(req, res) {
       isOwner: !!grant.isOwner,
       expiresAt: Date.now() + SESSION_MINUTES * 60_000,
     });
-    res.writeHead(302, {
-      Location: '/portal',
-      'Set-Cookie': `watcher_tracker_session=${encodeURIComponent(sid)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_MINUTES * 60}`,
-      'Cache-Control': 'no-store',
-    });
-    return res.end();
+    return setPortalSessionCookie(res, sid, '/portal');
   }
 
   if (url.pathname === '/tracker/health') return json(res, 200, { ok: true });
 
   const session = getSession(req);
-  if (!session) return unauthorized(res, 401);
+  if (!session) {
+    if (url.pathname === '/portal' || url.pathname === '/tracker') {
+      res.writeHead(302, { Location: '/portal/login', 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+    return unauthorized(res, 401);
+  }
 
   if (url.pathname === '/tracker') {
     res.writeHead(302, { Location: '/portal?section=surveillance', 'Cache-Control': 'no-store' });
@@ -1101,11 +1219,13 @@ async function handleCommandCenterCommand(message) {
   await message.delete().catch(()=>{});
   const recent = await message.channel.messages.fetch({ limit: 50 }).catch(()=>null);
   for (const msg of recent?.values?.() || []) {
-    if (msg.author?.id === message.client.user.id && (msg.components||[]).some(r => r.components?.some(c => ['player_dashboard_open','command_center_open'].includes(c.customId)))) await msg.delete().catch(()=>{});
+    if (msg.author?.id === message.client.user.id && (msg.components||[]).some(r => r.components?.some(c => ['player_dashboard_open','command_center_open'].includes(c.customId) || String(c.url || '').includes('/portal/login')))) await msg.delete().catch(()=>{});
   }
+  const base = publicBaseUrl();
+  if (!base) { await message.channel.send('Command Center web access is not configured. Set `TRACKER_PUBLIC_URL` first.'); return true; }
   await message.channel.send({
     content: '👁️ **THE OUTPOST COMMAND CENTER**\nYour secure gateway to Outpost X services, vehicles, records, shops, lore, squads, and Watcher tools.',
-    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('command_center_open').setLabel('Enter Command Center').setEmoji('👁️').setStyle(ButtonStyle.Primary))]
+    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setURL(`${base}/portal/login`).setLabel('Enter Command Center').setEmoji('👁️').setStyle(ButtonStyle.Link))]
   });
   return true;
 }
