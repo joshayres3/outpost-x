@@ -26,6 +26,7 @@ const {
   getPlayerForLookup,
   getPlayerDisplayName,
   getPlayerIpInfo,
+  getOnlinePlayers,
   jailPlayerBySteamId,
   unjailPlayerBySteamId,
 } = require('./ggcon');
@@ -1131,6 +1132,60 @@ async function portalAbandonedVehicleReview(session, days = 14) {
   };
 }
 
+
+async function adminSpawnPlayers(session) {
+  const players = await getOnlinePlayers();
+  return {
+    players: (Array.isArray(players) ? players : []).map((player) => ({
+      steamId: String(player?.userId || player?.steamId || player?.steam_id || '').trim(),
+      name: getPlayerDisplayName(player, String(player?.userId || player?.steamId || player?.steam_id || 'Unknown')),
+    })).filter((player) => /^\d{17}$/.test(player.steamId)).sort((a, b) => a.name.localeCompare(b.name)),
+  };
+}
+
+async function adminSpawnVehicleTypes() {
+  const payload = await ggconGet('/vehicle-types.json');
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  return {
+    vehicles: items.map((item) => {
+      const vehicleClass = String(item?.i || '').trim();
+      const icon = String(item?.ico || '').trim();
+      return {
+        vehicleClass,
+        label: vehicleClass.replace(/^BPC_/, '').replace(/^BP_/, '').replaceAll('_', ' '),
+        iconUrl: icon ? `https://icons.gghost.games/icons/${encodeURIComponent(icon)}.webp` : null,
+      };
+    }).filter((item) => item.vehicleClass).sort((a, b) => a.label.localeCompare(b.label)),
+  };
+}
+
+async function adminSpawnExecute(session, body) {
+  const steamId = String(body?.steamId || '').trim();
+  const kind = String(body?.kind || '').trim();
+  if (!/^\d{17}$/.test(steamId)) throw new Error('Choose a valid online player.');
+  if (!['item', 'vehicle'].includes(kind)) throw new Error('Choose item or vehicle spawning.');
+
+  const online = await adminSpawnPlayers(session);
+  const target = online.players.find((player) => player.steamId === steamId);
+  if (!target) throw new Error('That player is no longer online. Refresh the player list and try again.');
+
+  if (kind === 'item') {
+    const item = String(body?.item || '').trim();
+    const qty = Math.floor(Number(body?.qty || 1));
+    if (!/^[A-Za-z0-9_]+$/.test(item)) throw new Error('Choose a valid item from the GGCON catalog.');
+    if (!Number.isInteger(qty) || qty < 1 || qty > 20) throw new Error('Item quantity must be between 1 and 20.');
+    const result = await ggconPost('/spawn', { steamId, item, qty });
+    await portalTransaction({guildId:session.guildId,discordId:session.discordId,steamId,playerName:target.name,type:'admin_item_spawn',title:`Admin spawned ${qty}x ${item}`,amount:0,details:{kind,item,qty,admin:session.displayName||'Admin',ggconMessage:result?.message||null}});
+    return { ok: true, message: result?.message || `Spawned ${qty}x ${item} for ${target.name}.` };
+  }
+
+  const vehicle = String(body?.vehicle || '').trim();
+  if (!/^(?:BPC_|BP_)[A-Za-z0-9_]+$/.test(vehicle)) throw new Error('Choose a valid vehicle from the GGCON vehicle catalog.');
+  const result = await ggconPost('/spawn-vehicle', { steamId, vehicle });
+  await portalTransaction({guildId:session.guildId,discordId:session.discordId,steamId,playerName:target.name,type:'admin_vehicle_spawn',title:`Admin spawned ${vehicle}`,amount:0,details:{kind,vehicle,admin:session.displayName||'Admin',ggconMessage:result?.message||null}});
+  return { ok: true, message: result?.message || `Spawned ${vehicle} for ${target.name}.` };
+}
+
 async function adminPlayerInfo(session, steamId, view) {
   steamId=String(steamId||'').trim(); if(!steamId) throw new Error('Steam ID is required.');
   let content;
@@ -1462,6 +1517,24 @@ async function handleHttp(req, res) {
   }
 
   if (url.pathname === '/portal/api/admin/content' && req.method === 'POST') { try{const b=await readJsonBody(req);const ctx=portalCtx(session);if(b.kind==='shop'){await requirePermission(session,'moderate_player_shops');return json(res,200,await portalAdminShop(ctx,b));}if(b.kind==='squad'){await requirePermission(session,'moderate_squads');return json(res,200,await portalAdminSquad(ctx,b));}if(b.kind==='lore'){await requirePermission(session,'moderate_player_lore');return json(res,200,await portalAdminLore(ctx,b));}throw new Error('Unknown content type.');}catch(err){return json(res,400,{error:err.message});} }
+
+  if (url.pathname === '/portal/api/admin/spawn/players' && req.method === 'GET') {
+    try { await requirePermission(session,'spawn_items_vehicles'); return json(res,200,await cachedFlight(`spawnPlayers:${session.guildId}`,5000,()=>adminSpawnPlayers(session))); }
+    catch(err){ return json(res,403,{error:err.message}); }
+  }
+  if (url.pathname === '/portal/api/admin/spawn/items' && req.method === 'GET') {
+    try { await requirePermission(session,'spawn_items_vehicles'); return json(res,200,{items:await searchItemCatalog(url.searchParams.get('q')||'',60)}); }
+    catch(err){ return json(res,403,{error:err.message}); }
+  }
+  if (url.pathname === '/portal/api/admin/spawn/vehicles' && req.method === 'GET') {
+    try { await requirePermission(session,'spawn_items_vehicles'); return json(res,200,await cachedFlight('spawnVehicleTypes',300000,adminSpawnVehicleTypes)); }
+    catch(err){ return json(res,403,{error:err.message}); }
+  }
+  if (url.pathname === '/portal/api/admin/spawn' && req.method === 'POST') {
+    try { await requirePermission(session,'spawn_items_vehicles'); return json(res,200,await adminSpawnExecute(session,await readJsonBody(req))); }
+    catch(err){ return json(res,400,{error:err.message}); }
+  }
+
   if (url.pathname === '/portal/api/admin/abandoned-vehicles' && req.method === 'GET') {
     try { await requirePermission(session,'search_players'); return json(res,200,await cachedFlight(`abandoned:${session.guildId}:${url.searchParams.get('days')||14}`,15000,()=>portalAbandonedVehicleReview(session,url.searchParams.get('days')))); }
     catch(err){ return json(res,400,{error:err.message}); }
