@@ -355,6 +355,7 @@ async function serverPost(path, body = {}) {
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!res.ok) throw new Error(data?.message || data?.error || `Server POST failed: ${res.status}`);
   if (data?.ok === false || data?.accepted === false) throw new Error(data?.message || data?.error || "Server rejected the request.");
+  if ((path === "/spawn" || path === "/spawn-vehicle") && data?.ok !== true) throw new Error(data?.message || data?.error || "GGCON did not confirm delivery.");
   return data || { ok: true };
 }
 

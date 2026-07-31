@@ -73,6 +73,9 @@ async function serverPost(endpoint, body = {}) {
   if (!res.ok || data?.ok === false) {
     throw new Error(data?.reason || data?.message || data?.error || `HTTP ${res.status}`);
   }
+  if ((endpoint === "/spawn" || endpoint === "/spawn-vehicle") && data?.ok !== true) {
+    throw new Error(data?.reason || data?.message || data?.error || "GGCON did not confirm delivery.");
+  }
   return data || { ok: true };
 }
 

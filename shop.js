@@ -8,15 +8,14 @@ const {
 } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
 const { getPlayerForLookup, getPlayerDisplayName, ggconPost } = require("./ggcon");
+const { getItemCatalog } = require("./itemCatalog");
 
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
 const PURCHASES_TABLE = process.env.WATCHER_SHOP_PURCHASES_TABLE || "watcher_shop_purchases";
 const PRODUCTS_TABLE = process.env.WATCHER_SERVER_SHOP_PRODUCTS_TABLE || "watcher_server_shop_products";
-const CATALOG_CACHE_MS = 6 * 60 * 60 * 1000;
 const PRODUCT_CACHE_MS = 30 * 1000;
 const purchaseLocks = new Set();
 let db = null;
-let catalogCache = { loadedAt: 0, items: [] };
 const productCache = new Map();
 
 const PACKAGES = {
@@ -160,6 +159,9 @@ async function saveManagedProduct(guildId, actorId, body = {}) {
       qty: Math.max(1, Math.min(1000, Math.floor(Number(item.qty || 1)))),
       itemClass: itemClass || null,
       aliases,
+      icon: String(item.icon || item.ico || '').trim() || null,
+      iconUrl: String(item.iconUrl || '').trim() || null,
+      category: String(item.category || '').trim() || null,
     };
   }).filter((item) => item.label && (item.itemClass || item.aliases.length));
   if (!String(body.name || '').trim()) throw new Error('Product name is required.');
@@ -195,7 +197,15 @@ async function searchItemCatalog(query = '', limit = 60) {
     const itemClass = catalogClass(item);
     const label = String(item?.dn || item?.displayName || item?.display_name || item?.name || item?.label || itemClass || 'Unknown Item');
     const haystack = normalize(`${label} ${itemClass} ${names.join(' ')}`);
-    return { label, itemClass, category: String(item?.category || item?.cat || item?.type || 'SCUM Item'), score: !wanted ? 1 : haystack.includes(wanted) ? (normalize(label).startsWith(wanted) ? 3 : 2) : 0 };
+    const icon = String(item?.ico || item?.icon || '').trim();
+    return {
+      label,
+      itemClass,
+      category: String(item?.c || item?.category || item?.cat || item?.type || 'SCUM Item'),
+      icon,
+      iconUrl: icon ? `https://icons.gghost.games/icons/${encodeURIComponent(icon)}.webp` : null,
+      score: !wanted ? 1 : haystack.includes(wanted) ? (normalize(label).startsWith(wanted) ? 3 : 2) : 0,
+    };
   }).filter((item) => item.itemClass && item.score > 0).sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)).slice(0, Math.max(1, Math.min(100, Number(limit || 60))));
 }
 
@@ -246,17 +256,7 @@ async function getLink(guildId, discordId) {
 }
 
 async function loadCatalog() {
-  if (catalogCache.items.length && Date.now() - catalogCache.loadedAt < CATALOG_CACHE_MS) return catalogCache.items;
-  const base = (process.env.GGCON_BASE_URL || "https://ggcon.gghost.games/s/2788404").replace(/\/+$/, "");
-  const response = await fetch(`${base}/items.json`, {
-    headers: { Accept: "application/json", "X-Password": process.env.GGCON_PASSWORD || "" },
-  });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.ok === false) throw new Error(payload?.reason || payload?.message || `Item catalog failed (${response.status}).`);
-  const items = Array.isArray(payload?.items) ? payload.items : Array.isArray(payload) ? payload : [];
-  if (!items.length) throw new Error("GGCON returned an empty item catalog.");
-  catalogCache = { loadedAt: Date.now(), items };
-  return items;
+  return getItemCatalog();
 }
 
 function catalogNames(item) {

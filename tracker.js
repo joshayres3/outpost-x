@@ -1095,6 +1095,42 @@ async function adminSearchPlayers(session, body) {
   const matches=result?.type==='single'?[result.player]:(result?.matches||[]);
   return {players:matches.slice(0,25).map(p=>({steamId:String(p.userId||p.steamId||''),name:getPlayerDisplayName(p),online:!!(p.online===true||p.ping!==undefined),cash:playerCash(p),fame:playerFame(p)}))};
 }
+
+async function portalAbandonedVehicleReview(session, days = 14) {
+  if (!session?.isAdmin) throw new Error('Admin access required.');
+  const thresholdDays = [7, 14, 30].includes(Number(days)) ? Number(days) : 14;
+  const data = await ggconGet('/vehicles.json');
+  const vehicles = Array.isArray(data?.vehicles) ? data.vehicles : [];
+  const now = Date.now();
+  const rows = vehicles.map((vehicle) => {
+    const raw = vehicle?.lastActive;
+    const ms = raw ? new Date(raw).getTime() : NaN;
+    const hasActivity = Number.isFinite(ms);
+    const inactiveDays = hasActivity ? Math.max(0, Math.floor((now - ms) / 86400000)) : null;
+    return {
+      id: String(vehicle?.id ?? ''),
+      name: String(vehicle?.name || vehicle?.class || 'Vehicle'),
+      className: String(vehicle?.class || ''),
+      owner: vehicle?.owner ? String(vehicle.owner) : null,
+      ownerSteamId: vehicle?.ownerSteamId ? String(vehicle.ownerSteamId) : null,
+      rendered: vehicle?.rendered === true,
+      lastActive: hasActivity ? new Date(ms).toISOString() : null,
+      inactiveDays,
+      reviewCandidate: hasActivity && inactiveDays >= thresholdDays,
+      location: vehicle?.location || null,
+    };
+  });
+  const candidates = rows.filter((row) => row.reviewCandidate).sort((a, b) => (b.inactiveDays || 0) - (a.inactiveDays || 0));
+  return {
+    thresholdDays,
+    totalVehicles: rows.length,
+    withActivity: rows.filter((row) => row.lastActive).length,
+    withoutActivity: rows.filter((row) => !row.lastActive).length,
+    candidates,
+    note: 'Read-only review. Vehicles with lastActive=null are not considered abandoned.',
+  };
+}
+
 async function adminPlayerInfo(session, steamId, view) {
   steamId=String(steamId||'').trim(); if(!steamId) throw new Error('Steam ID is required.');
   let content;
@@ -1422,6 +1458,10 @@ async function handleHttp(req, res) {
   }
 
   if (url.pathname === '/portal/api/admin/content' && req.method === 'POST') { try{const b=await readJsonBody(req);const ctx=portalCtx(session);if(b.kind==='shop'){await requirePermission(session,'moderate_player_shops');return json(res,200,await portalAdminShop(ctx,b));}if(b.kind==='squad'){await requirePermission(session,'moderate_squads');return json(res,200,await portalAdminSquad(ctx,b));}if(b.kind==='lore'){await requirePermission(session,'moderate_player_lore');return json(res,200,await portalAdminLore(ctx,b));}throw new Error('Unknown content type.');}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/admin/abandoned-vehicles' && req.method === 'GET') {
+    try { await requirePermission(session,'search_players'); return json(res,200,await cachedFlight(`abandoned:${session.guildId}:${url.searchParams.get('days')||14}`,15000,()=>portalAbandonedVehicleReview(session,url.searchParams.get('days')))); }
+    catch(err){ return json(res,400,{error:err.message}); }
+  }
   if (url.pathname === '/portal/api/admin/search' && req.method === 'POST') { try{await requirePermission(session,'search_players');return json(res,200,await adminSearchPlayers(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/ip-location' && req.method === 'POST') { try{await requirePermission(session,'search_players');const b=await readJsonBody(req);return json(res,200,await portalAdminIpLocation(session,b.steamId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/player' && req.method === 'POST') { try{await requirePermission(session,'search_players');const b=await readJsonBody(req);return json(res,200,await adminPlayerInfo(session,b.steamId,b.view));}catch(err){return json(res,400,{error:err.message});} }

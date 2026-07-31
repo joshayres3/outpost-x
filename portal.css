@@ -97,3 +97,9 @@
 .portalAnnouncement{border-color:rgba(66,178,255,.4);background:linear-gradient(135deg,rgba(27,107,176,.22),rgba(7,20,32,.88))}.portalAnnouncement h3{margin:.35rem 0 0;line-height:1.45}.healthMeta{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid rgba(255,255,255,.08);font-size:.82rem}.healthMeta span{color:var(--muted);text-align:right}.healthMeta.warning span{color:#ffca6a}
 
 .unregisteredTile{border-color:rgba(255,176,72,.42)!important}.unregisteredPlayer{align-items:center}.unregisteredPlayer small{line-height:1.55}.adminNotice{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:12px;background:rgba(255,255,255,.025)}@media(max-width:760px){.unregisteredPlayer{align-items:flex-start;flex-direction:column}.unregisteredPlayer .btn{width:100%}}
+
+/* GGCON live item catalogue icons */
+.catalogItem{display:grid;grid-template-columns:54px minmax(0,1fr) auto;align-items:center;gap:12px;text-align:left}
+.catalogIcon,.catalogIconFallback{width:48px;height:48px;border-radius:10px;border:1px solid rgba(93,171,255,.28);background:rgba(6,18,31,.9);object-fit:contain;display:grid;place-items:center;font-size:25px;padding:4px}
+.shopDraftItem{display:flex;align-items:center;gap:12px;min-width:0}.shopDraftItem>div{min-width:0}.shopDraftItem small{overflow-wrap:anywhere}.shopDraftRow{align-items:center}
+@media(max-width:720px){.catalogItem{grid-template-columns:46px minmax(0,1fr) auto}.catalogIcon,.catalogIconFallback{width:42px;height:42px}.shopDraftRow{align-items:flex-start}.shopDraftRow .qtyControl{width:100%;justify-content:flex-end}}

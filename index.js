@@ -102,6 +102,8 @@ const {
 } = require("./rulesAccept");
 const { startTrackerOnBoot, handleTrackerCommand, handleTrackerInteraction, handleCommandCenterCommand } = require("./tracker");
 const { startSpecialEventsOnBoot } = require("./watcherSpecialEvents");
+const watcherScheduler = require("./watcherScheduler");
+const { syncItemCatalog, ITEM_CATALOG_SYNC_INTERVAL_MS } = require("./itemCatalog");
 const {
   registerPlayerPanelCommands,
   handlePlayerPanelCommand,
@@ -238,6 +240,9 @@ bot.once(Events.ClientReady, async () => {
 
     startEventScheduler(bot, db);
     startGgconStatusOnBoot(bot);
+    watcherScheduler.registerTask('ggcon-item-catalog-sync', ITEM_CATALOG_SYNC_INTERVAL_MS, () => syncItemCatalog({ force: true }), {
+      initialDelayMs: 20_000,
+    });
   startSpecialEventsOnBoot(bot).catch((err) => console.error("❌ Special events startup failed:", err.message));
     startInsuranceOnBoot(bot);
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));

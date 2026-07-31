@@ -158,6 +158,10 @@ async function ggconPost(endpoint, body = {}) {
     const reason = data.reason || data.message || data.error || "Unknown server API error";
     throw new Error(`Server request failed: ${reason}`);
   }
+  if ((endpoint === "/spawn" || endpoint === "/spawn-vehicle") && data?.ok !== true) {
+    const reason = data?.reason || data?.message || data?.error || "GGCON did not confirm delivery.";
+    throw new Error(`Server request failed: ${reason}`);
+  }
 
   return data || { ok: true };
 }
