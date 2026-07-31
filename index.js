@@ -100,7 +100,8 @@ const {
   handleRulesAcceptCommand,
   handleRulesAcceptInteraction,
 } = require("./rulesAccept");
-const { startTrackerOnBoot, handleTrackerCommand, handleTrackerInteraction, handleCommandCenterCommand } = require("./tracker");
+const { startTrackerWebOnBoot, startTrackerJobsOnBoot, handleTrackerCommand, handleTrackerInteraction, handleCommandCenterCommand } = require("./tracker");
+const deploymentCoordinator = require('./deploymentCoordinator');
 const { startSpecialEventsOnBoot } = require("./watcherSpecialEvents");
 const watcherScheduler = require("./watcherScheduler");
 const { syncItemCatalog, ITEM_CATALOG_SYNC_INTERVAL_MS } = require("./itemCatalog");
@@ -254,8 +255,10 @@ bot.once(Events.ClientReady, async () => {
     startSquadFinder(bot, db);
     startPlayerLore(bot, db);
     startAnalyticsOnBoot(bot);
-    startTrackerOnBoot(bot).catch((err) => console.error("❌ Tracker startup failed:", err.message));
+    await startTrackerJobsOnBoot(bot);
+    deploymentCoordinator.setBotReady(true);
   } catch (err) {
+    deploymentCoordinator.setBotReady(false);
     console.error("❌ Startup database load failed:", err);
   }
 });
@@ -503,14 +506,23 @@ If the rules do not clearly answer the question, say:
 
 bot.on("error", (err) => console.error("❌ Discord error:", err));
 
-process.on("SIGTERM", () => {
-  console.log("⚠️ SIGTERM received. The host/container is stopping the bot.");
+async function gracefulShutdown(signal){
+  console.log(`⚠️ ${signal} received. Draining Watcher safely.`);
+  deploymentCoordinator.setBotReady(false);
+  await deploymentCoordinator.shutdown(signal).catch(()=>{});
   bot.destroy();
-  process.exit(0);
-});
+  setTimeout(()=>process.exit(0),250).unref?.();
+}
+process.on("SIGTERM",()=>gracefulShutdown("SIGTERM"));
 
 setInterval(() => {
   console.log(`💓 Watcher heartbeat: ${new Date().toISOString()}`);
 }, 5 * 60 * 1000);
 
-bot.login(process.env.DISCORD_TOKEN);
+startTrackerWebOnBoot(bot);
+(async()=>{
+  try{
+    await deploymentCoordinator.waitForLeadership({onRelinquish:async()=>{deploymentCoordinator.setBotReady(false);bot.destroy();setTimeout(()=>process.exit(0),250).unref?.();}});
+    await bot.login(process.env.DISCORD_TOKEN);
+  }catch(err){console.error('❌ Watcher deployment startup failed:',err);process.exit(1);}
+})();

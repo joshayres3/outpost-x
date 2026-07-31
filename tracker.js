@@ -8,6 +8,8 @@ const { URL } = require('url');
 const { createClient } = require('@supabase/supabase-js');
 const { MAP_CALIBRATION } = require('./mapCalibration');
 const watcherScheduler = require('./watcherScheduler');
+const deploymentCoordinator = require('./deploymentCoordinator');
+const { validateItemClasses, getItemCatalogStatus } = require('./itemCatalog');
 const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
@@ -736,7 +738,7 @@ async function portalHealthSnapshot(session){
   try{const guild=botRef?.guilds?.cache?.get(String(session.guildId));const channelId=String(process.env.EVENTS_CHANNEL_ID||'');const ch=guild?.channels?.cache?.get(channelId)||await botRef?.channels?.fetch(channelId).catch(()=>null);checks.eventPosting={ok:!!ch?.isTextBased?.(),detail:ch?.isTextBased?.()?`Ready in #${ch.name}`:'Configured event channel is unavailable'};}catch(e){checks.eventPosting={ok:false,detail:e.message};}
   const settings=await loadPortalSettings(session.guildId);
   const config={eventsChannel:!!String(process.env.EVENTS_CHANNEL_ID||''),supabase:!!(process.env.SUPABASE_URL&&process.env.SUPABASE_KEY),ggcon:!!process.env.GGCON_PASSWORD,discordOAuth:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),mapStorage:!!externalMapAssetBaseUrl()};
-  return {ok:true,checkedAt:now,version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT,checks,config,settings,scheduler:watcherScheduler.snapshot(),retryQueue:retryQueue.map(x=>({id:x.id,name:x.name,attempts:x.attempts,maxAttempts:x.maxAttempts,nextAt:new Date(x.nextAt).toISOString(),lastError:x.lastError}))};
+  return {ok:true,checkedAt:now,version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT,deploymentCoordinator:deploymentCoordinator.state(),checks,config,settings,scheduler:watcherScheduler.snapshot(),retryQueue:retryQueue.map(x=>({id:x.id,name:x.name,attempts:x.attempts,maxAttempts:x.maxAttempts,nextAt:new Date(x.nextAt).toISOString(),lastError:x.lastError}))};
   });
 }
 async function portalAttentionCounts(session){
@@ -1119,6 +1121,8 @@ async function portalAbandonedVehicleReview(session, days = 14) {
       inactiveDays,
       reviewCandidate: hasActivity && inactiveDays >= thresholdDays,
       location: vehicle?.location || null,
+      activityStatus: hasActivity ? 'reported' : 'unavailable',
+      ownershipStatus: vehicle?.owner ? 'owned' : 'unowned',
     };
   });
   const candidates = rows.filter((row) => row.reviewCandidate).sort((a, b) => (b.inactiveDays || 0) - (a.inactiveDays || 0));
@@ -1127,11 +1131,25 @@ async function portalAbandonedVehicleReview(session, days = 14) {
     totalVehicles: rows.length,
     withActivity: rows.filter((row) => row.lastActive).length,
     withoutActivity: rows.filter((row) => !row.lastActive).length,
+    vehicles: rows,
     candidates,
     note: 'Read-only review. Vehicles with lastActive=null are not considered abandoned.',
   };
 }
 
+
+async function adminCatalogValidation(session) {
+  if (!session?.isAdmin) throw new Error('Admin access required.');
+  const products = await listManagedProducts(session.guildId, false);
+  const packs = [];
+  for (const product of products) {
+    const results = await validateItemClasses(product.items || []);
+    const issues = results.filter((row) => !row.valid || row.issues.length);
+    packs.push({ id: product.id, name: product.name, type: 'Server Shop', itemCount: results.length, issueCount: issues.length, issues });
+  }
+  const status = getItemCatalogStatus();
+  return { checkedAt: new Date().toISOString(), catalog: status, packs, totalIssues: packs.reduce((sum,p)=>sum+p.issueCount,0), note:'Read-only validation. Watcher never changes saved packs automatically.' };
+}
 
 async function adminSpawnPlayers(session) {
   const players = await getOnlinePlayers();
@@ -1139,6 +1157,7 @@ async function adminSpawnPlayers(session) {
     players: (Array.isArray(players) ? players : []).map((player) => ({
       steamId: String(player?.userId || player?.steamId || player?.steam_id || '').trim(),
       name: getPlayerDisplayName(player, String(player?.userId || player?.steamId || player?.steam_id || 'Unknown')),
+      checkedAt: new Date().toISOString(),
     })).filter((player) => /^\d{17}$/.test(player.steamId)).sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
@@ -1354,7 +1373,7 @@ async function handleHttp(req, res) {
     return setPortalSessionCookie(res, session, '/portal');
   }
 
-  if (url.pathname === '/tracker/health') return json(res, 200, { ok: true });
+  if (url.pathname === '/tracker/health' || url.pathname === '/health') { const d=deploymentCoordinator.state(); return json(res, d.ready?200:503, {ok:d.ready,...d}); }
   // Public favicon so browsers can load the Watcher emblem before or after login.
   if (url.pathname === '/portal/assets/favicon.png' || url.pathname === '/favicon.ico') {
     if (!fs.existsSync(portalFaviconPath)) return text(res, 404, 'Portal favicon is missing.');
@@ -1535,6 +1554,11 @@ async function handleHttp(req, res) {
     catch(err){ return json(res,400,{error:err.message}); }
   }
 
+  if (url.pathname === '/portal/api/admin/catalog-validation' && req.method === 'GET') {
+    try { await requirePermission(session,'manage_server_shop'); return json(res,200,await adminCatalogValidation(session)); }
+    catch(err){ return json(res,400,{error:err.message}); }
+  }
+
   if (url.pathname === '/portal/api/admin/abandoned-vehicles' && req.method === 'GET') {
     try { await requirePermission(session,'search_players'); return json(res,200,await cachedFlight(`abandoned:${session.guildId}:${url.searchParams.get('days')||14}`,15000,()=>portalAbandonedVehicleReview(session,url.searchParams.get('days')))); }
     catch(err){ return json(res,400,{error:err.message}); }
@@ -1673,9 +1697,10 @@ function startWebServer() {
   return serverRef;
 }
 
-async function startTrackerOnBoot(bot) {
+function startTrackerWebOnBoot(bot) { botRef = bot; startWebServer(); deploymentCoordinator.setWebReady(true); }
+
+async function startTrackerJobsOnBoot(bot) {
   botRef = bot;
-  startWebServer();
   await recordMovementSample();
   scheduleMovementSample(latestOnline.size > 0 ? SAMPLE_SECONDS : IDLE_SAMPLE_SECONDS);
   watcherScheduler.registerTask('movement-retention-cleanup', CLEANUP_MINUTES*60_000, cleanupOldTrackerData, {initialDelayMs:5000,jitterMs:30000,essential:true});
@@ -1757,8 +1782,12 @@ async function handleCommandCenterCommand(message) {
   return true;
 }
 
+async function startTrackerOnBoot(bot){ startTrackerWebOnBoot(bot); return startTrackerJobsOnBoot(bot); }
+
 module.exports = {
   startTrackerOnBoot,
+  startTrackerWebOnBoot,
+  startTrackerJobsOnBoot,
   handleTrackerCommand,
   handleTrackerInteraction,
   handleCommandCenterCommand,

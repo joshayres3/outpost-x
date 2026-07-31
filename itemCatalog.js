@@ -159,6 +159,28 @@ async function getItemCatalog(options = {}) {
   return activeLoad;
 }
 
+
+async function validateItemClasses(entries = []) {
+  const catalog = await getItemCatalog();
+  const byClass = new Map(catalog.map((item) => [String(item.i).toLowerCase(), item]));
+  const seen = new Set();
+  return (Array.isArray(entries) ? entries : []).map((entry) => {
+    const itemClass = String(entry?.itemClass || entry?.i || entry?.item || '').trim();
+    const qty = Number(entry?.qty);
+    const key = itemClass.toLowerCase();
+    const current = byClass.get(key) || null;
+    const duplicate = !!key && seen.has(key);
+    if (key) seen.add(key);
+    const issues = [];
+    if (!itemClass) issues.push('Missing item class');
+    else if (!current) issues.push('Not found in current GGCON catalog');
+    if (!Number.isFinite(qty) || qty < 1) issues.push('Invalid quantity');
+    if (duplicate) issues.push('Duplicate item entry');
+    if (current && !current.ico) issues.push('No catalog icon');
+    return { itemClass, qty: Number.isFinite(qty) ? qty : null, label: String(entry?.label || current?.dn || itemClass || 'Unknown item'), valid: issues.length === 0, issues, current: current ? { label: current.dn || current.i, category: current.c || null, icon: current.ico || null } : null };
+  });
+}
+
 function getItemCatalogStatus() {
   return {
     count: memory.items.length,
@@ -174,5 +196,6 @@ module.exports = {
   getItemCatalog,
   syncItemCatalog,
   getItemCatalogStatus,
+  validateItemClasses,
   ITEM_CATALOG_SYNC_INTERVAL_MS: SYNC_INTERVAL_MS,
 };
