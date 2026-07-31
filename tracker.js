@@ -1098,7 +1098,16 @@ async function adminSearchPlayers(session, body) {
 async function adminPlayerInfo(session, steamId, view) {
   steamId=String(steamId||'').trim(); if(!steamId) throw new Error('Steam ID is required.');
   let content;
-  if(view==='details') content=await buildPlayerDetailsBySteamId(steamId, session.guildId);
+  if(view==='details') {
+    content=await buildPlayerDetailsBySteamId(steamId, session.guildId);
+    try {
+      const geo = await portalAdminIpLocation(session, steamId);
+      if (geo?.content) content = `${content}\n\n${geo.content}`;
+    } catch (err) {
+      const message = String(err?.message || 'Location unavailable.');
+      content = `${content}\n\n🌐 Approximate IP Location\n\nUnavailable: ${message}`;
+    }
+  }
   else if(view==='vehicles') content=await buildVehiclesBySteamId(steamId);
   else if(view==='squad') content=await buildSquadBySteamId(steamId);
   else if(view==='nearby') content=await buildNearVehiclesBySteamId(steamId);
