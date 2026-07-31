@@ -8,7 +8,7 @@ const { URL } = require('url');
 const { createClient } = require('@supabase/supabase-js');
 const { MAP_CALIBRATION } = require('./mapCalibration');
 const watcherScheduler = require('./watcherScheduler');
-const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, deleteManagedProduct, searchItemCatalog } = require('./shop');
+const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
 const { portalCreateRental } = require('./rentals');
@@ -1451,6 +1451,10 @@ async function handleHttp(req, res) {
   if (url.pathname === '/portal/api/admin/shop/product' && req.method === 'POST') {
     try { await requirePermission(session, 'edit_shop_products'); const body=await readJsonBody(req); if(body.id){const old=(await listManagedProducts(session.guildId,true)).find(x=>String(x.id)===String(body.id)); if(old&&Number(old.price)!==Number(body.price))await requirePermission(session,'edit_shop_prices');} return json(res, 200, { product: await saveManagedProduct(session.guildId, session.discordId, body) }); }
     catch (err) { return json(res, 403, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/admin/shop/reorder' && req.method === 'POST') {
+    try { await requirePermission(session, 'edit_shop_products'); const body=await readJsonBody(req); return json(res, 200, await reorderManagedProducts(session.guildId, body.orderedIds)); }
+    catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/admin/shop/delete' && req.method === 'POST') {
     try { await requirePermission(session, 'delete_shop_products'); const body=await readJsonBody(req); return json(res, 200, await deleteManagedProduct(session.guildId, body.id)); }

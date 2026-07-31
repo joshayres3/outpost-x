@@ -182,6 +182,31 @@ async function saveManagedProduct(guildId, actorId, body = {}) {
   return normalizeProductRow(result.data);
 }
 
+
+async function reorderManagedProducts(guildId, orderedIds = []) {
+  const current = await listManagedProducts(guildId, true);
+  const currentIds = current.map((p) => String(p.id));
+  const requested = Array.isArray(orderedIds) ? orderedIds.map(String) : [];
+  if (requested.length !== currentIds.length || new Set(requested).size !== requested.length) {
+    throw new Error('The product order is incomplete or contains duplicates. Refresh the manager and try again.');
+  }
+  const currentSet = new Set(currentIds);
+  if (requested.some((id) => !currentSet.has(id))) {
+    throw new Error('The product list changed while you were reordering it. Refresh the manager and try again.');
+  }
+  const updates = requested.map((id, index) =>
+    getDb().from(PRODUCTS_TABLE)
+      .update({ sort_order: index, updated_at: new Date().toISOString() })
+      .eq('guild_id', String(guildId))
+      .eq('id', id)
+  );
+  const results = await Promise.all(updates);
+  const failed = results.find((r) => r.error);
+  if (failed?.error) throw failed.error;
+  productCache.delete(String(guildId));
+  return { ok: true, products: await listManagedProducts(guildId, true) };
+}
+
 async function deleteManagedProduct(guildId, id) {
   const { error } = await getDb().from(PRODUCTS_TABLE).delete().eq('guild_id', String(guildId)).eq('id', String(id));
   if (error) throw error;
@@ -539,4 +564,4 @@ async function buyPackageForPortal({ guildId, discordId, steamId, playerName, pa
     return { ok:true, package:pkg, playerName:link.scum_name||getPlayerDisplayName(player), balanceBefore:cash, balanceAfter:cash-pkg.price };
   } finally { purchaseLocks.delete(lockKey); }
 }
-module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, deleteManagedProduct, searchItemCatalog };
+module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog };
