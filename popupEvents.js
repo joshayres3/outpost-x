@@ -504,8 +504,8 @@ async function restoreStormState(state) {
 
 async function deliverReward(event, winner, state) {
   const reward = event.reward || chooseReward();
-  if (reward.type === "fame") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/fame`, { action: "change", amount: reward.amount });
-  else if (reward.type === "cash") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/currency`, { action: "change", amount: reward.amount });
+  if (reward.type === "fame") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/fame`, { action: "add", amount: Math.abs(reward.amount) });
+  else if (reward.type === "cash") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/currency`, { action: "add", amount: Math.abs(reward.amount) });
   else if (reward.type === "bonus_lottery") await triggerBonusLottery(botRef, state.guildId);
   return reward;
 }

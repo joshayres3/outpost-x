@@ -418,13 +418,13 @@ async function buyPackage(interaction, pkg) {
     const resolved = [];
     for (const item of pkg.items) resolved.push({ ...item, itemClass: await resolveItemClass(item) });
 
-    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -pkg.price });
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "remove", amount: Math.abs(pkg.price) });
     try {
       for (const item of resolved) {
         await ggconPost("/spawn", { steamId: String(link.steam_id), item: item.itemClass, qty: item.qty });
       }
     } catch (error) {
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: pkg.price }).catch(() => {});
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "add", amount: Math.abs(pkg.price) }).catch(() => {});
       await recordPurchase({
         guild_id: String(interaction.guildId), discord_id: String(interaction.user.id), steam_id: String(link.steam_id),
         player_name: link.scum_name || getPlayerDisplayName(player), package_id: pkg.id, package_name: pkg.name,
@@ -551,11 +551,11 @@ async function buyPackageForPortal({ guildId, discordId, steamId, playerName, pa
     if (cash < pkg.price) throw new Error(`You need $${formatMoney(pkg.price)}. Your current balance is $${formatMoney(cash)}.`);
     const resolved = [];
     for (const item of pkg.items) resolved.push({ ...item, itemClass: item.itemClass || await resolveItemClass(item) });
-    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -pkg.price });
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'remove', amount: Math.abs(pkg.price) });
     try {
       for (const item of resolved) await ggconPost('/spawn', { steamId: String(link.steam_id), item: item.itemClass, qty: item.qty });
     } catch (error) {
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: pkg.price }).catch(() => {});
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'add', amount: Math.abs(pkg.price) }).catch(() => {});
       await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.slug||pkg.id, package_name:pkg.name, price:pkg.price, status:'refunded', error_message:error.message, created_at:new Date().toISOString() });
       throw new Error(`Delivery failed, so your $${formatMoney(pkg.price)} was refunded. ${error.message}`);
     }

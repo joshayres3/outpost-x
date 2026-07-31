@@ -1060,11 +1060,11 @@ async function portalTaxiSend(session, body) {
     const before = await verifyPortalAirliftReady(session, link, player);
     const [x, y] = PORTAL_SECTORS[sector];
     const z = PORTAL_AIRLIFT_ALTITUDE_Z;
-    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -PORTAL_AIRLIFT_PRICE });
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'remove', amount: Math.abs(PORTAL_AIRLIFT_PRICE) });
     try {
       await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/teleport`, { x, y, z });
     } catch (err) {
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: PORTAL_AIRLIFT_PRICE }).catch(() => {});
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'add', amount: Math.abs(PORTAL_AIRLIFT_PRICE) }).catch(() => {});
       throw new Error(`Airlift failed and your $${PORTAL_AIRLIFT_PRICE.toLocaleString('en-CA')} was returned. ${err.message}`);
     }
     const now = new Date().toISOString();
@@ -1083,7 +1083,7 @@ async function portalRefund(session,body){
   const id=String(body.transactionId||''); const amount=Number(body.amount); const reason=String(body.reason||'').trim(); if(!id||!Number.isFinite(amount)||amount<=0) throw new Error('Enter a valid refund amount.'); if(!reason) throw new Error('A refund reason is required.');
   const {data:tx,error}=await getDb().from(TRANSACTIONS_TABLE).select('*').eq('id',id).eq('guild_id',String(session.guildId)).maybeSingle(); if(error) throw error; if(!tx) throw new Error('Transaction not found.'); if(!tx.refundable) throw new Error('This transaction is not refundable.');
   const max=Math.abs(Number(tx.amount||0))-Number(tx.refunded_amount||0); if(amount>max+0.001) throw new Error(`Maximum remaining refund is $${max.toFixed(2)}.`); if(!tx.steam_id) throw new Error('No linked Steam ID is attached to this transaction.');
-  await ggconPost(`/players/${encodeURIComponent(tx.steam_id)}/currency`,{action:'change',amount}); const total=Number(tx.refunded_amount||0)+amount; const full=total>=Math.abs(Number(tx.amount||0))-0.001; const now=new Date().toISOString();
+  await ggconPost(`/players/${encodeURIComponent(tx.steam_id)}/currency`,{action:'add',amount:Math.abs(amount)}); const total=Number(tx.refunded_amount||0)+amount; const full=total>=Math.abs(Number(tx.amount||0))-0.001; const now=new Date().toISOString();
   const {error:updateError}=await getDb().from(TRANSACTIONS_TABLE).update({refunded_amount:total,refund_status:full?'fully_refunded':'partially_refunded',refunded_by_discord_id:String(session.discordId),refunded_by_name:session.displayName||'Admin',refund_reason:reason,refunded_at:now,updated_at:now}).eq('id',id); if(updateError) throw updateError;
   await getDb().from(TRANSACTIONS_TABLE).insert({guild_id:String(session.guildId),discord_id:tx.discord_id,steam_id:tx.steam_id,player_name:tx.player_name,type:'refund',title:`Refund: ${tx.title}`,amount, currency:'cash',status:'completed',details:{reason,admin:session.displayName||'Admin'},refundable:false,original_transaction_id:tx.id,created_at:now,updated_at:now}); return {ok:true,amount};
 }
@@ -1224,6 +1224,67 @@ async function adminPlayerInfo(session, steamId, view) {
   else throw new Error('Unknown player view.');
   return {content:cleanAdminText(content)};
 }
+
+async function portalWeather() {
+  const data = await ggconGet('/weather.json');
+  return {
+    ok: true,
+    timeOfDay: data.timeOfDay ?? null,
+    dayPeriod: data.dayPeriod || null,
+    airTemperature: data.airTemperature ?? null,
+    rainIntensity: data.rainIntensity ?? null,
+    snowIntensity: data.snowIntensity ?? null,
+    windSpeedKph: data.windSpeedKph ?? null,
+    fogEnabled: data.fogEnabled ?? null,
+    fogDensity: data.fogDensity ?? null,
+    lightningRate: data.lightningRate ?? null,
+  };
+}
+
+async function portalBaseFlags(session) {
+  const data = await ggconGet('/flags.json');
+  const flags = Array.isArray(data.flags) ? data.flags : [];
+  return {
+    ok: true,
+    count: Number(data.count ?? flags.length),
+    rules: {
+      maxElementsPerFlag: data.maxElementsPerFlag ?? null,
+      maxExpandedPerFlag: data.maxExpandedPerFlag ?? null,
+      extraElementsPerSquadMember: data.extraElementsPerSquadMember ?? null,
+      flagInfluenceRadius: data.flagInfluenceRadius ?? null,
+      allowMultipleFlagsPerPlayer: data.allowMultipleFlagsPerPlayer ?? null,
+    },
+    flags: flags.map(f => ({
+      flagId: f.flagId ?? null, baseId: f.baseId ?? null, baseName: f.baseName || `Base #${f.baseId ?? f.flagId ?? '?'}`,
+      owner: f.owner || null, ownerSteamId: f.ownerSteamId || null, ownerProfileId: f.ownerProfileId ?? null,
+      location: f.location || null, elementCount: Number(f.elementCount || 0), expandedElements: Number(f.expandedElements || 0),
+      maxElements: f.maxElements == null ? null : Number(f.maxElements),
+    })).sort((a,b) => (b.elementCount||0) - (a.elementCount||0)),
+  };
+}
+
+async function adminDirectAction(session, body) {
+  const steamId = String(body.steamId || '').trim();
+  const action = String(body.action || '').trim();
+  if (!steamId) throw new Error('Steam64 ID is required.');
+  if (action === 'kick') {
+    const online = await getOnlinePlayers();
+    const match = online.find(p => String(p.userId || p.steamId || '') === steamId);
+    if (!match) throw new Error('Player is no longer online.');
+    const result = await ggconPost(`/players/${encodeURIComponent(steamId)}/kick`, {});
+    return { ok:true, message:'Player kicked from SCUM.', result };
+  }
+  if (action === 'teleport') {
+    const x=Number(body.x), y=Number(body.y), z=Number(body.z);
+    if (![x,y,z].every(Number.isFinite)) throw new Error('Valid X, Y and Z coordinates are required.');
+    const online = await getOnlinePlayers();
+    if (!online.some(p => String(p.userId || p.steamId || '') === steamId)) throw new Error('Player is no longer online.');
+    const result = await ggconPost(`/players/${encodeURIComponent(steamId)}/teleport`, {x,y,z});
+    return { ok:true, message:`Player teleported to ${x}, ${y}, ${z}.`, result };
+  }
+  throw new Error('Unsupported direct action.');
+}
+
 function portalAdminContext(session, sink){
   return {guildId:String(session.guildId),user:{id:String(session.discordId),username:session.displayName||'Admin',tag:session.displayName||'Admin'},reply:async payload=>sink(payload),update:async payload=>sink(payload)};
 }
@@ -1231,7 +1292,7 @@ async function adminAdjust(session, body){
   const steamId=String(body.steamId||'').trim(),kind=String(body.kind||''),amount=Math.floor(Number(body.amount)),reason=String(body.reason||'').trim();
   if(!steamId||!['cash','fame'].includes(kind)||!Number.isFinite(amount)||amount===0) throw new Error('Choose cash or fame and enter a non-zero whole amount.');
   if(!reason) throw new Error('A reason is required.');
-  await ggconPost(`/players/${encodeURIComponent(steamId)}/${kind==='cash'?'currency':'fame'}`,{action:'change',amount});
+  await ggconPost(`/players/${encodeURIComponent(steamId)}/${kind==='cash'?'currency':'fame'}`,{action:amount>0?'add':'remove',amount:Math.abs(amount)});
   const target=await getPlayerForLookup(steamId).catch(()=>null); const p=target?.type==='single'?target.player:null;
   await portalTransaction({guildId:session.guildId,discordId:session.discordId,steamId,playerName:p?getPlayerDisplayName(p):steamId,type:`admin_${kind}_adjustment`,title:`Admin ${kind} adjustment`,amount:kind==='cash'?amount:0,details:{kind,amount,reason,admin:session.displayName||'Admin'}});
   return {ok:true};
@@ -1556,6 +1617,19 @@ async function handleHttp(req, res) {
 
   if (url.pathname === '/portal/api/admin/catalog-validation' && req.method === 'GET') {
     try { await requirePermission(session,'manage_server_shop'); return json(res,200,await adminCatalogValidation(session)); }
+    catch(err){ return json(res,400,{error:err.message}); }
+  }
+
+  if (url.pathname === '/portal/api/weather' && req.method === 'GET') {
+    try { return json(res,200,await cachedFlight('portalWeather',30000,portalWeather)); }
+    catch(err){ return json(res,503,{error:err.message}); }
+  }
+  if (url.pathname === '/portal/api/admin/base-flags' && req.method === 'GET') {
+    try { await requirePermission(session,'search_players'); return json(res,200,await cachedFlight('portalBaseFlags',30000,()=>portalBaseFlags(session))); }
+    catch(err){ return json(res,400,{error:err.message}); }
+  }
+  if (url.pathname === '/portal/api/admin/direct-action' && req.method === 'POST') {
+    try { const body=await readJsonBody(req); await requirePermission(session,body.action==='kick'?'ban_unban':'teleport_surveillance'); return json(res,200,await adminDirectAction(session,body)); }
     catch(err){ return json(res,400,{error:err.message}); }
   }
 
