@@ -4,6 +4,8 @@ const path = require("path");
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
 const CARGO_FRENZY_SAFE_POINTS = require("./cargoSafePoints");
+const ggconClient = require("./ggcon/client");
+const ggconServices = require("./ggcon/index");
 
 const DEFAULT_GGCON_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const STATUS_FILE = path.join(__dirname, "data", "ggcon-status.json");
@@ -92,110 +94,19 @@ function getDiscordActorName(context) {
   return context?.member?.displayName || context?.user?.tag || context?.author?.tag || "Unknown";
 }
 
-function getBaseUrl() {
-  return (process.env.GGCON_BASE_URL || DEFAULT_GGCON_BASE_URL).replace(/\/+$/, "");
-}
-
-function getPassword() {
-  const password = process.env.GGCON_PASSWORD;
-  if (!password) {
-    throw new Error("Missing server API password Railway variable.");
-  }
-  return password;
-}
-
-function hasPasswordConfigured() {
-  return !!process.env.GGCON_PASSWORD;
-}
+function getBaseUrl() { return ggconClient.baseUrl(); }
+function hasPasswordConfigured() { return ggconClient.hasPasswordConfigured(); }
 
 async function ggconGet(endpoint) {
-  const url = `${getBaseUrl()}${endpoint}`;
-
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "X-Password": getPassword(),
-    },
-  });
-
-  const data = await res.json().catch(() => null);
-
-  if (!res.ok) {
-    const reason = data?.reason || data?.message || data?.error || `HTTP ${res.status}`;
-    throw new Error(`Server request failed: ${reason}`);
-  }
-
-  if (data && data.ok === false) {
-    const reason = data.reason || data.message || data.error || "Unknown server API error";
-    throw new Error(`Server request failed: ${reason}`);
-  }
-
-  return data;
+  return ggconClient.get(endpoint, { attempts: 2 });
 }
 
 async function ggconPost(endpoint, body = {}) {
-  const url = `${getBaseUrl()}${endpoint}`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "X-Password": getPassword(),
-    },
-    body: JSON.stringify(body || {}),
-  });
-
-  const data = await res.json().catch(() => null);
-
-  if (!res.ok) {
-    const reason = data?.reason || data?.message || data?.error || `HTTP ${res.status}`;
-    throw new Error(`Server request failed: ${reason}`);
-  }
-
-  if (data && data.ok === false) {
-    const reason = data.reason || data.message || data.error || "Unknown server API error";
-    throw new Error(`Server request failed: ${reason}`);
-  }
-  if ((endpoint === "/spawn" || endpoint === "/spawn-vehicle") && data?.ok !== true) {
-    const reason = data?.reason || data?.message || data?.error || "GGCON did not confirm delivery.";
-    throw new Error(`Server request failed: ${reason}`);
-  }
-
-  return data || { ok: true };
+  return ggconClient.post(endpoint, body);
 }
 
 async function ggconPostRaw(endpoint, body = {}) {
-  const url = `${getBaseUrl()}${endpoint}`;
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "X-Password": getPassword(),
-      },
-      body: JSON.stringify(body || {}),
-    });
-
-    const data = await res.json().catch(() => null);
-
-    return {
-      httpOk: res.ok,
-      status: res.status,
-      data,
-      error: null,
-    };
-  } catch (err) {
-    return {
-      httpOk: false,
-      status: 0,
-      data: null,
-      error: err?.message || String(err),
-    };
-  }
+  return ggconClient.rawPost(endpoint, body);
 }
 
 function hasStaffRole(member) {
@@ -6645,6 +6556,7 @@ module.exports = {
   getPlayerIpInfo,
   ggconPost,
   ggconGet,
+  services: ggconServices,
   triggerCargoFrenzyFromPortal,
   jailPlayerBySteamId,
   unjailPlayerBySteamId,

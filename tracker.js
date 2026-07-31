@@ -9,6 +9,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { MAP_CALIBRATION } = require('./mapCalibration');
 const watcherScheduler = require('./watcherScheduler');
 const deploymentCoordinator = require('./deploymentCoordinator');
+const startupValidation = require('./startupValidation');
 const { validateItemClasses, getItemCatalogStatus } = require('./itemCatalog');
 const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
@@ -1434,7 +1435,7 @@ async function handleHttp(req, res) {
     return setPortalSessionCookie(res, session, '/portal');
   }
 
-  if (url.pathname === '/tracker/health' || url.pathname === '/health') { const d=deploymentCoordinator.state(); return json(res, d.ready?200:503, {ok:d.ready,...d}); }
+  if (url.pathname === '/tracker/health' || url.pathname === '/health') { const d=deploymentCoordinator.state(); const validation=startupValidation.report(); const ready=d.ready && validation.status!=='not_ready'; return json(res, ready?200:503, {ok:ready,status:ready?(validation.status==='degraded'?'degraded':'ready'):'not_ready',deployment:d,validation}); }
   // Public favicon so browsers can load the Watcher emblem before or after login.
   if (url.pathname === '/portal/assets/favicon.png' || url.pathname === '/favicon.ico') {
     if (!fs.existsSync(portalFaviconPath)) return text(res, 404, 'Portal favicon is missing.');
@@ -1501,6 +1502,18 @@ async function handleHttp(req, res) {
     bumpPortalRevision(session.guildId);
   }
 
+  if (url.pathname === '/portal/api/bootstrap' && req.method === 'GET') {
+    try { const data=await buildPortalOverview(session); return json(res,200,{me:data.me,server:data.server,maintenance:data.maintenance,announcement:data.announcement,version:data.version}); }
+    catch(err){ return json(res,400,{error:err.message}); }
+  }
+  if (url.pathname === '/portal/api/account' && req.method === 'GET') {
+    try { const data=await buildPortalOverview(session); return json(res,200,{me:data.me,link:data.link,account:data.account,transactions:data.transactions?.slice?.(0,10)||[]}); }
+    catch(err){ return json(res,400,{error:err.message}); }
+  }
+  if (url.pathname === '/portal/api/dashboard' && req.method === 'GET') {
+    try { const data=await buildPortalOverview(session); return json(res,200,{me:data.me,server:data.server,vehicles:data.vehicles,events:data.events,transactions:data.transactions,airlift:data.airlift}); }
+    catch(err){ return json(res,400,{error:err.message}); }
+  }
   if (url.pathname === '/portal/api/overview') {
     try { const key=`overview:${session.guildId}:${session.discordId}`; return json(res,200,await cachedFlight(key,8000,()=>buildPortalOverview(session))); }
     catch (err) { return json(res, 500, { error: err.message }); }
@@ -1522,7 +1535,7 @@ async function handleHttp(req, res) {
     catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/shop' && req.method === 'POST') {
-    try { await requireFeature(session.guildId,'purchases','Server purchases'); const link=await portalLink(session); return json(res,200,await buyPackageForPortal({guildId:session.guildId,discordId:session.discordId,steamId:link?.steam_id,playerName:link?.scum_name,packageId:(await readJsonBody(req)).id})); }
+    try { await requireFeature(session.guildId,'purchases','Server purchases'); const link=await portalLink(session); const body=await readJsonBody(req); return json(res,200,await buyPackageForPortal({guildId:session.guildId,discordId:session.discordId,steamId:link?.steam_id,playerName:link?.scum_name,packageId:body.id,requestId:body.requestId||req.headers['x-idempotency-key']})); }
     catch (err) { return json(res,400,{error:err.message}); }
   }
   if (url.pathname === '/portal/api/events/rsvp' && req.method === 'POST') { try{const b=await readJsonBody(req);return json(res,200,await portalRsvpEvent(portalCtx(session),b.id,b.attending!==false));}catch(err){return json(res,400,{error:err.message});} }

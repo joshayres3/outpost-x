@@ -105,6 +105,8 @@ const deploymentCoordinator = require('./deploymentCoordinator');
 const { startSpecialEventsOnBoot } = require("./watcherSpecialEvents");
 const watcherScheduler = require("./watcherScheduler");
 const { syncItemCatalog, ITEM_CATALOG_SYNC_INTERVAL_MS } = require("./itemCatalog");
+const { validateStartup } = require('./startupValidation');
+const log = require('./lib/logger');
 const {
   registerPlayerPanelCommands,
   handlePlayerPanelCommand,
@@ -256,6 +258,8 @@ bot.once(Events.ClientReady, async () => {
     startPlayerLore(bot, db);
     startAnalyticsOnBoot(bot);
     await startTrackerJobsOnBoot(bot);
+    const validation = await validateStartup(bot);
+    if (validation.status === 'not_ready') throw new Error('Startup validation found an essential failure.');
     deploymentCoordinator.setBotReady(true);
   } catch (err) {
     deploymentCoordinator.setBotReady(false);
@@ -509,15 +513,16 @@ bot.on("error", (err) => console.error("❌ Discord error:", err));
 async function gracefulShutdown(signal){
   console.log(`⚠️ ${signal} received. Draining Watcher safely.`);
   deploymentCoordinator.setBotReady(false);
+  watcherScheduler.stopAll();
   await deploymentCoordinator.shutdown(signal).catch(()=>{});
   bot.destroy();
   setTimeout(()=>process.exit(0),250).unref?.();
 }
 process.on("SIGTERM",()=>gracefulShutdown("SIGTERM"));
 
-setInterval(() => {
-  console.log(`💓 Watcher heartbeat: ${new Date().toISOString()}`);
-}, 5 * 60 * 1000);
+watcherScheduler.registerTask('watcher-heartbeat', 5 * 60 * 1000, async () => {
+  log.info('watcher.heartbeat', { deployment: deploymentCoordinator.state(), schedulerTasks: watcherScheduler.snapshot().length });
+}, { leaderOnly: false, initialDelayMs: 5 * 60 * 1000 });
 
 startTrackerWebOnBoot(bot);
 (async()=>{

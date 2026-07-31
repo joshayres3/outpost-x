@@ -8,6 +8,8 @@ const {
 } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
 const { getPlayerForLookup, getPlayerDisplayName, ggconPost } = require("./ggcon");
+const idempotency = require("./transactionIdempotency");
+const log = require("./lib/logger");
 const { getItemCatalog } = require("./itemCatalog");
 
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
@@ -402,6 +404,11 @@ async function recordPurchase(values) {
 }
 
 async function buyPackage(interaction, pkg) {
+  const idem = await idempotency.begin({ scope: "shop", identity: `${interaction.guildId}:${interaction.user.id}`, requestId: interaction.id });
+  if (idem.duplicate) {
+    if (idem.processing) throw new Error("That purchase is already being processed.");
+    return idem.result || { playerName: "your character", duplicate: true };
+  }
   const lockKey = `${interaction.guildId}:${interaction.user.id}`;
   if (purchaseLocks.has(lockKey)) throw new Error("A shop purchase is already being processed for you.");
   purchaseLocks.add(lockKey);
@@ -411,6 +418,7 @@ async function buyPackage(interaction, pkg) {
     const playerResult = await getPlayerForLookup(link.steam_id);
     const player = playerResult?.type === "single" ? playerResult.player : null;
     if (!player || !isOnline(player)) throw new Error("You must be online in SCUM to receive a shop purchase.");
+    await idempotency.stage(idem.key, 'player_verified_online', { steamId: String(link.steam_id), packageId: pkg.id }).catch(()=>{});
     const cash = getCash(player);
     if (cash === null) throw new Error("Watcher could not verify your current in-game cash.");
     if (cash < pkg.price) throw new Error(`You need $${formatMoney(pkg.price)}. Your current balance is $${formatMoney(cash)}.`);
@@ -419,7 +427,9 @@ async function buyPackage(interaction, pkg) {
     for (const item of pkg.items) resolved.push({ ...item, itemClass: await resolveItemClass(item) });
 
     await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "remove", amount: Math.abs(pkg.price) });
+    await idempotency.stage(idem.key, 'payment_reserved', { amount: pkg.price }).catch(()=>{});
     try {
+      await idempotency.stage(idem.key, 'delivery_requested', { itemCount: resolved.length }).catch(()=>{});
       for (const item of resolved) {
         await ggconPost("/spawn", { steamId: String(link.steam_id), item: item.itemClass, qty: item.qty });
       }
@@ -433,13 +443,20 @@ async function buyPackage(interaction, pkg) {
       throw new Error(`Delivery failed, so your $${formatMoney(pkg.price)} was refunded. ${error.message}`);
     }
 
+    await idempotency.stage(idem.key, 'delivery_confirmed').catch(()=>{});
     await recordPurchase({
       guild_id: String(interaction.guildId), discord_id: String(interaction.user.id), steam_id: String(link.steam_id),
       player_name: link.scum_name || getPlayerDisplayName(player), package_id: pkg.id, package_name: pkg.name,
       price: pkg.price, status: "delivered", error_message: null, created_at: new Date().toISOString(),
     });
     await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId: link.steam_id, playerName: link.scum_name || getPlayerDisplayName(player), type: 'server_shop', title: `Server Shop: ${pkg.name}`, amount: -pkg.price, balanceBefore: cash, balanceAfter: cash - pkg.price, details: { packageId: pkg.id, packageName: pkg.name, items: pkg.items } });
-    return { playerName: link.scum_name || getPlayerDisplayName(player) };
+    const result = { playerName: link.scum_name || getPlayerDisplayName(player) };
+    await idempotency.complete(idem.key, result);
+    log.info("shop.purchase.completed", { requestId: interaction.id, steamId: link.steam_id, packageId: pkg.id, price: pkg.price });
+    return result;
+  } catch (error) {
+    await idempotency.fail(idem.key, error).catch(() => {});
+    throw error;
   } finally {
     purchaseLocks.delete(lockKey);
   }
@@ -529,7 +546,7 @@ async function getPortalCatalog(guildId) {
   }
 }
 
-async function buyPackageForPortal({ guildId, discordId, steamId, playerName, packageId }) {
+async function buyPackageForPortal({ guildId, discordId, steamId, playerName, packageId, requestId }) {
   let pkg = null;
   try { pkg = await getManagedProduct(guildId, packageId); } catch {}
   if (!pkg) {
@@ -537,6 +554,8 @@ async function buyPackageForPortal({ guildId, discordId, steamId, playerName, pa
     if (fallback) pkg = { ...fallback, slug: fallback.id, enabled: true };
   }
   if (!pkg || pkg.enabled === false) throw new Error('That shop package no longer exists or is disabled.');
+  const idem = await idempotency.begin({ scope: 'shop', identity: `${guildId}:${discordId}`, requestId });
+  if (idem.duplicate) { if (idem.processing) throw new Error('That purchase is already being processed.'); return idem.result; }
   const lockKey = `${guildId}:${discordId}`;
   if (purchaseLocks.has(lockKey)) throw new Error('A shop purchase is already being processed for you.');
   purchaseLocks.add(lockKey);
@@ -546,22 +565,29 @@ async function buyPackageForPortal({ guildId, discordId, steamId, playerName, pa
     const playerResult = await getPlayerForLookup(link.steam_id);
     const player = playerResult?.type === 'single' ? playerResult.player : null;
     if (!player || !isOnline(player)) throw new Error('You must be online in SCUM to receive a shop purchase.');
+    await idempotency.stage(idem.key, 'player_verified_online', { steamId: String(link.steam_id), packageId: pkg.id }).catch(()=>{});
     const cash = getCash(player);
     if (cash === null) throw new Error('Watcher could not verify your current in-game cash.');
     if (cash < pkg.price) throw new Error(`You need $${formatMoney(pkg.price)}. Your current balance is $${formatMoney(cash)}.`);
     const resolved = [];
     for (const item of pkg.items) resolved.push({ ...item, itemClass: item.itemClass || await resolveItemClass(item) });
     await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'remove', amount: Math.abs(pkg.price) });
+    await idempotency.stage(idem.key, 'payment_reserved', { amount: pkg.price }).catch(()=>{});
     try {
+      await idempotency.stage(idem.key, 'delivery_requested', { itemCount: resolved.length }).catch(()=>{});
       for (const item of resolved) await ggconPost('/spawn', { steamId: String(link.steam_id), item: item.itemClass, qty: item.qty });
     } catch (error) {
       await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'add', amount: Math.abs(pkg.price) }).catch(() => {});
-      await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.slug||pkg.id, package_name:pkg.name, price:pkg.price, status:'refunded', error_message:error.message, created_at:new Date().toISOString() });
+      await idempotency.stage(idem.key, 'delivery_confirmed').catch(()=>{});
+    await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.slug||pkg.id, package_name:pkg.name, price:pkg.price, status:'refunded', error_message:error.message, created_at:new Date().toISOString() });
       throw new Error(`Delivery failed, so your $${formatMoney(pkg.price)} was refunded. ${error.message}`);
     }
     await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.slug||pkg.id, package_name:pkg.name, price:pkg.price, status:'delivered', error_message:null, created_at:new Date().toISOString() });
     await recordTransaction({ guildId, discordId, steamId:link.steam_id, playerName:link.scum_name||getPlayerDisplayName(player), type:'server_shop', title:`Server Shop: ${pkg.name}`, amount:-pkg.price, balanceBefore:cash, balanceAfter:cash-pkg.price, details:{ packageId:pkg.id, packageName:pkg.name, items:pkg.items } });
-    return { ok:true, package:pkg, playerName:link.scum_name||getPlayerDisplayName(player), balanceBefore:cash, balanceAfter:cash-pkg.price };
-  } finally { purchaseLocks.delete(lockKey); }
+    const result = { ok:true, package:pkg, playerName:link.scum_name||getPlayerDisplayName(player), balanceBefore:cash, balanceAfter:cash-pkg.price };
+    await idempotency.complete(idem.key, result);
+    log.info('shop.purchase.completed', { requestId, steamId: link.steam_id, packageId: pkg.id, price: pkg.price });
+    return result;
+  } catch (error) { await idempotency.fail(idem.key, error).catch(()=>{}); throw error; } finally { purchaseLocks.delete(lockKey); }
 }
 module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog };

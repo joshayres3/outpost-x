@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node index.js",
-    "upload:map-assets": "node scripts/uploadMapAssetsToSupabase.js"
+    "upload:map-assets": "node scripts/uploadMapAssetsToSupabase.js",
+    "test": "node test/ggcon-client.test.js && node test/transaction-state.test.js",
+    "check": "node --check index.js && node --check ggcon.js && node --check tracker.js && npm test"
   },
   "dependencies": {
     "@google/generative-ai": "^0.15.0",
