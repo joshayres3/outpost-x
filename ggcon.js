@@ -1581,6 +1581,20 @@ async function getPlayerIpInfo(player) {
     };
   }
 
+  // Offline player lookups often come from the saved Watcher snapshot rather than
+  // the live GGCON object. Use the same saved Last IP displayed in Player Details
+  // so the admin location lookup does not incorrectly report that no IP exists.
+  const snapshot = await loadPlayerSnapshot(steamId).catch(() => null);
+  const snapshotIp = extractIpv4(snapshot?.last_ip);
+  if (snapshotIp) {
+    return {
+      ip: snapshotIp,
+      source: "Watcher player snapshot",
+      seenAt: snapshot?.last_seen_online_at || snapshot?.last_updated_at || null,
+      kind: "saved player snapshot",
+    };
+  }
+
   return null;
 }
 
