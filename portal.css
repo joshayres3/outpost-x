@@ -152,3 +152,16 @@
 .adminToolStrip .mobileAdminTile span{font-size:8px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
 .adminToolStrip .mobileAdminTile[hidden]{display:none!important}
 @media(max-width:760px){.adminToolStrip{padding-bottom:10px}.adminToolStrip .mobileAdminTile{flex-basis:170px;min-height:62px!important}}
+
+/* Responsive viewport containment: vertical page scrolling is allowed, but the portal itself must never widen beyond the screen. */
+html,body{width:100%;max-width:100%;overflow-x:hidden}
+.app{width:100%;max-width:100vw;grid-template-columns:minmax(0,265px) minmax(0,1fr);overflow-x:clip}
+main,.hero,.content,#view,#adminArea,.adminToolGroups,.adminToolStrip,.grid,.card{min-width:0;max-width:100%}
+main,.hero,.content,#view,#adminArea{width:100%}
+.content{overflow-x:hidden}
+.adminToolStrip{width:100%;max-width:100%;overscroll-behavior-x:contain}
+.adminToolStrip .mobileAdminTile{min-width:0}
+.tableWrap,.adminOutput,.spawnCatalog,.spawnVehicleGrid{max-width:100%}
+img,video,canvas,svg,iframe{max-width:100%}
+@media(max-width:1000px){.app{grid-template-columns:minmax(0,74px) minmax(0,1fr)}}
+@media(max-width:650px){.app{display:block;width:100%;max-width:100vw}.content{width:100%;max-width:100%;overflow-x:hidden}.topline{align-items:flex-start;gap:10px;flex-wrap:wrap}.topline>div:last-child{max-width:100%;display:flex;gap:6px;flex-wrap:wrap}}
