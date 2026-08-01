@@ -165,3 +165,34 @@ main,.hero,.content,#view,#adminArea{width:100%}
 img,video,canvas,svg,iframe{max-width:100%}
 @media(max-width:1000px){.app{grid-template-columns:minmax(0,74px) minmax(0,1fr)}}
 @media(max-width:650px){.app{display:block;width:100%;max-width:100vw}.content{width:100%;max-width:100%;overflow-x:hidden}.topline{align-items:flex-start;gap:10px;flex-wrap:wrap}.topline>div:last-child{max-width:100%;display:flex;gap:6px;flex-wrap:wrap}}
+
+/* Readable wrapping Admin Tools launcher: preserve the preferred horizontal toolbar while allowing additional rows. */
+.adminToolStrip{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:stretch;
+  gap:9px;
+  overflow:visible;
+  padding:2px 1px 9px;
+  scroll-snap-type:none;
+}
+.adminToolStrip .mobileAdminTile{
+  flex:1 1 230px;
+  max-width:285px;
+  min-width:210px;
+  min-height:73px!important;
+  padding:9px 11px!important;
+  grid-template-columns:32px minmax(0,1fr)!important;
+  column-gap:9px!important;
+  scroll-snap-align:none;
+}
+.adminToolStrip .mobileAdminTile i{font-size:21px!important}
+.adminToolStrip .mobileAdminTile b{font-size:14px!important;line-height:1.25}
+.adminToolStrip .mobileAdminTile span{font-size:10px!important;line-height:1.3;white-space:normal!important;overflow:visible!important;text-overflow:clip!important}
+@media(max-width:760px){
+  .adminToolStrip{gap:8px;padding-bottom:9px}
+  .adminToolStrip .mobileAdminTile{flex:1 1 calc(50% - 8px);max-width:none;min-width:180px;min-height:76px!important}
+}
+@media(max-width:460px){
+  .adminToolStrip .mobileAdminTile{flex-basis:100%;min-width:0;max-width:none}
+}
