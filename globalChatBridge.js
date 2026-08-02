@@ -62,6 +62,13 @@ function hasRole(member, allowed) {
   return Boolean(member?.roles?.cache?.some?.((role) => allowed.has(role.name)));
 }
 
+function bridgeRoleLabel(member) {
+  const names = new Set(member?.roles?.cache?.map?.((role) => role.name) || []);
+  if (names.has('Owner') || names.has('Owners')) return '[Owner]';
+  if (names.has('Admin')) return '[Admin]';
+  return '';
+}
+
 function sanitizeDiscordText(text) {
   return String(text || '')
     .replace(/<@!?(\d+)>/g, '@user')
@@ -153,9 +160,11 @@ async function sendDiscordToScum(message, cfg) {
   userCooldowns.set(message.author.id, now + USER_COOLDOWN_MS);
 
   const name = String(message.member?.displayName || message.author.globalName || message.author.username || 'Discord').replace(/[\r\n:]+/g, ' ').slice(0, 28);
-  const outgoing = `[Discord] ${name}: ${text}`;
+  const roleLabel = bridgeRoleLabel(message.member);
+  const outgoing = `[Discord]${roleLabel} ${name}: ${text}`;
+  const command = `#Broadcast Cyan ${outgoing}`;
   try {
-    await ggcon.post('/message', { text: outgoing, type: 'ServerMessage' }, { requireConfirmed: true });
+    await ggcon.post('/command', { command }, { requireConfirmed: true });
     await message.react('✅').catch(() => {});
   } catch (err) {
     userCooldowns.delete(message.author.id);
