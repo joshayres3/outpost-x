@@ -69,7 +69,9 @@ async function runTask(name) {
     task.lastSuccessAt = nowIso();
     task.lastError = null;
     task.consecutiveFailures = 0;
-    log.info('scheduler.task.completed', { task: name, durationMs: Date.now() - started });
+    if (process.env.WATCHER_TRACE_POLLS === 'true') {
+      log.debug('scheduler.task.completed', { task: name, durationMs: Date.now() - started });
+    }
   } catch (error) {
     task.lastErrorAt = nowIso();
     task.lastError = String(error?.message || error).slice(0, 500);
