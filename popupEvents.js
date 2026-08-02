@@ -360,22 +360,57 @@ function normalizeAnswer(value) {
     .trim();
 }
 
+function chatRowText(row) {
+  if (typeof row === "string") return row;
+  return String(
+    row?.line ?? row?.message ?? row?.text ?? row?.raw ?? row?.content ?? row?.data?.line ?? row?.data?.message ?? ""
+  );
+}
+
 function parseChatIdentity(row) {
   const directSteamId = String(
-    row?.steamId || row?.steam_id || row?.userId || row?.user_id || row?.playerSteamId || ""
+    row?.steamId || row?.steam_id || row?.userId || row?.user_id || row?.playerSteamId || row?.player_id ||
+    row?.data?.steamId || row?.data?.steam_id || row?.data?.userId || ""
   ).trim();
-  const directName = String(row?.playerName || row?.characterName || row?.name || "").trim();
+  const directName = String(
+    row?.playerName || row?.characterName || row?.name || row?.player || row?.username ||
+    row?.data?.playerName || row?.data?.characterName || row?.data?.name || ""
+  ).trim();
   if (/^\d{15,20}$/.test(directSteamId)) {
     return { steamId: directSteamId, name: directName || directSteamId, profileId: row?.profileId || row?.profile_id || null };
   }
 
-  const text = String(row?.line ?? row ?? "");
+  const text = chatRowText(row);
   const match = text.match(/'?(\d{15,20})\s*:\s*([^('\n\r]+?)\s*\((\d+)\)'?/);
   if (match) return { steamId: match[1], name: match[2].trim(), profileId: match[3] };
 
   const steamOnly = text.match(/\b(\d{15,20})\b/);
   if (steamOnly) return { steamId: steamOnly[1], name: directName || steamOnly[1], profileId: null };
   return null;
+}
+
+function parseChatSpeakerName(row) {
+  const directName = String(
+    row?.playerName || row?.characterName || row?.name || row?.player || row?.username ||
+    row?.data?.playerName || row?.data?.characterName || row?.data?.name || ""
+  ).trim();
+  if (directName) return directName;
+
+  const text = chatRowText(row);
+  const patterns = [
+    /(?:^|\])\s*([^:\[\]\r\n]{1,64})\s*:\s*!/,
+    /^\s*([^:\r\n]{1,64})\s*:\s*!/,
+    /'?\d{15,20}\s*:\s*([^('\n\r]+?)\s*\(\d+\)'?/
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return String(match[1]).trim();
+  }
+  return "";
+}
+
+function normalizePlayerName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function parseCommand(line) {
@@ -640,10 +675,32 @@ async function scanChat() {
 
     if (event) {
       const staffIds = await getStaffSteamIds(botRef, state.guildId);
+      let onlinePlayersByName = null;
       for (const row of lines) {
         if (!activeEvent || activeEvent.id !== event.id || event.finished) break;
-        const identity = parseChatIdentity(row);
-        const parsed = parseCommand(row?.line ?? row);
+        let identity = parseChatIdentity(row);
+        const parsed = parseCommand(chatRowText(row));
+
+        // Some GGCON chat rows contain the visible character name but omit Steam64.
+        // Resolve those rows against the current player list so valid answers are not ignored.
+        if (!identity && parsed) {
+          const speakerName = parseChatSpeakerName(row);
+          if (speakerName) {
+            if (!onlinePlayersByName) {
+              const onlinePlayers = await getOnlinePlayers().catch(() => []);
+              onlinePlayersByName = new Map();
+              for (const player of onlinePlayers) {
+                const key = normalizePlayerName(playerName(player));
+                if (key && !onlinePlayersByName.has(key)) onlinePlayersByName.set(key, player);
+              }
+            }
+            const wanted = normalizePlayerName(speakerName);
+            const match = onlinePlayersByName.get(wanted);
+            const steamId = match ? playerSteamId(match) : "";
+            if (steamId) identity = { steamId, name: playerName(match) || speakerName, profileId: null };
+          }
+        }
+
         // A fresh chat-log entry already proves the player was in game when they answered.
         // Do not reject valid answers because the live-player endpoint briefly lagged behind.
         if (!identity || !parsed || staffIds.has(identity.steamId)) continue;
