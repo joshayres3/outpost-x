@@ -32,6 +32,8 @@ let activeEvent = null;
 let botRef = null;
 let stormTimer = null;
 let stormActive = false;
+let chatProbeCapturedForEventId = null;
+let privateChatProbe = null;
 
 const MULTIPLE_CHOICE = [
   { prompt: "Which attribute governs the Thievery skill? 1) Dexterity 2) Strength 3) Intelligence", correct: 1 },
@@ -661,17 +663,124 @@ async function fetchChatLogsSince(since) {
   return serverGet(`/logs?${params.toString()}`);
 }
 
+function sanitizeChatProbe(value, depth = 0) {
+  if (depth > 4) return "[depth-limit]";
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return value.length > 500 ? `${value.slice(0, 500)}…[truncated]` : value;
+  if (["number", "boolean"].includes(typeof value)) return value;
+  if (Array.isArray(value)) return value.slice(0, 3).map((entry) => sanitizeChatProbe(entry, depth + 1));
+  if (typeof value !== "object") return String(value);
+
+  const out = {};
+  for (const [key, entry] of Object.entries(value).slice(0, 40)) {
+    if (/password|secret|token|authorization|cookie|api.?key/i.test(key)) {
+      out[key] = "[redacted]";
+      continue;
+    }
+    out[key] = sanitizeChatProbe(entry, depth + 1);
+  }
+  return out;
+}
+
+function candidateChatRows(data) {
+  const candidates = [
+    data?.lines,
+    data?.events,
+    data?.logs,
+    data?.entries,
+    data?.items,
+    data?.data?.lines,
+    data?.data?.events,
+    data?.data?.logs,
+    data?.data?.entries,
+    data?.data?.items,
+    Array.isArray(data?.data) ? data.data : null,
+  ];
+  return candidates.find(Array.isArray) || [];
+}
+
+function chatRowTimestamp(row) {
+  const raw = row?.t ?? row?.timestamp ?? row?.time ?? row?.createdAt ?? row?.created_at ?? row?.data?.t ?? row?.data?.timestamp ?? row?.data?.time;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  const parsed = Date.parse(String(raw || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function processPrivateChatProbe(rows, data) {
+  const probe = privateChatProbe;
+  if (!probe) return;
+  if (Date.now() >= probe.expiresAt) {
+    privateChatProbe = null;
+    const channel = await botRef?.channels?.fetch?.(probe.channelId).catch(() => null);
+    await channel?.send?.("⚠️ Private chat test expired without receiving a new SCUM chat row.").catch(() => {});
+    return;
+  }
+
+  const freshRows = rows.filter((row) => {
+    const ts = chatRowTimestamp(row);
+    return !ts || ts >= probe.startedAt - 2_000;
+  });
+  if (!freshRows.length) return;
+
+  const sample = freshRows[freshRows.length - 1];
+  privateChatProbe = null;
+  const payload = {
+    mode: "private",
+    requestedAt: probe.startedAt,
+    detectedRowCount: freshRows.length,
+    detectedSample: sanitizeChatProbe(sample),
+    topLevelKeys: data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data).slice(0, 40) : [],
+  };
+  console.warn(`🧪 POPUP_CHAT_PROBE ${JSON.stringify(payload)}`);
+
+  const text = chatRowText(sample);
+  const speaker = parseChatSpeakerName(sample);
+  const identity = parseChatIdentity(sample);
+  const channel = await botRef?.channels?.fetch?.(probe.channelId).catch(() => null);
+  await channel?.send?.([
+    "✅ **Private SCUM chat test detected a new row.**",
+    `Message: ${text ? `\`${String(text).slice(0, 180)}\`` : "not extracted"}`,
+    `Speaker: ${speaker || identity?.name || "not extracted"}`,
+    `Steam64: ${identity?.steamId || "not present in chat row"}`,
+    "A sanitized `POPUP_CHAT_PROBE` sample was also written to Railway.",
+  ].join("\n")).catch(() => {});
+}
+
+function emitChatProbe(event, since, data) {
+  if (!event?.id || chatProbeCapturedForEventId === event.id) return;
+  chatProbeCapturedForEventId = event.id;
+
+  const rows = candidateChatRows(data);
+  const payload = {
+    eventId: event.id,
+    eventType: event.type,
+    requestedSince: since,
+    topLevelType: Array.isArray(data) ? "array" : typeof data,
+    topLevelKeys: data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data).slice(0, 40) : [],
+    detectedRowCount: rows.length,
+    detectedSample: rows.length ? sanitizeChatProbe(rows[0]) : null,
+    responseSample: rows.length ? undefined : sanitizeChatProbe(data),
+  };
+
+  console.warn(`🧪 POPUP_CHAT_PROBE ${JSON.stringify(payload)}`);
+}
+
 async function scanChat() {
   if (chatRunning) return;
   chatRunning = true;
   try {
     const state = await loadState();
-    if (!state.enabled || !state.guildId) return;
+    if ((!state.enabled && !privateChatProbe) || !state.guildId) return;
     const since = state.chatCursor || Math.max(0, Date.now() - 120_000);
     const data = await fetchChatLogsSince(since);
-    const lines = Array.isArray(data?.lines) ? data.lines.slice().sort((a, b) => Number(a?.t || 0) - Number(b?.t || 0)) : [];
-    const next = Number(data?.next || lines.reduce((max, row) => Math.max(max, Number(row?.t || 0)), since) || Date.now());
     const event = activeEvent;
+    if (event) emitChatProbe(event, since, data);
+
+    const rawLines = candidateChatRows(data);
+    await processPrivateChatProbe(rawLines, data);
+    const lines = rawLines.slice().sort((a, b) => Number(a?.t || a?.timestamp || a?.time || 0) - Number(b?.t || b?.timestamp || b?.time || 0));
+    const next = Number(data?.next || data?.cursor || data?.data?.next || lines.reduce((max, row) => Math.max(max, Number(row?.t || row?.timestamp || row?.time || 0)), since) || Date.now());
 
     if (event) {
       const staffIds = await getStaffSteamIds(botRef, state.guildId);
@@ -841,6 +950,24 @@ async function handlePopupEventCommand(message, bot) {
       await message.reply(cancelled ? "Active chat event cancelled." : "No chat event is active.").catch(() => {});
       return true;
     }
+    if (action === "probe" || action === "chattest") {
+      if (!state.guildId) {
+        state = await saveState({ ...state, guildId: message.guild.id, logChannelId: message.channel.id });
+      }
+      privateChatProbe = {
+        channelId: message.channel.id,
+        requestedBy: message.author.id,
+        startedAt: Date.now(),
+        expiresAt: Date.now() + 120_000,
+      };
+      startTimers(bot);
+      await message.reply([
+        "🧪 **Private SCUM chat test armed for 2 minutes.**",
+        "Nothing was posted in-game. Type any harmless test message in SCUM chat from your own character.",
+        "Watcher will report the detected row only in this Discord channel and write one sanitized Railway probe line.",
+      ].join("\n")).catch(() => {});
+      return true;
+    }
     if (action === "quick" || action === "chat") {
       const check = await canLaunch(bot, state, { force });
       if (!check.ok) {
@@ -864,7 +991,7 @@ async function handlePopupEventCommand(message, bot) {
       "Event Pool: 150 fixed SCUM/Outpost X trivia questions + number guess and mystery signals",
       `Reward Pool: 25–50 fame, $250–$1,500 cash, bonus lottery, or a rare empty result`,
       `Watcher Anger: ${Math.round(ANGRY_STORM_CHANCE * 100)}% chance of a ${ANGRY_STORM_MINUTES}-minute storm after a winner`,
-      "Commands: `!popupevent quick`, `!popupevent cancel`, `!popupevent enable`, `!popupevent disable`",
+      "Commands: `!popupevent quick`, `!popupevent probe`, `!popupevent cancel`, `!popupevent enable`, `!popupevent disable`",
       "Testing: `!popupevent quick force` or add an event type, such as `!popupevent quick force number_guess`.",
     ].join("\n")).catch(() => {});
   } catch (err) {
