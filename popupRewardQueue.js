@@ -86,7 +86,7 @@ async function deliver(record) {
   await save(record);
   try {
     const endpoint = record.reward.type === 'cash' ? 'currency' : 'fame';
-    const data = await ggcon.client.post(`/players/${encodeURIComponent(record.steamId)}/${endpoint}`, { action: 'add', amount: Math.abs(Number(record.reward.amount || 0)) }, { requireConfirmed: true });
+    const data = await ggcon.client.post(`/players/${encodeURIComponent(record.steamId)}/${endpoint}`, { action: 'change', amount: Math.abs(Number(record.reward.amount || 0)) }, { requireConfirmed: true });
     record.status = 'completed';
     record.completedAt = now();
     record.updatedAt = now();

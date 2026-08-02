@@ -380,7 +380,7 @@ async function handleAirliftInteraction(interaction) {
         if (cash === null) throw new Error("Watcher could not verify your current cash balance.");
         if (cash < AIRLIFT_PRICE) throw new Error(`You need **$${formatMoney(AIRLIFT_PRICE)}** to launch.`);
 
-        await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action: "remove", amount: Math.abs(AIRLIFT_PRICE) });
+        await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action: "change", amount: -Math.abs(AIRLIFT_PRICE) });
         try {
           await ggconPost(`/players/${encodeURIComponent(steamId)}/teleport`, {
             x: sector.x,
@@ -388,7 +388,7 @@ async function handleAirliftInteraction(interaction) {
             z: AIRLIFT_ALTITUDE_Z,
           });
         } catch (teleportError) {
-          await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action: "add", amount: Math.abs(AIRLIFT_PRICE) }).catch(() => {});
+          await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action: "change", amount: Math.abs(AIRLIFT_PRICE) }).catch(() => {});
           throw new Error(`The teleport failed. Your $${formatMoney(AIRLIFT_PRICE)} was refunded. ${teleportError.message}`);
         }
 

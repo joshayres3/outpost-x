@@ -3353,14 +3353,14 @@ function normalizeBalanceChangeAction(action, amount) {
   }
 
   if (rawAction === "remove") {
-    return { action: "remove", amount: Math.abs(rawAmount), label: "remove" };
+    return { action: "change", amount: -Math.abs(rawAmount), label: "remove" };
   }
 
   if (rawAction === "change") {
-    return { action: rawAmount < 0 ? "remove" : "add", amount: Math.abs(rawAmount), label: rawAmount < 0 ? "remove" : "add" };
+    return { action: "change", amount: rawAmount, label: rawAmount < 0 ? "remove" : "add" };
   }
 
-  return { action: "add", amount: Math.abs(rawAmount), label: "add" };
+  return { action: "change", amount: Math.abs(rawAmount), label: "add" };
 }
 
 async function applyPlayerBalanceChange(message, player, kind, action, amount) {
@@ -3496,7 +3496,7 @@ async function applyRefund(message, player, amount) {
   const cleanAmount = Math.abs(Math.floor(Number(amount)));
   const beforeCash = getPlayerCashValue(player);
   await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, {
-    action: "add",
+    action: "change",
     amount: cleanAmount,
   });
 
@@ -6223,7 +6223,7 @@ async function handleGgconInteraction(interaction) {
         await interaction.reply({ content: "Refund target was not found or the amount was invalid.", ephemeral: true }).catch(() => {});
         return true;
       }
-      await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action: "add", amount: Math.abs(amount) });
+      await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action: "change", amount: Math.abs(amount) });
       await interaction.reply({
         content: `💸 Refund sent to **${getPlayerDisplayName(playerResult.player)}**: **$${formatMoney(amount)}**.`,
         ephemeral: true,

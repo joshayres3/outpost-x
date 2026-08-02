@@ -28,6 +28,20 @@ function password() {
 }
 function hasPasswordConfigured() { return !!process.env.GGCON_PASSWORD; }
 function endpointPath(endpoint) { return String(endpoint || '').split('?')[0]; }
+
+function normalizeAdjustmentBody(endpoint, body) {
+  const path = endpointPath(endpoint);
+  if (!/^\/players\/[^/]+\/(currency|fame)$/.test(path)) return body;
+  const input = body && typeof body === 'object' ? { ...body } : {};
+  const action = String(input.action || '').trim().toLowerCase();
+  const amount = Number(input.amount);
+  if (!Number.isFinite(amount)) return input;
+  if (action === 'set') return { ...input, action: 'set', amount: Math.max(0, amount) };
+  if (action === 'remove') return { ...input, action: 'change', amount: -Math.abs(amount) };
+  if (action === 'add') return { ...input, action: 'change', amount: Math.abs(amount) };
+  if (action === 'change') return { ...input, action: 'change', amount };
+  return input;
+}
 function isOptionalPlugin(endpoint) { return /^\/(kill-feed|npc-tracker|trap-alerts|analyzer|drops|shop|taxi|gghaul|stash-n-dash)(\/|$)/.test(endpointPath(endpoint)); }
 function optionalFallback(endpoint) {
   const p = endpointPath(endpoint);
@@ -98,7 +112,7 @@ async function requestNetwork(endpoint, options = {}) {
         ...(method === 'GET' ? {} : { 'Content-Type': 'application/json' }),
         'X-Password': password(),
       },
-      body: method === 'GET' ? undefined : JSON.stringify(options.body || {}),
+      body: method === 'GET' ? undefined : JSON.stringify(normalizeAdjustmentBody(endpoint, options.body || {})),
       signal: controller.signal,
     });
     const data = await response.json().catch(() => null);
@@ -188,4 +202,4 @@ function authState() { return { blockedUntil: authBlockedUntil ? new Date(authBl
 function metricsSnapshot({ reset = false } = {}) { const out = { ...metrics, inflight: inflightGets.size, cacheEntries: responseCache.size, backoffEndpoints: endpointBackoff.size, optionalPluginsPaused: optionalUnavailable.size }; if (reset) for (const key of Object.keys(metrics)) metrics[key] = 0; return out; }
 function clearCaches() { responseCache.clear(); inflightGets.clear(); endpointBackoff.clear(); optionalUnavailable.clear(); }
 
-module.exports = { get, post, rawPost, request, baseUrl, hasPasswordConfigured, authState, metricsSnapshot, clearCaches };
+module.exports = { get, post, rawPost, request, baseUrl, hasPasswordConfigured, authState, metricsSnapshot, clearCaches, normalizeAdjustmentBody };

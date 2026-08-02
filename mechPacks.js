@@ -382,7 +382,7 @@ async function confirmBuy(interaction, packKey) {
 
   const item = await resolvePackItem(pack);
 
-  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "remove", amount: Math.abs(pack.price) });
+  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -Math.abs(pack.price) });
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const afterPlayer = await getPlayerBySteamId(link.steam_id);
   const afterCash = getPlayerCash(afterPlayer);
@@ -396,7 +396,7 @@ async function confirmBuy(interaction, packKey) {
     await serverPost("/spawn", { steamId: String(link.steam_id), item: item.itemClass, qty: pack.quantity });
   } catch (err) {
     // Payment succeeded but item spawn failed. Refund immediately to avoid taking player money.
-    await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "add", amount: Math.abs(pack.price) }).catch(() => {});
+    await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: Math.abs(pack.price) }).catch(() => {});
     await interaction.update({
       content: [
         "The purchase was charged, but the item could not be spawned, so Watcher attempted an automatic refund.",

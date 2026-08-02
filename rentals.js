@@ -206,13 +206,13 @@ async function createRental(interaction, link, player) {
 
     const before = await fetchVehicles().catch(() => []);
     const beforeIds = new Set(before.map(vehicleId).filter(Boolean));
-    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "remove", amount: Math.abs(RENTAL_PRICE) });
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -Math.abs(RENTAL_PRICE) });
     let spawnResult;
     const spawnStartedAt = Date.now();
     try {
       spawnResult = await ggconPost("/spawn-vehicle", { steamId: String(link.steam_id), vehicle: VEHICLE_CLASS });
     } catch (err) {
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "add", amount: Math.abs(RENTAL_PRICE) }).catch(() => {});
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: Math.abs(RENTAL_PRICE) }).catch(() => {});
       throw new Error(`The dirtbike could not be spawned. Your $${formatMoney(RENTAL_PRICE)} was refunded. ${err.message}`);
     }
 
@@ -231,7 +231,7 @@ async function createRental(interaction, link, player) {
     });
     if (error) {
       if (id) await ggconPost(`/vehicles/${encodeURIComponent(id)}/destroy`, {}).catch(() => {});
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "add", amount: Math.abs(RENTAL_PRICE) }).catch(() => {});
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: Math.abs(RENTAL_PRICE) }).catch(() => {});
       throw error;
     }
     await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId: link.steam_id, playerName: link.scum_name || getPlayerDisplayName(player), type: 'dirtbike_rental', title: '30-Minute Dirtbike Rental', amount: -RENTAL_PRICE, balanceBefore: cash, balanceAfter: cash - RENTAL_PRICE, details: { vehicleId: id, expiresAt: expires.toISOString() } });

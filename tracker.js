@@ -1063,11 +1063,11 @@ async function portalTaxiSend(session, body) {
     const before = await verifyPortalAirliftReady(session, link, player);
     const [x, y] = PORTAL_SECTORS[sector];
     const z = PORTAL_AIRLIFT_ALTITUDE_Z;
-    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'remove', amount: Math.abs(PORTAL_AIRLIFT_PRICE) });
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -Math.abs(PORTAL_AIRLIFT_PRICE) });
     try {
       await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/teleport`, { x, y, z });
     } catch (err) {
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'add', amount: Math.abs(PORTAL_AIRLIFT_PRICE) }).catch(() => {});
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: Math.abs(PORTAL_AIRLIFT_PRICE) }).catch(() => {});
       throw new Error(`Airlift failed and your $${PORTAL_AIRLIFT_PRICE.toLocaleString('en-CA')} was returned. ${err.message}`);
     }
     const now = new Date().toISOString();
@@ -1086,7 +1086,7 @@ async function portalRefund(session,body){
   const id=String(body.transactionId||''); const amount=Number(body.amount); const reason=String(body.reason||'').trim(); if(!id||!Number.isFinite(amount)||amount<=0) throw new Error('Enter a valid refund amount.'); if(!reason) throw new Error('A refund reason is required.');
   const {data:tx,error}=await getDb().from(TRANSACTIONS_TABLE).select('*').eq('id',id).eq('guild_id',String(session.guildId)).maybeSingle(); if(error) throw error; if(!tx) throw new Error('Transaction not found.'); if(!tx.refundable) throw new Error('This transaction is not refundable.');
   const max=Math.abs(Number(tx.amount||0))-Number(tx.refunded_amount||0); if(amount>max+0.001) throw new Error(`Maximum remaining refund is $${max.toFixed(2)}.`); if(!tx.steam_id) throw new Error('No linked Steam ID is attached to this transaction.');
-  await ggconPost(`/players/${encodeURIComponent(tx.steam_id)}/currency`,{action:'add',amount:Math.abs(amount)}); const total=Number(tx.refunded_amount||0)+amount; const full=total>=Math.abs(Number(tx.amount||0))-0.001; const now=new Date().toISOString();
+  await ggconPost(`/players/${encodeURIComponent(tx.steam_id)}/currency`,{action:'change',amount:Math.abs(amount)}); const total=Number(tx.refunded_amount||0)+amount; const full=total>=Math.abs(Number(tx.amount||0))-0.001; const now=new Date().toISOString();
   const {error:updateError}=await getDb().from(TRANSACTIONS_TABLE).update({refunded_amount:total,refund_status:full?'fully_refunded':'partially_refunded',refunded_by_discord_id:String(session.discordId),refunded_by_name:session.displayName||'Admin',refund_reason:reason,refunded_at:now,updated_at:now}).eq('id',id); if(updateError) throw updateError;
   await getDb().from(TRANSACTIONS_TABLE).insert({guild_id:String(session.guildId),discord_id:tx.discord_id,steam_id:tx.steam_id,player_name:tx.player_name,type:'refund',title:`Refund: ${tx.title}`,amount, currency:'cash',status:'completed',details:{reason,admin:session.displayName||'Admin'},refundable:false,original_transaction_id:tx.id,created_at:now,updated_at:now}); return {ok:true,amount};
 }
@@ -1295,7 +1295,7 @@ async function adminAdjust(session, body){
   const steamId=String(body.steamId||'').trim(),kind=String(body.kind||''),amount=Math.floor(Number(body.amount)),reason=String(body.reason||'').trim();
   if(!steamId||!['cash','fame'].includes(kind)||!Number.isFinite(amount)||amount===0) throw new Error('Choose cash or fame and enter a non-zero whole amount.');
   if(!reason) throw new Error('A reason is required.');
-  await ggconPost(`/players/${encodeURIComponent(steamId)}/${kind==='cash'?'currency':'fame'}`,{action:amount>0?'add':'remove',amount:Math.abs(amount)});
+  await ggconPost(`/players/${encodeURIComponent(steamId)}/${kind==='cash'?'currency':'fame'}`,{action:'change',amount:Number(amount)});
   const target=await getPlayerForLookup(steamId).catch(()=>null); const p=target?.type==='single'?target.player:null;
   await portalTransaction({guildId:session.guildId,discordId:session.discordId,steamId,playerName:p?getPlayerDisplayName(p):steamId,type:`admin_${kind}_adjustment`,title:`Admin ${kind} adjustment`,amount:kind==='cash'?amount:0,details:{kind,amount,reason,admin:session.displayName||'Admin'}});
   return {ok:true};
