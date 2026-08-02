@@ -1,7 +1,7 @@
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
 const { triggerBonusLottery } = require("./lottery");
-const ggcon = require('./ggcon');
+const ggconServices = require('./ggcon/index');
 const rewardQueue = require('./popupRewardQueue');
 const watcherScheduler = require('./watcherScheduler');
 
@@ -222,17 +222,17 @@ function serverPassword() {
 }
 
 async function serverGet(path) {
-  return ggcon.client.get(path, { attempts: 2 });
+  return ggconServices.client.get(path, { attempts: 2 });
 }
 
 async function serverPost(path, body = {}) {
-  return ggcon.client.post(path, body, { requireConfirmed: true });
+  return ggconServices.client.post(path, body, { requireConfirmed: true });
 }
 
 async function sendGame(text, steamId = null) {
   const body = { text: `${PREFIX} ${String(text || "").trim()}`, type: "ServerMessage" };
   if (steamId) body.steamId = String(steamId);
-  return ggcon.client.post('/message', body, { requireConfirmed: true });
+  return ggconServices.client.post('/message', body, { requireConfirmed: true });
 }
 
 async function loadState() {
