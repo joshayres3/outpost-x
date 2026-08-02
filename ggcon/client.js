@@ -62,6 +62,33 @@ function cacheTtl(endpoint) {
   if (p === '/items.json') return 30 * 60 * 1000;
   return 0;
 }
+
+function verifyWriteCompletion(endpoint, data) {
+  const path = endpointPath(endpoint);
+  if (!data || data.ok !== true) {
+    throw new WatcherError('GGCON did not verify that the operation completed.', { code: 'GGCON_UNCONFIRMED', source: 'ggcon', retryable: false, details: { endpoint, data } });
+  }
+  const negativeFields = ['accepted','dispatched','sent','delivered','completed','success','changed','spawned','banned','unbanned','kicked','teleported'];
+  for (const field of negativeFields) {
+    if (data[field] === false) {
+      throw new WatcherError(data.message || data.error || `GGCON reported that ${field} was not completed.`, { code: 'GGCON_UNCONFIRMED', source: 'ggcon', retryable: false, details: { endpoint, field, data } });
+    }
+  }
+  const proof = ['completed','delivered','sent','dispatched','accepted','changed','spawned','banned','unbanned','kicked','teleported','success']
+    .filter((field) => data[field] === true);
+  return {
+    ...data,
+    verified: true,
+    verification: {
+      completed: true,
+      endpoint: path,
+      proof: proof.length ? proof : ['ok'],
+      message: data.message || 'GGCON confirmed the operation completed.',
+      verifiedAt: new Date().toISOString(),
+    },
+  };
+}
+
 function classify(endpoint, method, status, data) {
   const message = data?.reason || data?.message || data?.error || `HTTP ${status || 0}`;
   if (status === 401) {
@@ -117,7 +144,6 @@ async function requestNetwork(endpoint, options = {}) {
     });
     const data = await response.json().catch(() => null);
     if (!response.ok || data?.ok === false) throw classify(endpoint, method, response.status, data);
-    if (options.requireConfirmed === true && data?.ok !== true) throw new WatcherError('GGCON did not confirm the operation.', { code: 'GGCON_UNCONFIRMED', source: 'ggcon', retryable: false, details: { endpoint, data } });
     metrics.successes += 1;
     clearBackoff(endpoint);
     if (method === 'POST') {
@@ -125,7 +151,7 @@ async function requestNetwork(endpoint, options = {}) {
     } else if (process.env.WATCHER_TRACE_POLLS === 'true') {
       log.debug('ggcon.request.completed', { requestId: rid, method, endpoint, status: response.status, durationMs: Date.now() - started });
     }
-    return data ?? { ok: true };
+    return method === 'POST' ? verifyWriteCompletion(endpoint, data ?? { ok: false }) : (data ?? { ok: true });
   } catch (error) {
     const normalized = error?.name === 'AbortError'
       ? new WatcherError(`GGCON request timed out after ${timeoutMs}ms.`, { code: 'GGCON_TIMEOUT', source: 'ggcon', retryable: method === 'GET' })
@@ -193,7 +219,7 @@ async function get(endpoint, options = {}) {
   }
   throw last;
 }
-function post(endpoint, body = {}, options = {}) { return request(endpoint, { ...options, method: 'POST', body, requireConfirmed: options.requireConfirmed ?? ['/spawn','/spawn-vehicle','/spawn-entity'].includes(endpoint) }); }
+function post(endpoint, body = {}, options = {}) { return request(endpoint, { ...options, method: 'POST', body, requireConfirmed: true }); }
 async function rawPost(endpoint, body = {}, options = {}) {
   try { return { httpOk: true, status: 200, data: await request(endpoint, { ...options, method: 'POST', body }), error: null }; }
   catch (error) { return { httpOk: false, status: error.status || 0, data: null, error: error.message, code: error.code }; }
@@ -202,4 +228,4 @@ function authState() { return { blockedUntil: authBlockedUntil ? new Date(authBl
 function metricsSnapshot({ reset = false } = {}) { const out = { ...metrics, inflight: inflightGets.size, cacheEntries: responseCache.size, backoffEndpoints: endpointBackoff.size, optionalPluginsPaused: optionalUnavailable.size }; if (reset) for (const key of Object.keys(metrics)) metrics[key] = 0; return out; }
 function clearCaches() { responseCache.clear(); inflightGets.clear(); endpointBackoff.clear(); optionalUnavailable.clear(); }
 
-module.exports = { get, post, rawPost, request, baseUrl, hasPasswordConfigured, authState, metricsSnapshot, clearCaches, normalizeAdjustmentBody };
+module.exports = { get, post, rawPost, request, baseUrl, hasPasswordConfigured, authState, metricsSnapshot, clearCaches, normalizeAdjustmentBody, verifyWriteCompletion };

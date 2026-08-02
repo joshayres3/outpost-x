@@ -667,7 +667,7 @@ async function handlePlayerPanelInteraction(interaction) {
       const endpoint = kind === "cash" ? "currency" : "fame";
       await ggconPost(`/players/${encodeURIComponent(steamId)}/${endpoint}`, { action: operation === "add" ? "add" : "remove", amount: Math.abs(amount) });
       await interaction.reply({
-        content: `✅ ${operation === "add" ? "Added" : "Removed"} **${formatNumber(amount)} ${kind === "cash" ? "cash" : "fame"}** ${operation === "add" ? "to" : "from"} \`${steamId}\`.\n**Reason:** ${reason}`,
+        content: `✅ **VERIFIED COMPLETE**\n${operation === "add" ? "Added" : "Removed"} **${formatNumber(amount)} ${kind === "cash" ? "cash" : "fame"}** ${operation === "add" ? "to" : "from"} \`${steamId}\`.\n**Reason:** ${reason}`,
         ephemeral: true,
       });
       return true;
