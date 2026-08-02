@@ -35,6 +35,7 @@ let stormTimer = null;
 let stormActive = false;
 let chatProbeCapturedForEventId = null;
 let privateChatProbe = null;
+const chatRowConsumers = new Set();
 
 const MULTIPLE_CHOICE = [
   { prompt: "Which attribute governs the Thievery skill? 1) Dexterity 2) Strength 3) Intelligence", correct: 1 },
@@ -795,12 +796,33 @@ function emitChatProbe(event, since, data) {
   console.warn(`🧪 POPUP_CHAT_PROBE ${JSON.stringify(payload)}`);
 }
 
+function registerChatRowConsumer(consumer) {
+  if (typeof consumer !== "function") throw new TypeError("Chat row consumer must be a function.");
+  chatRowConsumers.add(consumer);
+  if (botRef) {
+    startTimers(botRef);
+    scheduleChatScan(0);
+  }
+  return () => chatRowConsumers.delete(consumer);
+}
+
+async function dispatchChatRows(rows, data) {
+  if (!chatRowConsumers.size || !rows.length) return;
+  for (const consumer of [...chatRowConsumers]) {
+    try {
+      await consumer(rows, data);
+    } catch (err) {
+      console.error("❌ SCUM chat consumer failed:", err.message);
+    }
+  }
+}
+
 async function scanChat() {
   if (chatRunning) return;
   chatRunning = true;
   try {
     const state = await loadState();
-    if ((!state.enabled && !privateChatProbe) || !state.guildId) return;
+    if (!state.enabled && !privateChatProbe && !chatRowConsumers.size) return;
     const since = state.chatCursor || Math.max(0, Date.now() - 120_000);
     const data = await fetchChatLogsSince(since);
     const event = activeEvent;
@@ -809,6 +831,7 @@ async function scanChat() {
     const rawLines = candidateChatRows(data);
     await processPrivateChatProbe(rawLines, data);
     const lines = rawLines.slice().sort((a, b) => chatRowTimestamp(a) - chatRowTimestamp(b));
+    await dispatchChatRows(lines, data);
     const next = Number(data?.next || data?.cursor || data?.data?.next || lines.reduce((max, row) => Math.max(max, Number(row?.t || row?.timestamp || row?.time || 0)), since) || Date.now());
 
     if (event) {
@@ -919,7 +942,10 @@ async function schedulerTick(bot) {
 }
 
 function nextChatScanDelayMs() {
-  return (activeEvent || privateChatProbe ? ACTIVE_CHAT_SCAN_SECONDS : IDLE_CHAT_SCAN_SECONDS) * 1000;
+  const bridgeSeconds = Math.max(2, Number(process.env.GLOBAL_CHAT_SCAN_SECONDS || "3"));
+  if (activeEvent || privateChatProbe) return ACTIVE_CHAT_SCAN_SECONDS * 1000;
+  if (chatRowConsumers.size) return bridgeSeconds * 1000;
+  return IDLE_CHAT_SCAN_SECONDS * 1000;
 }
 
 function scheduleChatScan(delayMs = nextChatScanDelayMs()) {
@@ -944,7 +970,7 @@ async function startPopupEventsOnBoot(bot) {
   botRef = bot;
   watcherScheduler.registerTask('popup-pending-rewards', 60_000, () => rewardQueue.processPending(), { initialDelayMs: 15_000, leaderOnly: true });
   const state = await loadState().catch((err) => { console.error("❌ Pop-up event startup read failed:", err.message); return null; });
-  if (!state?.enabled) return;
+  if (!state?.enabled && !chatRowConsumers.size) return;
   await restoreStormState(state).catch((err) => console.error("❌ Watcher storm restore failed:", err.message));
   startTimers(bot);
   await logToDiscord(bot, state, "👁️ Watcher in-game chat event scheduler is online.").catch(() => {});
@@ -1044,4 +1070,4 @@ async function handlePopupEventCommand(message, bot) {
   return true;
 }
 
-module.exports = { handlePopupEventCommand, startPopupEventsOnBoot };
+module.exports = { handlePopupEventCommand, startPopupEventsOnBoot, registerChatRowConsumer };

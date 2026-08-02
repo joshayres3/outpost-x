@@ -103,6 +103,7 @@ const {
 const { startTrackerWebOnBoot, startTrackerJobsOnBoot, handleTrackerCommand, handleTrackerInteraction, handleCommandCenterCommand } = require("./tracker");
 const deploymentCoordinator = require('./deploymentCoordinator');
 const { startSpecialEventsOnBoot } = require("./watcherSpecialEvents");
+const { startGlobalChatBridge, handleGlobalChatMessage } = require("./globalChatBridge");
 const watcherScheduler = require("./watcherScheduler");
 const { syncItemCatalog, ITEM_CATALOG_SYNC_INTERVAL_MS } = require("./itemCatalog");
 const { validateStartup } = require('./startupValidation');
@@ -250,6 +251,7 @@ bot.once(Events.ClientReady, async () => {
     startInsuranceOnBoot(bot);
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));
     startLotteryOnBoot(bot).catch((err) => console.error("❌ Lottery startup failed:", err.message));
+    await startGlobalChatBridge(bot).catch((err) => console.error("❌ Global chat bridge startup failed:", err.message));
     startPopupEventsOnBoot(bot).catch((err) => console.error("❌ Pop-up event startup failed:", err.message));
     startTicketSystem(bot, db);
     startRentalSystem(bot);
@@ -375,6 +377,8 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
+
+    if (await handleGlobalChatMessage(msg)) return;
 
     if (await handlePlayerShopMessage(msg)) return;
     if (await handlePlayerLoreMessage(msg)) return;
@@ -520,9 +524,16 @@ async function gracefulShutdown(signal){
 }
 process.on("SIGTERM",()=>gracefulShutdown("SIGTERM"));
 
-watcherScheduler.registerTask('watcher-heartbeat', 5 * 60 * 1000, async () => {
-  log.info('watcher.heartbeat', { deployment: deploymentCoordinator.state(), schedulerTasks: watcherScheduler.snapshot().length });
-}, { leaderOnly: false, initialDelayMs: 5 * 60 * 1000 });
+watcherScheduler.registerTask('watcher-heartbeat', 15 * 60 * 1000, async () => {
+  const ggconMetrics = require('./ggcon/client').metricsSnapshot({ reset: true });
+  const scheduler = watcherScheduler.snapshot();
+  log.info('watcher.health_summary', {
+    deployment: deploymentCoordinator.state(),
+    schedulerTasks: scheduler.length,
+    schedulerFailures: scheduler.filter((task) => task.consecutiveFailures > 0).map((task) => ({ name: task.name, failures: task.consecutiveFailures })),
+    ggcon: ggconMetrics,
+  });
+}, { leaderOnly: false, initialDelayMs: 15 * 60 * 1000 });
 
 startTrackerWebOnBoot(bot);
 (async()=>{
