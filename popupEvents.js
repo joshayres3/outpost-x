@@ -379,9 +379,15 @@ function parseChatIdentity(row) {
 }
 
 function parseCommand(line) {
-  const match = String(line || "").match(/(?:^|\s)!(answer|guess|join|a|b|c|one|two|three|1|2|3|true|false|t|f|higher|lower|same)(?:\s+([^\r\n]*))?/i);
-  if (!match) return null;
-  return { command: match[1].toLowerCase(), value: String(match[2] || "").trim() };
+  const text = String(line || "");
+  const match = text.match(/(?:^|\s)!(answer|guess|join|a|b|c|one|two|three|1|2|3|true|false|t|f|higher|lower|same)(?:\s+([^\r\n]*))?/i);
+  if (match) return { command: match[1].toLowerCase(), value: String(match[2] || "").trim() };
+
+  // Text-answer events historically accepted shorthand such as !AXE.
+  // Preserve that player-friendly format without treating punctuation-only text as an answer.
+  const shorthand = text.match(/(?:^|\s)!([a-z0-9][a-z0-9 _-]{0,79})(?=\s*$)/i);
+  if (!shorthand) return null;
+  return { command: "text_shorthand", value: String(shorthand[1] || "").trim() };
 }
 
 function answerNumber(command) {
@@ -594,7 +600,7 @@ async function startQuickEvent({ forceType = null } = {}) {
       await sendGame(`RAPID ASSESSMENT: ${q.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes.`);
     } else if (event.type === "text_answer") {
       event.answers = q.answers.map(normalizeAnswer);
-      await sendGame(`IDENTIFY IT: ${q.prompt}. Reply with !answer followed by your answer. Example: !answer screwdriver. First correct answer wins. You have 2 minutes.`);
+      await sendGame(`IDENTIFY IT: ${q.prompt}. Reply with !answer followed by your answer, or use the short form. Examples: !answer screwdriver or !screwdriver. First correct answer wins. You have 2 minutes.`);
     } else if (event.type === "true_false") {
       event.correct = q.correct;
       await sendGame(`TRUE OR FALSE: ${q.prompt} Reply !true or !false. !t or !f also work. First correct answer wins. You have 2 minutes.`);
@@ -648,7 +654,7 @@ async function scanChat() {
           event.answered.add(identity.steamId);
           if (choice === event.correct) await completeWithWinner(identity);
         } else if (event.type === "text_answer") {
-          if (parsed.command !== "answer" || event.answered.has(identity.steamId)) continue;
+          if (!["answer", "text_shorthand"].includes(parsed.command) || event.answered.has(identity.steamId)) continue;
           event.answered.add(identity.steamId);
           if (event.answers.includes(normalizeAnswer(parsed.value))) await completeWithWinner(identity);
         } else if (event.type === "true_false") {
