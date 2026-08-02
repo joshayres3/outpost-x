@@ -25,6 +25,7 @@ const RECENT_WINNER_HOURS = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECEN
 const RECENT_WINNER_MIN_ELIGIBLE = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECENT_WINNER_MIN_ELIGIBLE || "4"));
 const LOTTERY_NORMAL_WEIGHT = Math.max(1, Number(process.env.WATCHER_LOTTERY_NORMAL_WEIGHT || "4"));
 const LOTTERY_RECENT_WINNER_WEIGHT = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECENT_WINNER_WEIGHT || "1"));
+const LOTTERY_RECENT_PACK_EXCLUSION_COUNT = Math.max(1, Number(process.env.WATCHER_LOTTERY_RECENT_PACK_EXCLUSION_COUNT || "3"));
 
 const STAFF_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const OWNER_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners"]);
@@ -851,6 +852,38 @@ function selectWeightedWinner(eligiblePlayers, protection) {
   return randomChoice(tickets);
 }
 
+async function fetchRecentPackIds(guildId) {
+  const limit = Math.min(Math.max(1, LOTTERY_RECENT_PACK_EXCLUSION_COUNT), Math.max(1, LOTTERY_PACKS.length - 1));
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(DRAWS_TABLE)
+    .select("selected_pack_id, actual_run_at")
+    .eq("guild_id", String(guildId))
+    .eq("status", "completed")
+    .not("selected_pack_id", "is", null)
+    .order("actual_run_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.warn("[lottery] Recent pack lookup failed:", error.message || error);
+    return [];
+  }
+
+  return (Array.isArray(data) ? data : [])
+    .map((row) => String(row?.selected_pack_id || "").trim())
+    .filter(Boolean);
+}
+
+async function chooseLotteryPack(guildId) {
+  const recentPackIds = new Set(await fetchRecentPackIds(guildId));
+  const available = LOTTERY_PACKS.filter((pack) => !recentPackIds.has(String(pack.id)));
+  const pool = available.length ? available : LOTTERY_PACKS;
+  return {
+    pack: randomChoice(pool),
+    excludedRecentCount: recentPackIds.size,
+  };
+}
+
 async function dmWinner(winner, code, pack) {
   const user = winner.member?.user;
   if (!user?.send) throw new Error("Discord user could not be messaged.");
@@ -923,12 +956,13 @@ async function runLotteryDraw(bot, config, options = {}) {
     }
 
     const protection = await buildRecentWinnerProtection(guildId, pool.eligible);
+    const packSelection = await chooseLotteryPack(guildId);
+    const pack = packSelection.pack;
     const remaining = pool.eligible.slice();
     while (remaining.length) {
       const winner = selectWeightedWinner(remaining, protection);
       const winnerIndex = remaining.findIndex((entry) => String(entry.steamId) === String(winner?.steamId));
       if (winnerIndex >= 0) remaining.splice(winnerIndex, 1);
-      const pack = randomChoice(LOTTERY_PACKS);
       const code = await generateClaimCode(guildId);
       const expiresAt = DateTime.now().plus({ hours: CLAIM_EXPIRY_HOURS }).toISO();
       const codeRow = await createCodeRecord({ guildId, drawId: draw.id, code, winner, pack, expiresAt });
@@ -960,6 +994,7 @@ async function runLotteryDraw(bot, config, options = {}) {
           protection.applied
             ? `Recent Winner Protection: **${protection.reducedCount}** player(s) reduced (${protection.hours}h window, ${protection.normalWeight}:1 tickets)`
             : `Recent Winner Protection: not applied (${protection.reason})`,
+          `Recent Pack Rotation: **${packSelection.excludedRecentCount}** recently awarded pack(s) excluded`,
           "",
           "A one-time claim code has been sent through Discord.",
           "The winner must enter the code in SCUM chat to claim the mystery pack.",
