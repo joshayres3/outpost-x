@@ -8,6 +8,9 @@ const READ_TIMEOUT_MS = Math.max(3000, Number(process.env.GGCON_READ_TIMEOUT_MS 
 const WRITE_TIMEOUT_MS = Math.max(3000, Number(process.env.GGCON_WRITE_TIMEOUT_MS || 15000));
 const AUTH_COOLDOWN_MS = Math.max(60000, Number(process.env.GGCON_AUTH_COOLDOWN_MS || 300000));
 let authBlockedUntil = 0;
+let messageBlockedUntil = 0;
+let lastMessageBlockLogAt = 0;
+const MESSAGE_COOLDOWN_MS = Math.max(30000, Number(process.env.GGCON_MESSAGE_COOLDOWN_MS || 120000));
 
 function baseUrl() { return (process.env.GGCON_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, ''); }
 function password() {
@@ -21,6 +24,10 @@ function classify(endpoint, method, status, data) {
     authBlockedUntil = Date.now() + AUTH_COOLDOWN_MS;
     return new WatcherError(`Server authentication failed: ${message}`, { code: 'GGCON_AUTH_FAILED', source: 'ggcon', status, retryable: false });
   }
+  if (/game thread|busy or shutting down|could not reach the game thread/i.test(message)) {
+    if (endpoint === '/message') messageBlockedUntil = Date.now() + MESSAGE_COOLDOWN_MS;
+    return new WatcherError(message, { code: 'GGCON_GAME_THREAD_BUSY', source: 'ggcon', status, retryable: false });
+  }
   if (/not online|offline|no admin player|no live controller/i.test(message)) return new WatcherError(message, { code: 'PLAYER_OFFLINE', source: 'ggcon', status, retryable: false });
   if (/blocked|cannot be spawned|invalid item|not found/i.test(message)) return new WatcherError(message, { code: 'GGCON_REJECTED', source: 'ggcon', status, retryable: false });
   const retryable = method === 'GET' && (status === 0 || status >= 500 || status === 429);
@@ -30,6 +37,13 @@ function classify(endpoint, method, status, data) {
 async function request(endpoint, options = {}) {
   const method = String(options.method || 'GET').toUpperCase();
   if (Date.now() < authBlockedUntil) throw new WatcherError('GGCON requests are paused after an authentication failure. Check the password and allowlist before retrying.', { code: 'GGCON_AUTH_COOLDOWN', source: 'ggcon' });
+  if (endpoint === '/message' && method === 'POST' && Date.now() < messageBlockedUntil) {
+    if (Date.now() - lastMessageBlockLogAt > 30000) {
+      lastMessageBlockLogAt = Date.now();
+      log.warn('ggcon.message.circuit_open', { blockedUntil: new Date(messageBlockedUntil).toISOString() });
+    }
+    throw new WatcherError('In-game messages are temporarily paused because the SCUM game thread is busy or shutting down.', { code: 'GGCON_MESSAGE_CIRCUIT_OPEN', source: 'ggcon', retryable: false });
+  }
   const controller = new AbortController();
   const timeoutMs = Number(options.timeoutMs || (method === 'GET' ? READ_TIMEOUT_MS : WRITE_TIMEOUT_MS));
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -81,6 +95,6 @@ async function rawPost(endpoint, body = {}, options = {}) {
   try { return { httpOk: true, status: 200, data: await request(endpoint, { ...options, method: 'POST', body }), error: null }; }
   catch (error) { return { httpOk: false, status: error.status || 0, data: null, error: error.message, code: error.code }; }
 }
-function authState() { return { blockedUntil: authBlockedUntil ? new Date(authBlockedUntil).toISOString() : null, blocked: Date.now() < authBlockedUntil }; }
+function authState() { return { blockedUntil: authBlockedUntil ? new Date(authBlockedUntil).toISOString() : null, blocked: Date.now() < authBlockedUntil, messageBlocked: Date.now() < messageBlockedUntil, messageBlockedUntil: messageBlockedUntil ? new Date(messageBlockedUntil).toISOString() : null }; }
 
 module.exports = { get, post, rawPost, request, baseUrl, hasPasswordConfigured, authState };

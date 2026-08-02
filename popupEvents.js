@@ -1,6 +1,9 @@
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
 const { triggerBonusLottery } = require("./lottery");
+const ggcon = require('./ggcon');
+const rewardQueue = require('./popupRewardQueue');
+const watcherScheduler = require('./watcherScheduler');
 
 const DEFAULT_SERVER_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const RUNTIME_STATE_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || "watcher_runtime_state";
@@ -219,31 +222,17 @@ function serverPassword() {
 }
 
 async function serverGet(path) {
-  const res = await fetch(`${serverBaseUrl()}${path}`, { headers: { Accept: "application/json", "X-Password": serverPassword() } });
-  const text = await res.text();
-  let data;
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-  if (!res.ok || data?.ok === false) throw new Error(data?.message || data?.error || `Server GET failed: ${res.status}`);
-  return data;
+  return ggcon.client.get(path, { attempts: 2 });
 }
 
 async function serverPost(path, body = {}) {
-  const res = await fetch(`${serverBaseUrl()}${path}`, {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json", "X-Password": serverPassword() },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  let data;
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-  if (!res.ok || data?.ok === false || data?.accepted === false) throw new Error(data?.message || data?.error || `Server POST failed: ${res.status}`);
-  return data || { ok: true };
+  return ggcon.client.post(path, body, { requireConfirmed: true });
 }
 
 async function sendGame(text, steamId = null) {
   const body = { text: `${PREFIX} ${String(text || "").trim()}`, type: "ServerMessage" };
   if (steamId) body.steamId = String(steamId);
-  return serverPost("/message", body);
+  return ggcon.client.post('/message', body, { requireConfirmed: true });
 }
 
 async function loadState() {
@@ -528,17 +517,25 @@ async function completeWithWinner(winner, extra = {}) {
   if (!event || event.finished) return;
   event.finished = true;
   const state = await loadState();
+  const reward = event.reward || chooseReward();
   try {
-    const reward = await deliverReward(event, winner, state);
-    if (reward.type === "bonus_lottery") await sendGame(`${winner.name} triggered an extra lottery.`);
-    else if (reward.type === "none") await sendGame(`${winner.name} was selected. Reward: nothing. The choice was statistically valid.`);
-    else await sendGame(`${winner.name} wins ${reward.label}.`);
+    await deliverReward(event, winner, state);
+    if (reward.type === "bonus_lottery") await sendGame(`${winner.name} triggered an extra lottery.`).catch(() => {});
+    else if (reward.type === "none") await sendGame(`${winner.name} was selected. Reward: nothing. The choice was statistically valid.`).catch(() => {});
+    else await sendGame(`${winner.name} wins ${reward.label}.`).catch(() => {});
     await logToDiscord(botRef, state, `✅ **Chat Event Completed**\nType: ${event.type}\nWinner: **${winner.name}** (${winner.steamId})\nReward: ${reward.label}`);
     await finishEvent({ status: "completed", winner, reward, ...extra });
   } catch (err) {
-    await sendGame(`${winner.name} won, but reward delivery failed. Staff has been notified.`).catch(() => {});
-    await logToDiscord(botRef, state, `⚠️ **Pop-Up Reward Failed**\nType: ${event.type}\nWinner: **${winner.name}** (${winner.steamId})\nError: ${err.message}`);
-    await finishEvent({ status: "reward_failed", winner, error: err.message, ...extra });
+    const queued = await rewardQueue.enqueue({ eventId: event.id, eventType: event.type, winner, reward, error: err }).catch(() => null);
+    await logToDiscord(botRef, state, [
+      `⚠️ **Pop-Up Reward Saved for Retry**`,
+      `Type: ${event.type}`,
+      `Winner: **${winner.name}** (${winner.steamId})`,
+      `Reward: ${reward.label}`,
+      `Status: ${queued ? 'Saved and will retry automatically when the player and SCUM game thread are available.' : 'Queue save failed — manual review required.'}`,
+      `Error: ${err.message}`,
+    ].join('\n'));
+    await finishEvent({ status: queued ? "reward_pending" : "reward_failed", winner, reward, rewardQueueId: queued?.id || null, error: err.message, ...extra });
   }
 }
 
@@ -732,6 +729,7 @@ function startTimers(bot) {
 
 async function startPopupEventsOnBoot(bot) {
   botRef = bot;
+  watcherScheduler.registerTask('popup-pending-rewards', 60_000, () => rewardQueue.processPending(), { initialDelayMs: 15_000, leaderOnly: true });
   const state = await loadState().catch((err) => { console.error("❌ Pop-up event startup read failed:", err.message); return null; });
   if (!state?.enabled) return;
   await restoreStormState(state).catch((err) => console.error("❌ Watcher storm restore failed:", err.message));

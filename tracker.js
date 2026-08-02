@@ -11,6 +11,7 @@ const watcherScheduler = require('./watcherScheduler');
 const deploymentCoordinator = require('./deploymentCoordinator');
 const startupValidation = require('./startupValidation');
 const { validateItemClasses, getItemCatalogStatus } = require('./itemCatalog');
+const popupRewardQueue = require('./popupRewardQueue');
 const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
@@ -1625,6 +1626,15 @@ async function handleHttp(req, res) {
   }
   if (url.pathname === '/portal/api/admin/spawn' && req.method === 'POST') {
     try { await requirePermission(session,'spawn_items_vehicles'); return json(res,200,await adminSpawnExecute(session,await readJsonBody(req))); }
+    catch(err){ return json(res,400,{error:err.message}); }
+  }
+
+  if (url.pathname === '/portal/api/admin/pending-rewards' && req.method === 'GET') {
+    try { await requirePermission(session,'view_transactions'); return json(res,200,{ rewards: await popupRewardQueue.list(250) }); }
+    catch(err){ return json(res,403,{error:err.message}); }
+  }
+  if (url.pathname === '/portal/api/admin/pending-rewards/retry' && req.method === 'POST') {
+    try { await requirePermission(session,'view_transactions'); const body=await readJsonBody(req); return json(res,200,{ reward: await popupRewardQueue.retry(String(body.id||'')) }); }
     catch(err){ return json(res,400,{error:err.message}); }
   }
 
