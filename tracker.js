@@ -12,6 +12,7 @@ const deploymentCoordinator = require('./deploymentCoordinator');
 const startupValidation = require('./startupValidation');
 const { validateItemClasses, getItemCatalogStatus } = require('./itemCatalog');
 const popupRewardQueue = require('./popupRewardQueue');
+const { runScumBan, runScumUnban } = require('./moderationActions');
 const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
@@ -1320,13 +1321,18 @@ async function adminModeration(session,body){
   const guild=botRef?.guilds?.cache?.get(String(session.guildId));
   if(action==='ban'){
     if(link?.discord_id){const member=await guild?.members?.fetch(String(link.discord_id)).catch(()=>null);if(String(link.discord_id)===String(guild?.ownerId)||member?.roles?.cache?.some(r=>STAFF_ROLE_NAMES.has(String(r.name||'').toLowerCase()))) throw new Error('Ban blocked because the linked Discord account is staff or owns the server.');}
-    await ggconPost(`/players/${encodeURIComponent(steamId)}/ban`,{});
-    if(link?.discord_id&&guild) await guild.members.ban(String(link.discord_id),{reason:`Outpost X portal ban by ${session.displayName||'Admin'}: ${reason}`}).catch(()=>{});
-    return {ok:true,message:'Player banned from SCUM. Linked Discord account was also banned when available.'};
+    const results={scum:null,discord:null};
+    try{results.scum=await runScumBan(steamId);}catch(err){results.scum={ok:false,error:err.message};}
+    if(link?.discord_id&&guild){try{await guild.members.ban(String(link.discord_id),{reason:`Outpost X portal ban by ${session.displayName||'Admin'}: ${reason}`});results.discord={ok:true};}catch(err){results.discord={ok:false,error:err.message};}}else results.discord={ok:false,skipped:true,error:'No linked Discord account was found.'};
+    if(!results.scum?.ok&&!results.discord?.ok) throw new Error(`Ban failed in SCUM and Discord. ${results.scum?.error||''} ${results.discord?.error||''}`.trim());
+    const parts=[results.scum?.ok?`SCUM ban succeeded (${results.scum.method==='command'?'native command fallback':'direct endpoint'}).`:`SCUM ban failed: ${results.scum?.error}`,results.discord?.ok?'Discord ban succeeded.':`Discord ban not completed: ${results.discord?.error}`];
+    return {ok:true,partial:!(results.scum?.ok&&results.discord?.ok),message:parts.join(' '),results};
   }
-  await ggconPost(`/players/${encodeURIComponent(steamId)}/unban`,{});
-  if(link?.discord_id&&guild) await guild.bans.remove(String(link.discord_id),`Outpost X portal unban by ${session.displayName||'Admin'}: ${reason}`).catch(()=>{});
-  return {ok:true,message:'Player unbanned from SCUM. Linked Discord ban was removed when available.'};
+  const results={scum:null,discord:null};
+  try{results.scum=await runScumUnban(steamId);}catch(err){results.scum={ok:false,error:err.message};}
+  if(link?.discord_id&&guild){try{await guild.bans.remove(String(link.discord_id),`Outpost X portal unban by ${session.displayName||'Admin'}: ${reason}`);results.discord={ok:true};}catch(err){results.discord={ok:false,error:err.message};}}else results.discord={ok:false,skipped:true,error:'No linked Discord account was found.'};
+  if(!results.scum?.ok&&!results.discord?.ok) throw new Error(`Unban failed in SCUM and Discord. ${results.scum?.error||''} ${results.discord?.error||''}`.trim());
+  return {ok:true,partial:!(results.scum?.ok&&results.discord?.ok),message:[results.scum?.ok?`SCUM unban succeeded (${results.scum.method==='command'?'native command fallback':'direct endpoint'}).`:`SCUM unban failed: ${results.scum?.error}`,results.discord?.ok?'Discord unban succeeded.':`Discord unban not completed: ${results.discord?.error}`].join(' '),results};
 }
 
 function portalCtx(session){return {guildId:String(session.guildId),discordId:String(session.discordId),displayName:session.displayName||'Player',isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,db:getDb(),bot:botRef};}

@@ -9,6 +9,7 @@ const {
 const { createClient } = require("@supabase/supabase-js");
 const { openAirliftButton, getAirliftCooldownStatus } = require("./airlift");
 const { getRentalStatus } = require("./rentals");
+const { runScumBan } = require("./moderationActions");
 const {
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
@@ -330,20 +331,18 @@ async function handleBanModal(interaction, steamId) {
   }
 
   await interaction.deferReply({ ephemeral: true });
-
-  const playerResult = await getPlayerForLookup(steamId);
-  if (playerResult.type !== "single") {
-    await interaction.editReply("The player could not be loaded, so no ban was applied.");
+  const realSteamId = String(steamId || "").trim();
+  if (!/^\d{17}$/.test(realSteamId)) {
+    await interaction.editReply("A valid Steam64 ID is required. No ban was applied.");
     return;
   }
 
-  const player = playerResult.player;
-  const realSteamId = String(player?.userId || steamId || "").trim();
-  const displayName = getPlayerDisplayName(player);
+  const playerResult = await getPlayerForLookup(realSteamId).catch(() => null);
+  const player = playerResult?.type === "single" ? playerResult.player : null;
+  const displayName = player ? getPlayerDisplayName(player) : realSteamId;
   const link = await getLinkBySteam(interaction.guildId, realSteamId).catch(() => null);
   const discordId = String(link?.discord_id || "").trim();
 
-  // Never allow this panel to ban the Discord server owner or a staff account.
   if (discordId) {
     const targetMember = await interaction.guild.members.fetch(discordId).catch(() => null);
     if (discordId === interaction.guild.ownerId) {
@@ -356,32 +355,36 @@ async function handleBanModal(interaction, steamId) {
     }
   }
 
-  await ggconPost(`/players/${encodeURIComponent(realSteamId)}/ban`, {});
+  let scumResult;
+  try { scumResult = await runScumBan(realSteamId); }
+  catch (err) { scumResult = { ok: false, error: err.message }; }
 
   let discordResult;
   if (!discordId) {
-    discordResult = "⚠️ No linked Discord account was found. Manually remove/ban this player from Discord if they are present.";
+    discordResult = { ok: false, skipped: true, text: "⚠️ No linked Discord account was found." };
   } else {
     try {
-      await interaction.guild.members.ban(discordId, {
-        reason: `Outpost X ban by ${interaction.user.tag || interaction.user.username}: ${reason}`,
-      });
-      discordResult = `✅ Discord account <@${discordId}> was banned.`;
+      await interaction.guild.members.ban(discordId, { reason: `Outpost X ban by ${interaction.user.tag || interaction.user.username}: ${reason}` });
+      discordResult = { ok: true, text: `✅ Discord account <@${discordId}> was banned.` };
     } catch (err) {
-      console.error("❌ Discord ban failed after SCUM ban:", err);
-      discordResult = `⚠️ SCUM ban succeeded, but Discord could not ban <@${discordId}>. Manually remove/ban them in Discord. Error: ${err.message}`;
+      discordResult = { ok: false, text: `⚠️ Discord ban failed for <@${discordId}>: ${err.message}` };
     }
+  }
+
+  if (!scumResult.ok && !discordResult.ok) {
+    await interaction.editReply(`Ban failed in both SCUM and Discord. SCUM: ${scumResult.error || 'unknown error'} Discord: ${discordResult.text || 'unknown error'}`);
+    return;
   }
 
   await interaction.editReply({
     content: [
-      "⛔ **Player Banned**",
+      "⛔ **Player Ban Results**",
       "",
       `**Player:** ${displayName}`,
       `**Steam ID:** \`${realSteamId}\``,
       `**Reason:** ${reason}`,
-      "✅ The player was banned from the SCUM server through ggCON.",
-      discordResult,
+      scumResult.ok ? `✅ SCUM ban succeeded using ${scumResult.method === 'command' ? 'the native #Ban command fallback' : 'the direct GGCON endpoint'}.` : `⚠️ SCUM ban failed: ${scumResult.error}`,
+      discordResult.text,
     ].join("\n"),
     allowedMentions: { parse: [] },
   });
