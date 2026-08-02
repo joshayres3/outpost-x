@@ -12,7 +12,8 @@ const STATE_KEY = "popup_events_config";
 const PREFIX = "[The Watcher]";
 
 const CHECK_MINUTES = Math.max(1, Number(process.env.POPUP_ELIGIBILITY_CHECK_MINUTES || "15"));
-const CHAT_SCAN_SECONDS = Math.max(5, Number(process.env.POPUP_CHAT_SCAN_SECONDS || "10"));
+const ACTIVE_CHAT_SCAN_SECONDS = Math.max(1, Number(process.env.POPUP_ACTIVE_CHAT_SCAN_SECONDS || "2"));
+const IDLE_CHAT_SCAN_SECONDS = Math.max(10, Number(process.env.POPUP_IDLE_CHAT_SCAN_SECONDS || process.env.POPUP_CHAT_SCAN_SECONDS || "30"));
 const MIN_ELIGIBLE = Math.max(1, Number(process.env.POPUP_MIN_ELIGIBLE_PLAYERS || "4"));
 const QUICK_COOLDOWN_MS = Math.max(1, Number(process.env.POPUP_QUICK_COOLDOWN_MINUTES || "60")) * 60_000;
 const SHARED_QUIET_MS = Math.max(0, Number(process.env.POPUP_SHARED_QUIET_MINUTES || "10")) * 60_000;
@@ -362,11 +363,32 @@ function normalizeAnswer(value) {
     .trim();
 }
 
-function chatRowText(row) {
+function rawChatRowText(row) {
   if (typeof row === "string") return row;
   return String(
     row?.line ?? row?.message ?? row?.text ?? row?.raw ?? row?.content ?? row?.data?.line ?? row?.data?.message ?? ""
   );
+}
+
+function parseScumChatLine(row) {
+  const raw = rawChatRowText(row);
+  // GGCON SCUM chat format:
+  // 2026.08.02-20.06.34: '76561198108396598:Josh Ayres(0)' 'Local: chat test'
+  const match = raw.match(/^.*?:\s*'(\d{15,20}):(.+?)\((\d+)\)'\s*'([^:']+):\s*(.*)'\s*$/);
+  if (!match) return null;
+  return {
+    steamId: match[1],
+    name: match[2].trim(),
+    profileId: match[3],
+    channel: match[4].trim(),
+    message: match[5].trim(),
+    raw,
+  };
+}
+
+function chatRowText(row) {
+  const parsed = parseScumChatLine(row);
+  return parsed?.message ?? rawChatRowText(row);
 }
 
 function parseChatIdentity(row) {
@@ -382,7 +404,10 @@ function parseChatIdentity(row) {
     return { steamId: directSteamId, name: directName || directSteamId, profileId: row?.profileId || row?.profile_id || null };
   }
 
-  const text = chatRowText(row);
+  const scumLine = parseScumChatLine(row);
+  if (scumLine) return { steamId: scumLine.steamId, name: scumLine.name, profileId: scumLine.profileId };
+
+  const text = rawChatRowText(row);
   const match = text.match(/'?(\d{15,20})\s*:\s*([^('\n\r]+?)\s*\((\d+)\)'?/);
   if (match) return { steamId: match[1], name: match[2].trim(), profileId: match[3] };
 
@@ -398,7 +423,10 @@ function parseChatSpeakerName(row) {
   ).trim();
   if (directName) return directName;
 
-  const text = chatRowText(row);
+  const scumLine = parseScumChatLine(row);
+  if (scumLine) return scumLine.name;
+
+  const text = rawChatRowText(row);
   const patterns = [
     /(?:^|\])\s*([^:\[\]\r\n]{1,64})\s*:\s*!/,
     /^\s*([^:\r\n]{1,64})\s*:\s*!/,
@@ -625,6 +653,7 @@ async function startQuickEvent({ forceType = null } = {}) {
   const type = forceType || pick(["multiple_choice", "text_answer", "true_false", "odd_one_out", "higher_lower", "number_guess", "mystery"]);
   const event = { id: randomId(), category: "quick", type, startedAt: Date.now(), finished: false, entries: new Map(), answered: new Set(), reward: chooseReward() };
   activeEvent = event;
+  scheduleChatScan(0);
   event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), EVENT_DURATION_MS);
 
   if (["multiple_choice", "text_answer", "true_false", "odd_one_out", "higher_lower"].includes(type)) {
@@ -779,7 +808,7 @@ async function scanChat() {
 
     const rawLines = candidateChatRows(data);
     await processPrivateChatProbe(rawLines, data);
-    const lines = rawLines.slice().sort((a, b) => Number(a?.t || a?.timestamp || a?.time || 0) - Number(b?.t || b?.timestamp || b?.time || 0));
+    const lines = rawLines.slice().sort((a, b) => chatRowTimestamp(a) - chatRowTimestamp(b));
     const next = Number(data?.next || data?.cursor || data?.data?.next || lines.reduce((max, row) => Math.max(max, Number(row?.t || row?.timestamp || row?.time || 0)), since) || Date.now());
 
     if (event) {
@@ -889,14 +918,26 @@ async function schedulerTick(bot) {
   }
 }
 
+function nextChatScanDelayMs() {
+  return (activeEvent || privateChatProbe ? ACTIVE_CHAT_SCAN_SECONDS : IDLE_CHAT_SCAN_SECONDS) * 1000;
+}
+
+function scheduleChatScan(delayMs = nextChatScanDelayMs()) {
+  if (chatTimer) clearTimeout(chatTimer);
+  chatTimer = setTimeout(async () => {
+    await scanChat().catch(() => {});
+    scheduleChatScan();
+  }, Math.max(0, Number(delayMs || 0)));
+  chatTimer.unref?.();
+}
+
 function startTimers(bot) {
   botRef = bot;
   if (schedulerTimer) clearInterval(schedulerTimer);
-  if (chatTimer) clearInterval(chatTimer);
+  if (chatTimer) clearTimeout(chatTimer);
   schedulerTimer = setInterval(() => schedulerTick(bot), CHECK_MINUTES * 60_000);
-  chatTimer = setInterval(() => scanChat(), CHAT_SCAN_SECONDS * 1000);
   schedulerTick(bot).catch(() => {});
-  scanChat().catch(() => {});
+  scheduleChatScan(0);
 }
 
 async function startPopupEventsOnBoot(bot) {
@@ -961,6 +1002,7 @@ async function handlePopupEventCommand(message, bot) {
         expiresAt: Date.now() + 120_000,
       };
       startTimers(bot);
+      scheduleChatScan(0);
       await message.reply([
         "🧪 **Private SCUM chat test armed for 2 minutes.**",
         "Nothing was posted in-game. Type any harmless test message in SCUM chat from your own character.",
@@ -990,6 +1032,7 @@ async function handlePopupEventCommand(message, bot) {
       `Restart Check: **${restartMinutes === null ? "Not configured" : `${restartMinutes} minutes`}**`,
       "Event Pool: 150 fixed SCUM/Outpost X trivia questions + number guess and mystery signals",
       `Reward Pool: 25–50 fame, $250–$1,500 cash, bonus lottery, or a rare empty result`,
+      `Chat Scan: every ${ACTIVE_CHAT_SCAN_SECONDS}s during an event; every ${IDLE_CHAT_SCAN_SECONDS}s while idle`,
       `Watcher Anger: ${Math.round(ANGRY_STORM_CHANCE * 100)}% chance of a ${ANGRY_STORM_MINUTES}-minute storm after a winner`,
       "Commands: `!popupevent quick`, `!popupevent probe`, `!popupevent cancel`, `!popupevent enable`, `!popupevent disable`",
       "Testing: `!popupevent quick force` or add an event type, such as `!popupevent quick force number_guess`.",
