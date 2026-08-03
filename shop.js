@@ -108,14 +108,42 @@ async function ensurePortalProducts(guildId) {
   return seeded || [];
 }
 
-function normalizeProductRow(row) {
+function catalogIconUrl(icon) {
+  const value = String(icon || '').trim();
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return value;
+  return `https://icons.gghost.games/icons/${encodeURIComponent(value)}.webp`;
+}
+
+async function buildCatalogIndex() {
+  const catalog = await loadCatalog().catch(() => []);
+  return new Map((Array.isArray(catalog) ? catalog : []).map((item) => [String(item?.i || item?.itemClass || item?.class || item?.item || item?.id || '').trim().toLowerCase(), item]).filter((entry) => entry[0]));
+}
+
+function normalizeManagedItem(item, byClass = new Map()) {
+  const itemClass = String(item?.itemClass || item?.class || item?.i || '').trim() || null;
+  const catalogItem = itemClass ? byClass.get(itemClass.toLowerCase()) : null;
+  const icon = String(item?.icon || item?.ico || catalogItem?.ico || '').trim() || null;
+  return {
+    label: String(item?.label || item?.displayName || catalogItem?.dn || itemClass || 'Item'),
+    qty: Math.max(1, Number(item?.qty || 1)),
+    itemClass,
+    aliases: item?.aliases || [item?.label, itemClass].filter(Boolean),
+    icon,
+    iconUrl: String(item?.iconUrl || item?.icon_url || '').trim() || catalogIconUrl(icon),
+    category: String(item?.category || catalogItem?.c || '').trim() || null,
+  };
+}
+
+async function normalizeProductRow(row, byClass = null) {
+  const catalogIndex = byClass || await buildCatalogIndex();
   const items = Array.isArray(row?.items) ? row.items : [];
   return {
     id: row.id, slug: row.slug, name: row.name, emoji: row.emoji || '📦', description: row.description || '',
     category: row.category || 'General', price: Number(row.price || 0), enabled: row.enabled !== false,
     sortOrder: Number(row.sort_order || 0), purchaseLimit: row.purchase_limit == null ? null : Number(row.purchase_limit),
     cooldownMinutes: Number(row.cooldown_minutes || 0),
-    items: items.map((item) => ({ label: String(item.label || item.displayName || item.itemClass || 'Item'), qty: Math.max(1, Number(item.qty || 1)), itemClass: item.itemClass || item.class || null, aliases: item.aliases || [item.label, item.itemClass].filter(Boolean) })),
+    items: items.map((item) => normalizeManagedItem(item, catalogIndex)),
   };
 }
 
@@ -129,7 +157,8 @@ async function listManagedProducts(guildId, includeDisabled = true) {
   const { data, error } = await q;
   if (error) throw error;
   const rows = data?.length ? data : await ensurePortalProducts(guildId);
-  const products = rows.map(normalizeProductRow);
+  const catalogIndex = await buildCatalogIndex();
+  const products = await Promise.all(rows.map((row) => normalizeProductRow(row, catalogIndex)));
   productCache.set(key, { loadedAt: Date.now(), products });
   return products.filter((x) => includeDisabled || x.enabled !== false);
 }
@@ -140,7 +169,9 @@ async function getManagedProduct(guildId, productId) {
   else q = q.eq('slug', String(productId || ''));
   const { data, error } = await q.maybeSingle();
   if (error) throw error;
-  return data ? normalizeProductRow(data) : null;
+  if (!data) return null;
+  const catalogIndex = await buildCatalogIndex();
+  return normalizeProductRow(data, catalogIndex);
 }
 
 function safeSlug(value) {
@@ -148,6 +179,7 @@ function safeSlug(value) {
 }
 
 async function saveManagedProduct(guildId, actorId, body = {}) {
+  const catalogIndex = await buildCatalogIndex();
   const items = (Array.isArray(body.items) ? body.items : []).map((item) => {
     const label = String(item.label || item.displayName || item.itemClass || '').trim();
     const itemClass = String(item.itemClass || item.class || '').trim();
@@ -156,7 +188,7 @@ async function saveManagedProduct(guildId, actorId, body = {}) {
       label,
       itemClass,
     ].filter(Boolean).map(String))];
-    return {
+    return normalizeManagedItem({
       label,
       qty: Math.max(1, Math.min(1000, Math.floor(Number(item.qty || 1)))),
       itemClass: itemClass || null,
@@ -164,7 +196,7 @@ async function saveManagedProduct(guildId, actorId, body = {}) {
       icon: String(item.icon || item.ico || '').trim() || null,
       iconUrl: String(item.iconUrl || '').trim() || null,
       category: String(item.category || '').trim() || null,
-    };
+    }, catalogIndex);
   }).filter((item) => item.label && (item.itemClass || item.aliases.length));
   if (!String(body.name || '').trim()) throw new Error('Product name is required.');
   if (!items.length) throw new Error('This product has no usable package items. Add an item from the catalogue or restore its existing package contents.');
@@ -230,7 +262,7 @@ async function searchItemCatalog(query = '', limit = 60) {
       itemClass,
       category: String(item?.c || item?.category || item?.cat || item?.type || 'SCUM Item'),
       icon,
-      iconUrl: icon ? `https://icons.gghost.games/icons/${encodeURIComponent(icon)}.webp` : null,
+      iconUrl: catalogIconUrl(icon),
       score: !wanted ? 1 : haystack.includes(wanted) ? (normalize(label).startsWith(wanted) ? 3 : 2) : 0,
     };
   }).filter((item) => item.itemClass && item.score > 0).sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)).slice(0, Math.max(1, Math.min(100, Number(limit || 60))));
