@@ -196,3 +196,6 @@ img,video,canvas,svg,iframe{max-width:100%}
 @media(max-width:460px){
   .adminToolStrip .mobileAdminTile{flex-basis:100%;min-width:0;max-width:none}
 }
+
+
+.eventTeleportPanel{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:18px 0;padding:18px;border:1px solid rgba(63,181,255,.45);border-radius:16px;background:linear-gradient(135deg,rgba(19,78,116,.22),rgba(8,18,29,.88))}.eventTeleportPanel h3{margin:4px 0 6px}.eventTeleportPanel p{margin:0;color:var(--muted);line-height:1.5}.eventTeleportPanel .detailActions{margin:0;flex-shrink:0}@media(max-width:720px){.eventTeleportPanel{align-items:stretch;flex-direction:column}.eventTeleportPanel .detailActions{display:grid;grid-template-columns:1fr}.eventTeleportPanel .btn{width:100%}}

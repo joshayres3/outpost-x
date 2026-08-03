@@ -726,6 +726,88 @@ async function portalLink(session) {
   const { data, error } = await getDb().from(PLAYER_LINKS_TABLE).select('*').eq('guild_id', String(session.guildId)).eq('discord_id', String(session.discordId)).maybeSingle();
   if (error) throw error; return data || null;
 }
+
+const EVENT_TELEPORT_OPEN_MS = 15 * 60 * 1000;
+function eventReturnKey(guildId,eventId,steamId){return `event_return:${String(guildId)}:${String(eventId)}:${String(steamId)}`;}
+function extractPlayerLocation(player){
+  const candidates=[player?.location,player?.position,player?.coordinates,player?.pos,player];
+  for(const c of candidates){
+    const x=Number(c?.x??c?.X),y=Number(c?.y??c?.Y),z=Number(c?.z??c?.Z);
+    if([x,y,z].every(Number.isFinite))return{x,y,z};
+  }
+  return null;
+}
+async function getEventForTeleport(session,eventId){
+  const {data,error}=await getDb().from('events').select('*').eq('id',String(eventId||'')).maybeSingle();
+  if(error)throw error;
+  if(!data)throw new Error('This event was removed.');
+  const x=Number(data.coordinate_x),y=Number(data.coordinate_y),z=Number(data.coordinate_z);
+  if(![x,y,z].every(Number.isFinite))throw new Error('This event does not have valid teleport coordinates.');
+  const startsAt=Date.parse(String(data.event_time||''));
+  if(!Number.isFinite(startsAt))throw new Error('This event has an invalid start time.');
+  return{event:data,destination:{x,y,z},startsAt,availableAt:startsAt-EVENT_TELEPORT_OPEN_MS};
+}
+async function getEventReturnState(session,eventId,steamId){
+  const key=eventReturnKey(session.guildId,eventId,steamId);
+  const {data,error}=await getDb().from('watcher_runtime_state').select('value,updated_at').eq('key',key).maybeSingle();
+  if(error)throw error;
+  return data?.value?{...data.value,updatedAt:data.updated_at}:null;
+}
+async function setEventReturnState(session,eventId,steamId,value){
+  const key=eventReturnKey(session.guildId,eventId,steamId);
+  const now=new Date().toISOString();
+  const {error}=await getDb().from('watcher_runtime_state').upsert({key,value,updated_at:now},{onConflict:'key'});
+  if(error)throw error;
+}
+async function clearEventReturnState(session,eventId,steamId){
+  const key=eventReturnKey(session.guildId,eventId,steamId);
+  const {error}=await getDb().from('watcher_runtime_state').delete().eq('key',key);
+  if(error)throw error;
+}
+async function portalEventTeleportState(session,eventId){
+  const link=await portalLink(session);
+  if(!link?.steam_id)throw new Error('Link your SCUM account before using event teleport.');
+  const info=await getEventForTeleport(session,eventId);
+  const saved=await getEventReturnState(session,eventId,link.steam_id);
+  const now=Date.now();
+  return{ok:true,eventId:String(info.event.id),available:now>=info.availableAt,availableAt:new Date(info.availableAt).toISOString(),startsAt:new Date(info.startsAt).toISOString(),hasReturn:!!saved};
+}
+async function portalEventTeleport(session,body={}){
+  const eventId=String(body.id||'').trim();
+  const action=String(body.action||'to').toLowerCase();
+  const link=await portalLink(session);
+  if(!link?.steam_id)throw new Error('Link your SCUM account before using event teleport.');
+  const steamId=String(link.steam_id);
+  const info=await getEventForTeleport(session,eventId);
+  if(Date.now()<info.availableAt)throw new Error(`Event teleport opens 15 minutes before the event starts.`);
+  const player=currentPlayerBySteam(steamId);
+  if(!player)throw new Error('You must be online in SCUM to use event teleport.');
+  if(action==='back'){
+    const saved=await getEventReturnState(session,eventId,steamId);
+    const returnLocation=saved?.location;
+    if(!returnLocation||![returnLocation.x,returnLocation.y,returnLocation.z].every(v=>Number.isFinite(Number(v))))throw new Error('Watcher does not have a saved return position for this event.');
+    const result=await ggconPost(`/players/${encodeURIComponent(steamId)}/teleport`,{x:Number(returnLocation.x),y:Number(returnLocation.y),z:Number(returnLocation.z)});
+    await clearEventReturnState(session,eventId,steamId);
+    return{ok:true,verified:true,action:'back',message:'Returned to your saved pre-event position.',result};
+  }
+  if(action!=='to')throw new Error('Unknown event teleport action.');
+  let saved=await getEventReturnState(session,eventId,steamId);
+  let createdReturn=false;
+  if(!saved){
+    const location=extractPlayerLocation(player);
+    if(!location)throw new Error('Watcher could not verify your current SCUM position. Move a few steps and try again.');
+    saved={eventId:String(info.event.id),eventTitle:String(info.event.title||'Event'),steamId,playerName:link.scum_name||getPlayerDisplayName(player),location,savedAt:new Date().toISOString()};
+    await setEventReturnState(session,eventId,steamId,saved);
+    createdReturn=true;
+  }
+  try{
+    const result=await ggconPost(`/players/${encodeURIComponent(steamId)}/teleport`,info.destination);
+    return{ok:true,verified:true,action:'to',hasReturn:true,message:`Teleported to ${info.event.title||'the event'}. Your return position is saved.`,result};
+  }catch(error){
+    if(createdReturn)await clearEventReturnState(session,eventId,steamId).catch(()=>{});
+    throw error;
+  }
+}
 function currentPlayerBySteam(steamId) {
   const p = latestOnline.get(String(steamId));
   return p || null;
@@ -1546,6 +1628,8 @@ async function handleHttp(req, res) {
     catch (err) { return json(res,400,{error:err.message}); }
   }
   if (url.pathname === '/portal/api/events/rsvp' && req.method === 'POST') { try{const b=await readJsonBody(req);return json(res,200,await portalRsvpEvent(portalCtx(session),b.id,b.attending!==false));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/teleport-state' && req.method === 'GET') { try{return json(res,200,await portalEventTeleportState(session,url.searchParams.get('id')));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/teleport' && req.method === 'POST') { try{return json(res,200,await portalEventTeleport(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/create' && req.method === 'POST') { try{await requirePermission(session,'manage_events');await requireFeature(session.guildId,'eventCreation','Event creation');return json(res,200,await portalCreateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/update' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalUpdateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/status' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalSetEventStatus(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
