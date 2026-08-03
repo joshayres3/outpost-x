@@ -13,7 +13,7 @@ const startupValidation = require('./startupValidation');
 const { validateItemClasses, getItemCatalogStatus } = require('./itemCatalog');
 const popupRewardQueue = require('./popupRewardQueue');
 const { runScumBan, runScumUnban } = require('./moderationActions');
-const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog } = require('./shop');
+const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog, getCatalogItemsByClass } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
 const { portalCreateRental } = require('./rentals');
@@ -1685,6 +1685,10 @@ async function handleHttp(req, res) {
   }
   if (url.pathname === '/portal/api/admin/shop/items' && req.method === 'GET') {
     try { await requirePermission(session, 'manage_server_shop'); return json(res, 200, { items: await searchItemCatalog(url.searchParams.get('q') || '', 80) }); }
+    catch (err) { return json(res, 403, { error: err.message }); }
+  }
+  if (url.pathname === '/portal/api/admin/shop/item-details' && req.method === 'POST') {
+    try { await requirePermission(session, 'manage_server_shop'); const body = await readJsonBody(req); return json(res, 200, { items: await getCatalogItemsByClass(body.itemClasses || []) }); }
     catch (err) { return json(res, 403, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/admin/shop/product' && req.method === 'POST') {

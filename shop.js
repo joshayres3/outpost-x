@@ -268,6 +268,29 @@ async function searchItemCatalog(query = '', limit = 60) {
   }).filter((item) => item.itemClass && item.score > 0).sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)).slice(0, Math.max(1, Math.min(100, Number(limit || 60))));
 }
 
+
+async function getCatalogItemsByClass(itemClasses = []) {
+  const wanted = [...new Set((Array.isArray(itemClasses) ? itemClasses : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean))].slice(0, 100);
+  if (!wanted.length) return [];
+  const catalog = await loadCatalog();
+  const byClass = new Map((Array.isArray(catalog) ? catalog : []).map((item) => [catalogClass(item).toLowerCase(), item]).filter(([key]) => key));
+  return wanted.map((itemClass) => {
+    const item = byClass.get(itemClass.toLowerCase());
+    if (!item) return { itemClass, found: false, icon: null, iconUrl: null, category: null, label: itemClass };
+    const icon = String(item?.ico || item?.icon || '').trim();
+    return {
+      itemClass,
+      found: true,
+      label: String(item?.dn || item?.displayName || item?.display_name || item?.name || item?.label || itemClass),
+      category: String(item?.c || item?.category || item?.cat || item?.type || 'SCUM Item'),
+      icon,
+      iconUrl: catalogIconUrl(icon),
+    };
+  });
+}
+
 function getDb() {
   if (db) return db;
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) throw new Error("Supabase is not configured.");
@@ -622,4 +645,4 @@ async function buyPackageForPortal({ guildId, discordId, steamId, playerName, pa
     return result;
   } catch (error) { await idempotency.fail(idem.key, error).catch(()=>{}); throw error; } finally { purchaseLocks.delete(lockKey); }
 }
-module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog };
+module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog, getCatalogItemsByClass };
