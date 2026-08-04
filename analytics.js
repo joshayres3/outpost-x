@@ -112,14 +112,6 @@ async function buildDailyStory(guild, date = nowEt()) {
   if (ticketsOpened || ticketsClosed) lines.push(`Support handled **${ticketsOpened}** new ticket${ticketsOpened === 1 ? '' : 's'} and closed **${ticketsClosed}**.`);
   const communityChallenge = await getCommunityChallenge(guild.id, date).catch(() => null);
   if (communityChallenge) lines.push(`🎯 **Weekly Community Challenge — ${communityChallenge.title}**\n${progressText(communityChallenge)}`);
-  const raceSummary = await getKillRaceSummary(guild.id, date).catch(() => null);
-  if (raceSummary?.race) {
-    const race = raceSummary.race;
-    const leader = Object.values(race.players || {}).sort((a,b)=>Number(b.count||0)-Number(a.count||0))[0];
-    if (race.status === 'won') lines.push(`🏁 **Daily Kill Race — ${race.title}**\nWinner: **${race.winner?.name || 'Unknown'}** — ${race.target}/${race.target}${race.prize?.name ? ` • Prize: **${race.prize.name}**` : ''}`);
-    else if (race.status === 'active') lines.push(`🏁 **Daily Kill Race — ${race.title}**\nCurrent leader: **${leader?.name || 'No leader yet'}** — ${Number(leader?.count || 0)}/${race.target}`);
-    else lines.push(`🏁 **Daily Kill Race — ${race.title}** ended without a winner.`);
-  }
   if (!lines.length) lines.push('The island was unusually quiet. The Watcher remains suspicious.');
   const closers = ['Another day survived. Questionable decisions were recorded.', 'Outpost X remains standing. Somehow.', 'The Watcher observed everything and judged most of it.', 'The island tried. The Exiles tried harder.'];
   lines.push(closers[Math.floor(Math.random() * closers.length)]);
@@ -239,6 +231,20 @@ async function buildWeeklyAwards(guild, date = nowEt()) {
     const leaders = contributorRows(communityChallenge).slice(0, 3);
     const leaderText = leaders.length ? leaders.map((row, index) => `${index + 1}. ${row.name} — ${row.count}`).join(' • ') : 'No qualifying kills yet.';
     awards.unshift(`🎯 **Weekly Community Challenge — ${communityChallenge.title}**\n${progressText(communityChallenge)}\nTop contributors: ${leaderText}`);
+  }
+
+  const raceSummary = await getKillRaceSummary(guild.id, date).catch(() => null);
+  const weeklyRaces = Array.isArray(raceSummary?.history) ? raceSummary.history : [];
+  if (weeklyRaces.length) {
+    const raceLines = weeklyRaces.slice(-9).map(race => {
+      if (race.status === 'won') {
+        return `🏁 **${race.title}:** ${race.winner?.name || 'Unknown'} won ${race.target}/${race.target}${race.prize?.name ? ` — ${race.prize.name}` : ''}`;
+      }
+      const leader = Array.isArray(race.leaders) ? race.leaders[0] : null;
+      return `⌛ **${race.title}:** no winner${leader ? ` — top: ${leader.name} ${leader.count}/${race.target}` : ''}`;
+    });
+    awards.unshift(`🏁 **Weekly Kill Race Results**
+${raceLines.join('\n')}`);
   }
 
   if (!awards.length) {

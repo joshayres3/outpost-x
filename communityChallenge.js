@@ -364,13 +364,14 @@ function raceScumText(race, heading) {
 }
 
 async function sendRacePost(guild, race, heading) {
-  // Trivia owns the public attention window. Counting continues, but both the
-  // Discord and SCUM announcements wait until the active trivia question ends.
+  // Trivia owns the in-game attention window. Counting continues, but race
+  // announcements wait until the active trivia question ends. Routine race
+  // posts stay out of Discord; completed results are included in the weekly awards.
   if (isPopupEventActive()) return false;
-  const channel = await guild.channels.fetch(MAIN_CHAT_ID).catch(() => null);
-  if (!channel?.isTextBased()) return false;
-  await channel.send({ embeds: [buildRaceEmbed(race, heading)] });
-  await ggconPost('/command', { command: `#Broadcast Cyan ${raceScumText(race, heading)}` }, { requireConfirmed: true });
+  await ggconPost('/message', {
+    text: raceScumText(race, heading),
+    type: 'ServerMessage',
+  }, { requireConfirmed: true });
   return true;
 }
 
@@ -564,8 +565,8 @@ async function startKillRaceFromPortal(guild, type = '') {
   const definition = RACE_ROTATION.find(item => item.id === normalized || item.category === normalized || item.id.includes(normalized))
     || raceDefinitionForDay(nowEt(), (await loadRaceDaily(guild.id)).daily.started);
   const { race } = await createRace(guild, nowEt(), definition);
-  // The normal processor performs the dual Discord + in-game announcement and
-  // will defer it safely if trivia is active.
+  // The normal processor performs the in-game announcement and defers it
+  // safely if trivia is active. Discord only receives the weekly recap.
   await processRace(guild);
   return { ok: true, race: (await loadRace(guild.id)).race || race };
 }
