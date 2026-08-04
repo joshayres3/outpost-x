@@ -2,7 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const { DateTime } = require('luxon');
 const { getOnlinePlayers, getServerSummary } = require('./ggcon');
-const { getCommunityChallenge, postCommunityChallenge, progressText, contributorRows, handlePrivateTestCommand } = require('./communityChallenge');
+const { getCommunityChallenge, postCommunityChallenge, progressText, contributorRows, handlePrivateTestCommand, handleRaceChallengeCommand, getKillRaceSummary } = require('./communityChallenge');
 
 const TZ = process.env.WATCHER_TIMEZONE || 'America/Toronto';
 const MAIN_CHAT_ID = process.env.MAIN_CHAT_CHANNEL_ID || '1516269437932670977';
@@ -112,6 +112,14 @@ async function buildDailyStory(guild, date = nowEt()) {
   if (ticketsOpened || ticketsClosed) lines.push(`Support handled **${ticketsOpened}** new ticket${ticketsOpened === 1 ? '' : 's'} and closed **${ticketsClosed}**.`);
   const communityChallenge = await getCommunityChallenge(guild.id, date).catch(() => null);
   if (communityChallenge) lines.push(`🎯 **Weekly Community Challenge — ${communityChallenge.title}**\n${progressText(communityChallenge)}`);
+  const raceSummary = await getKillRaceSummary(guild.id, date).catch(() => null);
+  if (raceSummary?.race) {
+    const race = raceSummary.race;
+    const leader = Object.values(race.players || {}).sort((a,b)=>Number(b.count||0)-Number(a.count||0))[0];
+    if (race.status === 'won') lines.push(`🏁 **Daily Kill Race — ${race.title}**\nWinner: **${race.winner?.name || 'Unknown'}** — ${race.target}/${race.target}${race.prize?.name ? ` • Prize: **${race.prize.name}**` : ''}`);
+    else if (race.status === 'active') lines.push(`🏁 **Daily Kill Race — ${race.title}**\nCurrent leader: **${leader?.name || 'No leader yet'}** — ${Number(leader?.count || 0)}/${race.target}`);
+    else lines.push(`🏁 **Daily Kill Race — ${race.title}** ended without a winner.`);
+  }
   if (!lines.length) lines.push('The island was unusually quiet. The Watcher remains suspicious.');
   const closers = ['Another day survived. Questionable decisions were recorded.', 'Outpost X remains standing. Somehow.', 'The Watcher observed everything and judged most of it.', 'The island tried. The Exiles tried harder.'];
   lines.push(closers[Math.floor(Math.random() * closers.length)]);
@@ -402,6 +410,7 @@ function startAnalyticsOnBoot(bot) {
 async function handleAnalyticsCommand(message) {
   if (!message.guild || !message.content?.startsWith('!')) return false;
   if (await handlePrivateTestCommand(message)) return true;
+  if (await handleRaceChallengeCommand(message)) return true;
   const cmd=message.content.trim().split(/\s+/)[0].toLowerCase();
   if (!['!pulsesetup','!pulsestatus','!storynow','!awardsnow','!challengenow'].includes(cmd)) return false;
   if (!isStaff(message.member)) { await message.reply('Only Watcher staff can use that command.'); return true; }

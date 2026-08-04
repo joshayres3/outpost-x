@@ -1630,8 +1630,15 @@ async function startLotteryOnBoot(bot) {
   await postLotteryLogChannel(bot, config, "🎟️ Lottery scheduler is online. Hourly draws remain active.").catch(() => {});
 }
 
+async function awardChallengePack(guildId, steamId) {
+  const selection = await chooseLotteryPack(guildId);
+  const delivery = await deliverPack(String(steamId), selection.pack);
+  return { pack: selection.pack, delivery };
+}
+
 module.exports = {
   handleLotteryCommand,
   startLotteryOnBoot,
   triggerBonusLottery,
+  awardChallengePack,
 };

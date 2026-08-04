@@ -1070,4 +1070,6 @@ async function handlePopupEventCommand(message, bot) {
   return true;
 }
 
-module.exports = { handlePopupEventCommand, startPopupEventsOnBoot, registerChatRowConsumer };
+function isPopupEventActive() { return !!activeEvent; }
+
+module.exports = { handlePopupEventCommand, startPopupEventsOnBoot, registerChatRowConsumer, isPopupEventActive };

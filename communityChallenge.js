@@ -2,7 +2,9 @@ const crypto = require('crypto');
 const { EmbedBuilder } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const { DateTime } = require('luxon');
-const { ggconGet } = require('./ggcon');
+const { ggconGet, getOnlinePlayers } = require('./ggcon');
+const { isPopupEventActive } = require('./popupEvents');
+const { awardChallengePack } = require('./lottery');
 
 const TZ = process.env.WATCHER_TIMEZONE || 'America/Toronto';
 const MAIN_CHAT_ID = process.env.MAIN_CHAT_CHANNEL_ID || '1516269437932670977';
@@ -12,8 +14,19 @@ const DEFAULT_TARGET = Math.max(1, Number(process.env.WATCHER_COMMUNITY_CHALLENG
 const MAX_SEEN = Math.max(1000, Number(process.env.WATCHER_COMMUNITY_CHALLENGE_MAX_SEEN || '5000'));
 // Temporary safety switch: this build runs only the private 3-part owner test.
 // Set WATCHER_COMMUNITY_CHALLENGE_PRIVATE_TEST_ONLY=false after verification.
-const PRIVATE_TEST_ONLY = String(process.env.WATCHER_COMMUNITY_CHALLENGE_PRIVATE_TEST_ONLY || 'true').toLowerCase() !== 'false';
+const PRIVATE_TEST_ONLY = String(process.env.WATCHER_COMMUNITY_CHALLENGE_PRIVATE_TEST_ONLY || 'false').toLowerCase() === 'true';
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || 'watcher_player_links';
+const RACE_DURATION_HOURS = Math.min(6, Math.max(1, Number(process.env.WATCHER_KILL_RACE_DURATION_HOURS || '3')));
+const RACE_MIN_PLAYERS = Math.max(1, Number(process.env.WATCHER_KILL_RACE_MIN_PLAYERS || '3'));
+const RACE_COOLDOWN_MINUTES = Math.max(30, Number(process.env.WATCHER_KILL_RACE_COOLDOWN_MINUTES || '90'));
+const RACE_MAX_PER_DAY = Math.max(1, Number(process.env.WATCHER_KILL_RACE_MAX_PER_DAY || '3'));
+const RACE_ROTATION = [
+  { id: 'puppet_purge', title: 'Puppet Purge', target: 20, category: 'zombie', label: 'puppets/zombies' },
+  { id: 'wild_hunt', title: 'Wild Hunt', target: 15, category: 'animal', label: 'animals' },
+  { id: 'hostile_cleanup', title: 'Hostile Cleanup', target: 15, category: 'npc', label: 'guards/drifters/hostile NPCs' },
+  { id: 'island_sweep', title: 'Island Sweep', target: 25, category: 'all', label: 'mixed NPCs' },
+];
+
 
 let db;
 let pollTimer;
@@ -27,6 +40,11 @@ function getDb() {
 function nowEt() { return DateTime.now().setZone(TZ); }
 function weekId(dt = nowEt()) { return dt.toFormat("kkkk-'W'WW"); }
 function stateKey(guildId, week = weekId()) { return `community_challenge:${guildId}:${week}`; }
+function raceDayId(dt = nowEt()) { return dt.toISODate(); }
+function raceStateKey(guildId) { return `kill_race_active:${guildId}`; }
+function raceDailyKey(guildId, day = raceDayId()) { return `kill_race_daily:${guildId}:${day}`; }
+function raceHistoryKey(guildId, week = weekId()) { return `kill_race_history:${guildId}:${week}`; }
+
 
 function challengeWindow(dt = nowEt()) {
   return {
@@ -263,6 +281,259 @@ async function handlePrivateTestCommand(message) {
   return true;
 }
 
+function raceDefinitionForDay(dt = nowEt(), sequence = 0) {
+  const base = Math.abs(Math.floor(dt.startOf('day').toSeconds() / 86400));
+  return RACE_ROTATION[(base + Number(sequence || 0)) % RACE_ROTATION.length];
+}
+
+function raceEventCategory(event) {
+  return npcTestCategory(event);
+}
+
+function raceMatches(event, category) {
+  if (!isPlayerNpcKill(event)) return false;
+  if (category === 'all') return true;
+  return raceEventCategory(event) === category;
+}
+
+function raceRows(race) {
+  return Object.entries(race?.players || {})
+    .map(([sid, value]) => ({ sid, name: value?.name || sid, count: Number(value?.count || 0) }))
+    .filter(row => row.count > 0)
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+function raceTimeText(race, dt = nowEt()) {
+  const end = DateTime.fromISO(race.endsAt, { zone: 'utc' }).setZone(TZ);
+  const mins = Math.max(0, Math.ceil(end.diff(dt, 'minutes').minutes));
+  if (mins >= 60) return `${Math.floor(mins / 60)}h ${mins % 60}m remaining`;
+  return `${mins}m remaining`;
+}
+
+function buildRaceEmbed(race, heading = '🏁 Watcher Kill Race') {
+  const leaders = raceRows(race).slice(0, 3);
+  const leaderText = leaders.length
+    ? leaders.map((row, index) => `${index + 1}. **${row.name}** — ${row.count}/${race.target}`).join('\n')
+    : 'No qualifying kills yet.';
+  const status = race.status === 'won'
+    ? `🏆 **${race.winner?.name || 'Winner'}** reached ${race.target}/${race.target}`
+    : race.status === 'expired'
+      ? '⌛ Challenge expired without a winner.'
+      : `First player to eliminate **${race.target} ${race.label}** wins a random lottery pack.\n${raceTimeText(race)}`;
+  return new EmbedBuilder()
+    .setTitle(`${heading} — ${race.title}`)
+    .setDescription(status)
+    .addFields({ name: 'Current Leaders', value: leaderText })
+    .setFooter({ text: `Starts automatically when at least ${RACE_MIN_PLAYERS} players are online. Trivia continues independently.` });
+}
+
+async function loadRace(guildId) {
+  const key = raceStateKey(guildId);
+  return { key, race: await stateGet(key).catch(() => null) };
+}
+
+async function loadRaceDaily(guildId, dt = nowEt()) {
+  const key = raceDailyKey(guildId, raceDayId(dt));
+  const daily = await stateGet(key).catch(() => null) || { day: raceDayId(dt), started: 0, lastEndedAt: null };
+  return { key, daily };
+}
+
+async function saveRaceHistory(guildId, race) {
+  const key = raceHistoryKey(guildId, weekId(DateTime.fromISO(race.startedAt, { zone: 'utc' }).setZone(TZ)));
+  const history = await stateGet(key).catch(() => null) || { races: [] };
+  const races = Array.isArray(history.races) ? history.races.filter(item => item.id !== race.id) : [];
+  races.push({
+    id: race.id, day: race.day, title: race.title, target: race.target, category: race.category,
+    status: race.status, winner: race.winner || null, endedAt: race.endedAt || null,
+    leaders: raceRows(race).slice(0, 3), prize: race.prize || null,
+  });
+  history.races = races.slice(-14);
+  await stateSet(key, history);
+}
+
+async function sendRacePost(guild, race, heading) {
+  // Trivia owns the in-game attention window. The race keeps counting, but its
+  // Discord announcement waits until the trivia question has finished.
+  if (isPopupEventActive()) return false;
+  const channel = await guild.channels.fetch(MAIN_CHAT_ID).catch(() => null);
+  if (!channel?.isTextBased()) return false;
+  await channel.send({ embeds: [buildRaceEmbed(race, heading)] });
+  return true;
+}
+
+async function createRace(guild, dt = nowEt(), forcedDefinition = null) {
+  const { key: dailyKey, daily } = await loadRaceDaily(guild.id, dt);
+  const definition = forcedDefinition || raceDefinitionForDay(dt, daily.started);
+  const sequence = Number(daily.started || 0) + 1;
+  const data = await ggconGet('/kill-feed/history.json?range=session');
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const start = dt;
+  const race = {
+    version: 1,
+    id: `${raceDayId(dt)}:${sequence}:${definition.id}`,
+    guildId: String(guild.id),
+    day: raceDayId(dt),
+    title: definition.title,
+    target: definition.target,
+    category: definition.category,
+    label: definition.label,
+    status: 'active',
+    players: {},
+    seen: events.map(eventFingerprint).slice(-MAX_SEEN),
+    startedAt: start.toUTC().toISO(),
+    endsAt: start.plus({ hours: RACE_DURATION_HOURS }).toUTC().toISO(),
+    startPosted: false,
+    oneHourPosted: false,
+    finalPosted: false,
+    resultPosted: false,
+    winner: null,
+    prize: null,
+    updatedAt: new Date().toISOString(),
+  };
+  const key = raceStateKey(guild.id);
+  daily.started = sequence;
+  daily.lastStartedAt = race.startedAt;
+  await stateSet(dailyKey, daily);
+  await stateSet(key, race);
+  return { key, race };
+}
+
+async function maybeStartOnlineRace(guild, dt = nowEt()) {
+  const { key, race } = await loadRace(guild.id);
+  if (race?.status === 'active') return { key, race };
+
+  const { key: dailyKey, daily } = await loadRaceDaily(guild.id, dt);
+  if (Number(daily.started || 0) >= RACE_MAX_PER_DAY) return { key, race: null };
+
+  if (race && race.status !== 'active') {
+    if (!race.resultPosted) return { key, race };
+    const ended = DateTime.fromISO(race.endedAt || race.endsAt, { zone: 'utc' }).setZone(TZ);
+    if (dt < ended.plus({ minutes: RACE_COOLDOWN_MINUTES })) return { key, race: null };
+    await stateDelete(key).catch(() => {});
+  } else if (daily.lastEndedAt) {
+    const ended = DateTime.fromISO(daily.lastEndedAt, { zone: 'utc' }).setZone(TZ);
+    if (dt < ended.plus({ minutes: RACE_COOLDOWN_MINUTES })) return { key, race: null };
+  }
+
+  const online = await getOnlinePlayers().catch(() => []);
+  if (online.length < RACE_MIN_PLAYERS) return { key, race: null };
+  return createRace(guild, dt);
+}
+
+async function processRace(guild) {
+  const dt = nowEt();
+  let { key, race } = await maybeStartOnlineRace(guild, dt);
+  if (!race) return;
+
+  const data = await ggconGet('/kill-feed/history.json?range=session');
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const seen = new Set(Array.isArray(race.seen) ? race.seen : []);
+  let changed = false;
+
+  if (race.status === 'active') {
+    for (const event of events) {
+      const fingerprint = eventFingerprint(event);
+      if (seen.has(fingerprint)) continue;
+      seen.add(fingerprint);
+      changed = true;
+      if (!raceMatches(event, race.category)) continue;
+      const sid = String(event.killer.sid || '').trim();
+      const name = String(event.killer.name || sid).trim();
+      const current = race.players[sid] || { name, count: 0 };
+      current.name = name || current.name;
+      current.count = Number(current.count || 0) + 1;
+      race.players[sid] = current;
+      if (current.count >= race.target && race.status === 'active') {
+        race.status = 'won';
+        race.winner = { sid, name: current.name, count: current.count };
+        race.endedAt = new Date().toISOString();
+        try {
+          const award = await awardChallengePack(guild.id, sid);
+          race.prize = { id: award.pack.id, name: award.pack.name };
+        } catch (err) {
+          race.prize = { name: 'Lottery pack pending manual delivery', error: err.message };
+          console.error('❌ Kill race prize delivery failed:', err.message);
+        }
+        break;
+      }
+    }
+  }
+
+  race.seen = [...seen].slice(-MAX_SEEN);
+  const end = DateTime.fromISO(race.endsAt, { zone: 'utc' }).setZone(TZ);
+  const start = DateTime.fromISO(race.startedAt, { zone: 'utc' }).setZone(TZ);
+  if (race.status === 'active' && dt >= end) {
+    race.status = 'expired';
+    race.endedAt = new Date().toISOString();
+    changed = true;
+  }
+
+  if (!race.startPosted && await sendRacePost(guild, race, '🏁 New 3-Hour Kill Race')) {
+    race.startPosted = true;
+    changed = true;
+  }
+  if (race.status === 'active' && !race.oneHourPosted && dt >= start.plus({ hours: 1 })
+      && await sendRacePost(guild, race, '⏱️ Kill Race Update')) {
+    race.oneHourPosted = true;
+    changed = true;
+  }
+  if (race.status === 'active' && !race.finalPosted && dt >= end.minus({ minutes: 30 })
+      && await sendRacePost(guild, race, '⚠️ 30 Minutes Remaining')) {
+    race.finalPosted = true;
+    changed = true;
+  }
+  if (race.status !== 'active' && !race.resultPosted
+      && await sendRacePost(guild, race, race.status === 'won' ? '🏆 Kill Race Complete' : '⌛ Kill Race Ended')) {
+    race.resultPosted = true;
+    changed = true;
+  }
+
+  if (changed) {
+    race.updatedAt = new Date().toISOString();
+    await stateSet(key, race);
+    if (race.status !== 'active') {
+      await saveRaceHistory(guild.id, race).catch(() => {});
+      const { key: dailyKey, daily } = await loadRaceDaily(guild.id, dt);
+      daily.lastEndedAt = race.endedAt || new Date().toISOString();
+      await stateSet(dailyKey, daily).catch(() => {});
+    }
+  }
+}
+
+async function getKillRaceSummary(guildId, dt = nowEt()) {
+  const { race } = await loadRace(guildId, dt);
+  const history = await stateGet(raceHistoryKey(guildId, weekId(dt))).catch(() => null);
+  return { race, history: Array.isArray(history?.races) ? history.races : [] };
+}
+
+async function handleRaceChallengeCommand(message) {
+  if (!message.guild || !message.content?.toLowerCase().startsWith('!racechallenge')) return false;
+  const isStaff = !!message.member?.roles?.cache?.some(r => ['Owner', 'Owners', 'Admin'].includes(r.name));
+  if (!isStaff) { await message.reply('Kill race controls are for staff only.'); return true; }
+  const parts = message.content.trim().split(/\s+/);
+  const action = String(parts[1] || 'status').toLowerCase();
+  if (action === 'start') {
+    const existing = (await loadRace(message.guild.id)).race;
+    if (existing?.status === 'active') { await message.reply('A kill race is already active.'); return true; }
+    const type = String(parts[2] || '').toLowerCase();
+    const definition = RACE_ROTATION.find(item => item.id.includes(type) || item.category === type) || raceDefinitionForDay(nowEt(), (await loadRaceDaily(message.guild.id)).daily.started);
+    const { race } = await createRace(message.guild, nowEt(), definition);
+    await message.reply(`Kill race started: **${race.title}** — first to ${race.target} ${race.label}.`);
+    return true;
+  }
+  if (action === 'stop') {
+    const { key, race } = await loadRace(message.guild.id);
+    if (!race?.status || race.status !== 'active') { await message.reply('No active kill race.'); return true; }
+    race.status = 'expired'; race.endedAt = new Date().toISOString(); race.updatedAt = race.endedAt;
+    await stateSet(key, race); await saveRaceHistory(message.guild.id, race).catch(() => {});
+    await message.reply('Kill race stopped.'); return true;
+  }
+  const { race } = await loadRace(message.guild.id);
+  if (!race) { await message.reply('No kill race has run today.'); return true; }
+  await message.reply({ embeds: [buildRaceEmbed(race, '🏁 Kill Race Status')] });
+  return true;
+}
+
 async function processGuild(guild) {
   const { key, challenge } = await loadChallenge(guild.id);
   const data = await ggconGet('/kill-feed/history.json?range=session');
@@ -313,6 +584,7 @@ async function poll(bot) {
     for (const guild of bot.guilds.cache.values()) {
       await processPrivateTest(guild).catch(err => console.error('❌ Private community challenge test scan failed:', err.message));
       if (!PRIVATE_TEST_ONLY) await processGuild(guild).catch(err => console.error('❌ Community challenge scan failed:', err.message));
+      await processRace(guild).catch(err => console.error('❌ Kill race scan failed:', err.message));
     }
   } finally {
     pollBusy = false;
@@ -347,4 +619,7 @@ module.exports = {
   progressText,
   contributorRows,
   handlePrivateTestCommand,
+  handleRaceChallengeCommand,
+  getKillRaceSummary,
+  buildRaceEmbed,
 };
