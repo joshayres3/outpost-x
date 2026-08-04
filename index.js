@@ -95,6 +95,7 @@ const { startPlayerShops, handlePlayerShopCommand, handlePlayerShopMessage, hand
 const { startSquadFinder, handleSquadFinderCommand, handleSquadFinderInteraction, handleSquadFinderModal } = require("./squadFinder");
 const { startPlayerLore, handlePlayerLoreCommand, handlePlayerLoreMessage, handlePlayerLoreInteraction, handlePlayerLoreModal } = require("./playerLore");
 const { startAnalyticsOnBoot, handleAnalyticsCommand } = require("./analytics");
+const { startCommunityChallengeOnBoot } = require("./communityChallenge");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
   handleRulesAcceptCommand,
@@ -259,6 +260,7 @@ bot.once(Events.ClientReady, async () => {
     startSquadFinder(bot, db);
     startPlayerLore(bot, db);
     startAnalyticsOnBoot(bot);
+    startCommunityChallengeOnBoot(bot);
     await startTrackerJobsOnBoot(bot);
     const validation = await validateStartup(bot);
     if (validation.status === 'not_ready') throw new Error('Startup validation found an essential failure.');

@@ -1,0 +1,24 @@
+OUTPOST X WATCHER — RAILWAY DEPLOYMENT HANDOFF
+
+IMPORTANT FIRST ROLLOUT
+1. Deploy this version once with Railway overlap disabled/default.
+2. Wait until Watcher is fully online.
+3. Then configure the settings below for future deployments.
+
+RAILWAY SERVICE SETTINGS
+- Healthcheck path: /health
+- Healthcheck timeout: 180 seconds
+- Overlap time: 30 seconds
+- Draining time: 20 seconds
+
+HOW IT WORKS
+- The new deployment starts the Command Center HTTP server first.
+- A Supabase lease ensures only one deployment logs into Discord and runs Watcher jobs.
+- During future overlap deployments, the incoming deployment requests a controlled handoff.
+- The outgoing deployment releases its lease and exits; the incoming deployment takes leadership.
+- /health returns HTTP 200 only when the new deployment owns the lease, Discord is ready, startup data loaded, and Watcher jobs have started.
+
+OPTIONAL VARIABLES
+WATCHER_DEPLOYMENT_LEASE_MS=45000
+
+Do not use the same Discord bot token in a second unrelated Railway service. The lease only coordinates deployments that share this Supabase runtime-state table.

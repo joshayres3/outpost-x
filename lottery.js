@@ -40,6 +40,103 @@ let cachedItemsAt = 0;
 
 const LOTTERY_PACKS = [
   {
+    id: "field_medic",
+    name: "The Field Medic Pack",
+    items: [
+      { label: "Emergency_bandage_Big", qty: 2, fallback: "Emergency_bandage_Big", aliases: ["Emergency_bandage_Big"] },
+      { label: "Tourniquet", qty: 2, fallback: "Tourniquet", aliases: ["Tourniquet"] },
+      { label: "Antibiotics_01", qty: 1, fallback: "Antibiotics_01", aliases: ["Antibiotics_01"] },
+      { label: "Painkillers_01", qty: 1, fallback: "Painkillers_01", aliases: ["Painkillers_01"] },
+    ],
+  },
+  {
+    id: "roadside_rescue",
+    name: "The Roadside Rescue Pack",
+    items: [
+      { label: "Gasoline_Canister", qty: 1, fallback: "Gasoline_Canister", aliases: ["Gasoline_Canister"] },
+      { label: "Tire_Repair_Kit", qty: 1, fallback: "Tire_Repair_Kit", aliases: ["Tire_Repair_Kit"] },
+      { label: "Car_Battery_Cables", qty: 1, fallback: "Car_Battery_Cables", aliases: ["Car_Battery_Cables"] },
+      { label: "Air_Pump", qty: 1, fallback: "Air_Pump", aliases: ["Air_Pump"] },
+    ],
+  },
+  {
+    id: "workshop_cache",
+    name: "The Workshop Cache",
+    items: [
+      { label: "Tool_Box", qty: 1, fallback: "Tool_Box", aliases: ["Tool_Box"] },
+      { label: "Duct_Tape", qty: 2, fallback: "Duct_Tape", aliases: ["Duct_Tape"] },
+      { label: "Screwdriver", qty: 1, fallback: "Screwdriver", aliases: ["Screwdriver"] },
+      { label: "1H_Crowbar", qty: 1, fallback: "1H_Crowbar", aliases: ["1H_Crowbar"] },
+    ],
+  },
+  {
+    id: "builders_delivery",
+    name: "The Builder's Delivery",
+    items: [
+      { label: "Nails_Package_Box", qty: 2, fallback: "Nails_Package_Box", aliases: ["Nails_Package_Box"] },
+      { label: "Bolts_Package_Box", qty: 2, fallback: "Bolts_Package_Box", aliases: ["Bolts_Package_Box"] },
+      { label: "Bundle_Wooden_Plank", qty: 2, fallback: "Bundle_Wooden_Plank", aliases: ["Bundle_Wooden_Plank"] },
+      { label: "Metal_Scrap_01", qty: 5, fallback: "Metal_Scrap_01", aliases: ["Metal_Scrap_01"] },
+      { label: "CementBag", qty: 1, fallback: "CementBag", aliases: ["CementBag"] },
+    ],
+  },
+  {
+    id: "survivors_pantry",
+    name: "The Survivor's Pantry",
+    items: [
+      { label: "MRE_Cheeseburger", qty: 1, fallback: "MRE_Cheeseburger", aliases: ["MRE_Cheeseburger"] },
+      { label: "MRE_Stew", qty: 1, fallback: "MRE_Stew", aliases: ["MRE_Stew"] },
+      { label: "CannedGoulash", qty: 2, fallback: "CannedGoulash", aliases: ["CannedGoulash"] },
+      { label: "Canteen", qty: 1, fallback: "Canteen", aliases: ["Canteen"] },
+      { label: "Energy_Drink_Red_Ghoul", qty: 2, fallback: "Energy_Drink_Red_Ghoul", aliases: ["Energy_Drink_Red_Ghoul"] },
+    ],
+  },
+  {
+    id: "m9_sidearm_kit",
+    name: "The M9 Sidearm Kit",
+    items: [
+      { label: "Weapon_M9", qty: 1, fallback: "Weapon_M9", aliases: ["Weapon_M9"] },
+      { label: "Magazine_M9", qty: 2, fallback: "Magazine_M9", aliases: ["Magazine_M9"] },
+      { label: "Cal_9mm_Ammobox", qty: 1, fallback: "Cal_9mm_Ammobox", aliases: ["Cal_9mm_Ammobox"] },
+    ],
+  },
+  {
+    id: "mp5_patrol_kit",
+    name: "The MP5 Patrol Kit",
+    items: [
+      { label: "Weapon_MP5", qty: 1, fallback: "Weapon_MP5", aliases: ["Weapon_MP5"] },
+      { label: "Magazine_MP5", qty: 2, fallback: "Magazine_MP5", aliases: ["Magazine_MP5"] },
+      { label: "Cal_9mm_Ammobox", qty: 2, fallback: "Cal_9mm_Ammobox", aliases: ["Cal_9mm_Ammobox"] },
+    ],
+  },
+  {
+    id: "aks74u_patrol_kit",
+    name: "The AKS-74U Patrol Kit",
+    items: [
+      { label: "Weapon_AKS_74U", qty: 1, fallback: "Weapon_AKS_74U", aliases: ["Weapon_AKS_74U"] },
+      { label: "Magazine_AKS_74U", qty: 2, fallback: "Magazine_AKS_74U", aliases: ["Magazine_AKS_74U"] },
+      { label: "Cal_5_45x39mm_Ammobox", qty: 2, fallback: "Cal_5_45x39mm_Ammobox", aliases: ["Cal_5_45x39mm_Ammobox"] },
+    ],
+  },
+  {
+    id: "ump45_patrol_kit",
+    name: "The UMP-45 Patrol Kit",
+    items: [
+      { label: "Weapon_UMP45", qty: 1, fallback: "Weapon_UMP45", aliases: ["Weapon_UMP45"] },
+      { label: "Magazine_UMP45", qty: 2, fallback: "Magazine_UMP45", aliases: ["Magazine_UMP45"] },
+      { label: "Cal_45_Ammobox", qty: 2, fallback: "Cal_45_Ammobox", aliases: ["Cal_45_Ammobox"] },
+    ],
+  },
+  {
+    id: "m1887_defense_kit",
+    name: "The M1887 Defense Kit",
+    items: [
+      { label: "Weapon_M1887", qty: 1, fallback: "Weapon_M1887", aliases: ["Weapon_M1887"] },
+      { label: "12_Gauge_Buckshot_Ammobox", qty: 2, fallback: "12_Gauge_Buckshot_Ammobox", aliases: ["12_Gauge_Buckshot_Ammobox"] },
+      { label: "Weapon_Cleaning_Kit", qty: 1, fallback: "Weapon_Cleaning_Kit", aliases: ["Weapon_Cleaning_Kit"] },
+    ],
+  },
+  {
     id: "jackpot",
     name: "The Jackpot",
     items: [

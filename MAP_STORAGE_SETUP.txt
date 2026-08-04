@@ -1,0 +1,33 @@
+OUTPOST X MAP STORAGE - ONE-TIME SETUP
+
+Purpose
+- Removes the large surveillance map files and tiles from Railway deployments.
+- Browsers load those static files from a public Supabase Storage bucket/CDN instead.
+- Railway keeps the same /tracker/map.png and /tracker/tiles/... addresses, which redirect to storage when local files are absent.
+
+One-time upload
+1. Use the separate MAP_ASSETS_UPLOAD_ONCE ZIP supplied with this release.
+2. Extract it on your computer.
+3. Open a terminal in the extracted folder.
+4. Set these environment variables for that terminal:
+   SUPABASE_URL=<your existing Supabase project URL>
+   SUPABASE_SERVICE_ROLE_KEY=<your Supabase service-role key>
+5. Run:
+   npm install
+   npm run upload:map-assets
+
+The uploader creates a PUBLIC bucket named outpost-x-static and uploads everything below maps/ with one-year browser cache headers.
+
+Railway deployment
+- Deploy the new slim full merged project only AFTER the upload finishes successfully.
+- No new Railway variable is required when using the default bucket and folder because Watcher derives the public URL from SUPABASE_URL.
+- Optional explicit override:
+  PORTAL_MAP_ASSET_BASE_URL=https://YOUR_PROJECT.supabase.co/storage/v1/object/public/outpost-x-static/maps
+
+Optional custom names
+  PORTAL_MAP_STORAGE_BUCKET=outpost-x-static
+  PORTAL_MAP_STORAGE_PREFIX=maps
+
+Security
+- Do not put the service-role key into the project ZIP, GitHub, Discord, or the browser.
+- The service-role key is only needed for the one-time upload. Railway can continue using its existing Supabase variables.

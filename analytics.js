@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const { DateTime } = require('luxon');
 const { getOnlinePlayers, getServerSummary } = require('./ggcon');
+const { getCommunityChallenge, postCommunityChallenge, progressText, contributorRows, handlePrivateTestCommand } = require('./communityChallenge');
 
 const TZ = process.env.WATCHER_TIMEZONE || 'America/Toronto';
 const MAIN_CHAT_ID = process.env.MAIN_CHAT_CHANNEL_ID || '1516269437932670977';
@@ -109,6 +110,8 @@ async function buildDailyStory(guild, date = nowEt()) {
   if (services.length) lines.push(`${services.join(', ')} were processed by The Watcher.`);
   if (lottery.length) lines.push(`The lottery selected **${lottery.length}** winner${lottery.length === 1 ? '' : 's'}.`);
   if (ticketsOpened || ticketsClosed) lines.push(`Support handled **${ticketsOpened}** new ticket${ticketsOpened === 1 ? '' : 's'} and closed **${ticketsClosed}**.`);
+  const communityChallenge = await getCommunityChallenge(guild.id, date).catch(() => null);
+  if (communityChallenge) lines.push(`🎯 **Weekly Community Challenge — ${communityChallenge.title}**\n${progressText(communityChallenge)}`);
   if (!lines.length) lines.push('The island was unusually quiet. The Watcher remains suspicious.');
   const closers = ['Another day survived. Questionable decisions were recorded.', 'Outpost X remains standing. Somehow.', 'The Watcher observed everything and judged most of it.', 'The island tried. The Exiles tried harder.'];
   lines.push(closers[Math.floor(Math.random() * closers.length)]);
@@ -222,6 +225,13 @@ async function buildWeeklyAwards(guild, date = nowEt()) {
   await addAward(awards, guild, topBy(gasPurchases, 'steam_id'), '⛽', 'Running on Fumes',
     total => `Bought **${total}** Emergency Gas can${total === 1 ? '' : 's'}.`,
     ['Fuel planning remains an emerging skill.', 'The red warning light is apparently decorative.', 'Once again rescued by a canister and poor foresight.']);
+
+  const communityChallenge = await getCommunityChallenge(guild.id, date).catch(() => null);
+  if (communityChallenge) {
+    const leaders = contributorRows(communityChallenge).slice(0, 3);
+    const leaderText = leaders.length ? leaders.map((row, index) => `${index + 1}. ${row.name} — ${row.count}`).join(' • ') : 'No qualifying kills yet.';
+    awards.unshift(`🎯 **Weekly Community Challenge — ${communityChallenge.title}**\n${progressText(communityChallenge)}\nTop contributors: ${leaderText}`);
+  }
 
   if (!awards.length) {
     awards.push('No awards qualified this week. The Watcher expects more questionable ambition next week.');
@@ -391,8 +401,9 @@ function startAnalyticsOnBoot(bot) {
 }
 async function handleAnalyticsCommand(message) {
   if (!message.guild || !message.content?.startsWith('!')) return false;
+  if (await handlePrivateTestCommand(message)) return true;
   const cmd=message.content.trim().split(/\s+/)[0].toLowerCase();
-  if (!['!pulsesetup','!pulsestatus','!storynow','!awardsnow'].includes(cmd)) return false;
+  if (!['!pulsesetup','!pulsestatus','!storynow','!awardsnow','!challengenow'].includes(cmd)) return false;
   if (!isStaff(message.member)) { await message.reply('Only Watcher staff can use that command.'); return true; }
   if (cmd === '!pulsesetup') {
     const existing = await getConfig(message.guild.id);
@@ -420,6 +431,7 @@ async function handleAnalyticsCommand(message) {
   if (cmd === '!pulsestatus') { const c=await getConfig(message.guild.id); await message.reply(c?.pulse_channel_id?`Pulse is posted in <#${c.pulse_channel_id}>.`:'The Activity Pulse has not been set up yet.'); return true; }
   if (cmd === '!storynow') { await postDaily(message.client,message.guild,true); await message.reply('Daily Server Story posted in Main Chat.'); return true; }
   if (cmd === '!awardsnow') { await postAwards(message.client,message.guild,true); await message.reply('Weekly Awards posted in Main Chat.'); return true; }
+  if (cmd === '!challengenow') { await postCommunityChallenge(message.guild); await message.reply('Community Challenge progress posted in Main Chat.'); return true; }
   return false;
 }
 module.exports={startAnalyticsOnBoot,handleAnalyticsCommand};

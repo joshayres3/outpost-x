@@ -1,0 +1,32 @@
+OUTPOST X WATCHER — STABILIZATION RELEASE
+
+This release intentionally adds no safe-test mode.
+
+Core changes
+- GGCON request client split into focused modules under ggcon/.
+- Standard timeouts, structured errors, safe GET retry policy, and authentication lockout protection.
+- Structured JSON logging with secret/IP redaction and request IDs.
+- Startup validation for environment, Supabase, GGCON, Discord, and configured channels.
+- /health now reports ready, degraded, or not_ready with validation detail.
+- Server Shop idempotency persisted through watcher_runtime_state.
+- Purchase lifecycle stages persisted during processing.
+- Focused portal read endpoints added for bootstrap, account, and dashboard data.
+- Admin tools grouped into Players, World, Economy, Events, and System/Moderation.
+- Consistent confirmations added to direct teleport, kick, and admin spawning.
+- Scheduler reports next run, duration, consecutive failures, and leader-only skips.
+- Automated tests cover GGCON success, explicit failure, auth lockout, and transaction state transitions.
+
+Deployment
+- No new SQL is required.
+- No new Railway variables are required.
+- Existing watcher_runtime_state is used for idempotency records.
+- Keep /health configured as the Railway healthcheck after the first leader-aware deployment.
+
+Recommended post-deployment checks
+1. Open /health and confirm status is ready or degraded, not not_ready.
+2. Open Command Center dashboard and Account pages.
+3. Search a player in Admin Tools and verify grouped navigation.
+4. Make one low-cost Server Shop purchase while online.
+5. Confirm the transaction appears once and the balance is deducted once.
+6. Run one safe admin item spawn.
+7. Review System Health and scheduler rows.
