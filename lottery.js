@@ -1044,11 +1044,8 @@ async function runLotteryDraw(bot, config, options = {}) {
       await updateDraw(draw.id, { status: "no_eligible", claim_status: "none" });
       const message = "🎟️ The Outpost X Lottery ended with no eligible players online. Better luck next hour!";
       await sendGameMessage(message).catch(() => {});
-      await postLotteryLogChannel(bot, config, [
-        "🎟️ **Outpost X Lottery**",
-        "No eligible registered players were online for this draw.",
-        "Better luck next hour.",
-      ].join("\n"));
+      // Routine draw-status posts are intentionally not sent to Discord. The
+      // configured lottery channel is reserved for winners and claim results.
       return { ran: true, status: "no_eligible", eligibleCount: 0 };
     }
 
@@ -1104,18 +1101,12 @@ async function runLotteryDraw(bot, config, options = {}) {
           dm_error: String(dmErr?.message || dmErr),
           cancelled_at: new Date().toISOString(),
         });
-        await postLotteryLogChannel(bot, config, [
-          "⚠️ **Lottery DM failed**",
-          `Player: **${winner.scumName}**`,
-          `Discord: <@${winner.link.discord_id}>`,
-          "Watcher could not DM this player, so they were skipped for this draw.",
-          remaining.length ? "Trying another eligible player." : "No other eligible players remain.",
-        ].join("\n"));
+        // Do not post routine draw-attempt status to Discord. Railway logs and
+        // persisted draw records retain the failure details for staff review.
       }
     }
 
     await updateDraw(draw.id, { status: "dm_failed", dm_status: "failed", claim_status: "none" });
-    await postLotteryLogChannel(bot, config, "⚠️ **Lottery ended:** eligible players were found, but Watcher could not DM any selected winner.");
     return { ran: true, status: "dm_failed" };
   } catch (err) {
     await updateDraw(draw.id, { status: "failed", error_info: { message: err.message, stack: err.stack?.slice(0, 1000) } }).catch(() => {});
@@ -1627,7 +1618,8 @@ async function startLotteryOnBoot(bot) {
   });
   if (!config?.enabled) return;
   startLotteryTimers(bot);
-  await postLotteryLogChannel(bot, config, "🎟️ Lottery scheduler is online. Hourly draws remain active.").catch(() => {});
+  // Startup/status noise is intentionally kept out of Discord. Winner and
+  // claim messages continue to use the configured lottery result channel.
 }
 
 async function awardChallengePack(guildId, steamId) {

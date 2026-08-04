@@ -16,7 +16,7 @@ const { runScumBan, runScumUnban } = require('./moderationActions');
 const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog, getCatalogItemsByClass } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
-const { getKillRaceAdminStatus, startKillRaceFromPortal, stopKillRaceFromPortal } = require('./communityChallenge');
+const { getCommunityChallenge, getKillRaceAdminStatus, startKillRaceFromPortal, stopKillRaceFromPortal } = require('./communityChallenge');
 const { portalCreateRental } = require('./rentals');
 const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance } = require('./insurance');
 const { portalCreateShop, portalUpdateShop, portalToggleShop, portalDeleteShop, portalSetShopImages, portalAdminShop } = require('./playerShops');
@@ -1676,7 +1676,8 @@ async function handleHttp(req, res) {
       await requirePermission(session, 'manage_events');
       const special = await getSpecialEventAdminStatus();
       const killRace = await getKillRaceAdminStatus(session.guildId);
-      return json(res, 200, { ...special, killRace });
+      const communityChallenge = await getCommunityChallenge(session.guildId).catch(() => null);
+      return json(res, 200, { ...special, killRace, communityChallenge });
     } catch (err) { return json(res, 403, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/admin/event-triggers' && req.method === 'POST') {

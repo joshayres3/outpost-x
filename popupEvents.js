@@ -489,9 +489,10 @@ function formatRemaining(ms) {
 }
 
 async function logToDiscord(bot, state, text) {
-  if (!state?.logChannelId) return;
-  const channel = await bot.channels.fetch(String(state.logChannelId)).catch(() => null);
-  if (channel?.send) await channel.send(text).catch(() => {});
+  // The former Watcher Events Discord status channel was retired. Popup-event
+  // status remains available in Railway logs and the portal, but is not posted
+  // to any replacement Discord channel.
+  return null;
 }
 
 function chooseReward() {
