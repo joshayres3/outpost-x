@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const { EmbedBuilder } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const { DateTime } = require('luxon');
-const { ggconGet, getOnlinePlayers } = require('./ggcon');
+const { ggconGet, getOnlinePlayers, ggconPost } = require('./ggcon');
 const { isPopupEventActive } = require('./popupEvents');
 const { awardChallengePack } = require('./lottery');
 
@@ -351,13 +351,26 @@ async function saveRaceHistory(guildId, race) {
   await stateSet(key, history);
 }
 
+function raceScumText(race, heading) {
+  const leader = raceRows(race)[0];
+  const time = raceTimeText(race).replace(/[*_`~]/g, '');
+  if (race.status === 'won') {
+    return `[Watcher] ${heading}: ${race.winner?.name || 'A survivor'} won ${race.title} with ${race.target}/${race.target}. Prize: ${race.prize?.name || 'lottery pack'}.`;
+  }
+  if (race.status === 'expired') {
+    return `[Watcher] ${heading}: ${race.title} ended.${leader ? ` Top survivor: ${leader.name} ${leader.count}/${race.target}.` : ' No qualifying kills were recorded.'}`;
+  }
+  return `[Watcher] ${heading}: First to ${race.target} ${race.label} wins a random lottery pack.${leader ? ` Leader: ${leader.name} ${leader.count}/${race.target}.` : ''} ${time}`;
+}
+
 async function sendRacePost(guild, race, heading) {
-  // Trivia owns the in-game attention window. The race keeps counting, but its
-  // Discord announcement waits until the trivia question has finished.
+  // Trivia owns the public attention window. Counting continues, but both the
+  // Discord and SCUM announcements wait until the active trivia question ends.
   if (isPopupEventActive()) return false;
   const channel = await guild.channels.fetch(MAIN_CHAT_ID).catch(() => null);
   if (!channel?.isTextBased()) return false;
   await channel.send({ embeds: [buildRaceEmbed(race, heading)] });
+  await ggconPost('/command', { command: `#Broadcast Cyan ${raceScumText(race, heading)}` }, { requireConfirmed: true });
   return true;
 }
 
@@ -534,6 +547,40 @@ async function handleRaceChallengeCommand(message) {
   return true;
 }
 
+
+async function getKillRaceAdminStatus(guildId) {
+  const { race } = await loadRace(guildId);
+  return {
+    race: race || null,
+    rotation: RACE_ROTATION.map(item => ({ ...item })),
+    durationHours: RACE_DURATION_HOURS,
+  };
+}
+
+async function startKillRaceFromPortal(guild, type = '') {
+  const existing = (await loadRace(guild.id)).race;
+  if (existing?.status === 'active') throw new Error(`A kill race is already active: ${existing.title}.`);
+  const normalized = String(type || '').trim().toLowerCase();
+  const definition = RACE_ROTATION.find(item => item.id === normalized || item.category === normalized || item.id.includes(normalized))
+    || raceDefinitionForDay(nowEt(), (await loadRaceDaily(guild.id)).daily.started);
+  const { race } = await createRace(guild, nowEt(), definition);
+  // The normal processor performs the dual Discord + in-game announcement and
+  // will defer it safely if trivia is active.
+  await processRace(guild);
+  return { ok: true, race: (await loadRace(guild.id)).race || race };
+}
+
+async function stopKillRaceFromPortal(guild) {
+  const { key, race } = await loadRace(guild.id);
+  if (!race || race.status !== 'active') throw new Error('No active kill race.');
+  race.status = 'expired';
+  race.endedAt = new Date().toISOString();
+  race.updatedAt = race.endedAt;
+  await stateSet(key, race);
+  await processRace(guild);
+  return { ok: true, race: (await loadRace(guild.id)).race || race };
+}
+
 async function processGuild(guild) {
   const { key, challenge } = await loadChallenge(guild.id);
   const data = await ggconGet('/kill-feed/history.json?range=session');
@@ -622,4 +669,7 @@ module.exports = {
   handleRaceChallengeCommand,
   getKillRaceSummary,
   buildRaceEmbed,
+  getKillRaceAdminStatus,
+  startKillRaceFromPortal,
+  stopKillRaceFromPortal,
 };

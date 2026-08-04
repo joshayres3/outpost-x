@@ -16,6 +16,7 @@ const { runScumBan, runScumUnban } = require('./moderationActions');
 const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog, getCatalogItemsByClass } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
+const { getKillRaceAdminStatus, startKillRaceFromPortal, stopKillRaceFromPortal } = require('./communityChallenge');
 const { portalCreateRental } = require('./rentals');
 const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance } = require('./insurance');
 const { portalCreateShop, portalUpdateShop, portalToggleShop, portalDeleteShop, portalSetShopImages, portalAdminShop } = require('./playerShops');
@@ -1671,12 +1672,24 @@ async function handleHttp(req, res) {
   }
 
   if (url.pathname === '/portal/api/admin/event-triggers' && req.method === 'GET') {
-    try { await requirePermission(session, 'manage_events'); return json(res, 200, await getSpecialEventAdminStatus()); }
-    catch (err) { return json(res, 403, { error: err.message }); }
+    try {
+      await requirePermission(session, 'manage_events');
+      const special = await getSpecialEventAdminStatus();
+      const killRace = await getKillRaceAdminStatus(session.guildId);
+      return json(res, 200, { ...special, killRace });
+    } catch (err) { return json(res, 403, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/admin/event-triggers' && req.method === 'POST') {
-    try { await requirePermission(session, 'manage_events'); const body = await readJsonBody(req); return json(res, 200, await triggerSpecialEvent(body.action, { ...(body.options || {}), createdBy: session.discordId })); }
-    catch (err) { return json(res, 400, { error: err.message }); }
+    try {
+      await requirePermission(session, 'manage_events');
+      const body = await readJsonBody(req);
+      const action = String(body.action || '').toLowerCase();
+      const guild = botRef?.guilds?.cache?.get(String(session.guildId));
+      if ((action === 'kill-race-start' || action === 'kill-race-stop') && !guild) throw new Error('Discord guild is unavailable.');
+      if (action === 'kill-race-start') return json(res, 200, await startKillRaceFromPortal(guild, body.options?.type || ''));
+      if (action === 'kill-race-stop') return json(res, 200, await stopKillRaceFromPortal(guild));
+      return json(res, 200, await triggerSpecialEvent(body.action, { ...(body.options || {}), createdBy: session.discordId }));
+    } catch (err) { return json(res, 400, { error: err.message }); }
   }
 
   if (url.pathname === '/portal/api/admin/shop/products' && req.method === 'GET') {
