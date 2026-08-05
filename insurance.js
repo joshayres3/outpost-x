@@ -1345,6 +1345,19 @@ async function handleInsuranceInteraction(interaction) {
 }
 
 
+async function portalStartRegistration(ctx) {
+  const code = await generateCode(ctx.guildId);
+  const expires = await savePendingLink({
+    guildId: String(ctx.guildId),
+    user: {
+      id: String(ctx.discordId),
+      tag: ctx.displayName || 'Portal User',
+      username: ctx.displayName || 'Portal User',
+    },
+  }, code);
+  return { ok: true, code, expiresAt: expires };
+}
+
 function portalInteraction(ctx){
   let last=null;
   const capture=async payload=>{last=payload;return payload;};
@@ -1388,4 +1401,4 @@ async function portalInsuranceOptions(ctx){
 async function portalBuyInsurance(ctx,vehicleId){const i=portalInteraction(ctx);await confirmBuy(i,String(vehicleId));const content=String(i.result?.content||'');if(!content.startsWith('✅'))throw new Error(content||'Insurance purchase failed.');return{ok:true,message:content};}
 async function portalRedeemInsurance(ctx,claimId){const i=portalInteraction(ctx);await redeemClaim(i,String(claimId));const content=String(i.result?.content||'');if(!content.startsWith('✅'))throw new Error(content||'Insurance claim failed.');return{ok:true,message:content};}
 
-module.exports = { handleInsuranceCommand, handleInsuranceInteraction, startInsuranceOnBoot, processInsuranceDestructionEvents, portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance }; 
+module.exports = { handleInsuranceCommand, handleInsuranceInteraction, startInsuranceOnBoot, processInsuranceDestructionEvents, portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance, portalStartRegistration }; 

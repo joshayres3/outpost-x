@@ -9,7 +9,7 @@ const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedP
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
 const { portalCreateRental } = require('./rentals');
-const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance } = require('./insurance');
+const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance, portalStartRegistration } = require('./insurance');
 const { portalCreateShop, portalUpdateShop, portalToggleShop, portalDeleteShop, portalSetShopImages, portalAdminShop } = require('./playerShops');
 const { portalCreateSquad, portalUpdateSquad, portalToggleSquad, portalDeleteSquad, portalAdminSquad } = require('./squadFinder');
 const { portalCreateLore, portalUpdateLore, portalToggleLore, portalDeleteLore, portalSetLoreImages, portalAdminLore } = require('./playerLore');
@@ -33,6 +33,9 @@ const {
 } = require('discord.js');
 
 const DEFAULT_GGCON_BASE_URL = 'https://ggcon.gghost.games/s/2788404';
+const PORTAL_DISCORD_GUILD_ID = process.env.WATCHER_GUILD_ID || '1516269432538661025';
+const PORTAL_REGISTER_CHANNEL_ID = process.env.WATCHER_REGISTER_CHANNEL_ID || '1517255357888466964';
+const PORTAL_REGISTER_URL = `https://discord.com/channels/${PORTAL_DISCORD_GUILD_ID}/${PORTAL_REGISTER_CHANNEL_ID}`;
 const MOVEMENT_TABLE = process.env.TRACKER_MOVEMENT_TABLE || 'watcher_player_movement';
 const PLAYERS_TABLE = process.env.TRACKER_PLAYERS_TABLE || 'watcher_tracker_players';
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || 'watcher_player_links';
@@ -657,7 +660,7 @@ async function buildPortalOverview(session) {
   }
   const shopCatalog = await getPortalCatalog(session.guildId);
   return {
-    me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,registered:!!steamId,permissions,permissionCatalog:session.isOwner?permissionCatalog():[],sessionExpiresAt:new Date(session.expiresAt).toISOString()},
+    me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,registered:!!steamId,permissions,permissionCatalog:session.isOwner?permissionCatalog():[],sessionExpiresAt:new Date(session.expiresAt).toISOString()},registrationUrl:PORTAL_REGISTER_URL,
     player:{steamId:steamId||null,name:link?.scum_name||playerDetail?.characterName||playerDetail?.name||onlineSample?.name||null,online:!!onlineSample,cash:playerCash(playerDetail),fame:playerFame(playerDetail)},
     vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
     airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,
@@ -969,6 +972,12 @@ async function handleHttp(req, res) {
 
   if (url.pathname === '/tracker/health') return json(res, 200, { ok: true });
 
+  // Registration can be completed directly inside the portal.
+  if (url.pathname === '/portal/player-registration' || url.pathname === '/portal/register') {
+    res.writeHead(302, { Location: '/portal?section=dashboard', 'Cache-Control': 'no-store' });
+    return res.end();
+  }
+
   let session = getSession(req);
   if (session) session = await refreshPortalSessionAccess(session, url.pathname === '/portal');
   if (!session) {
@@ -1014,7 +1023,7 @@ async function handleHttp(req, res) {
 
   if (registrationRequiredPortalPath(url.pathname, req.method)) {
     try { await requireRegisteredPortalPlayer(session); }
-    catch (err) { return json(res, 403, { error: err.message, registrationRequired: true }); }
+    catch (err) { return json(res, 403, { error: err.message, registrationRequired: true, registrationUrl: PORTAL_REGISTER_URL }); }
   }
 
   if (url.pathname === '/portal/api/overview') {
