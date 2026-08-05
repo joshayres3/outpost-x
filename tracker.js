@@ -2,27 +2,18 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const http = require('http');
-const net = require('net');
-const zlib = require('zlib');
 const { URL } = require('url');
 const { createClient } = require('@supabase/supabase-js');
 const { MAP_CALIBRATION } = require('./mapCalibration');
-const watcherScheduler = require('./watcherScheduler');
-const deploymentCoordinator = require('./deploymentCoordinator');
-const startupValidation = require('./startupValidation');
-const { validateItemClasses, getItemCatalogStatus } = require('./itemCatalog');
-const popupRewardQueue = require('./popupRewardQueue');
-const { runScumBan, runScumUnban } = require('./moderationActions');
-const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog, getCatalogItemsByClass } = require('./shop');
+const { getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, deleteManagedProduct, searchItemCatalog } = require('./shop');
 const { getAdminPermissions, saveAdminPermissions, canUse, permissionCatalog } = require('./ownerControls');
 const { getSpecialEventAdminStatus, triggerSpecialEvent } = require('./watcherSpecialEvents');
-const { getCommunityChallenge, getKillRaceAdminStatus, startKillRaceFromPortal, stopKillRaceFromPortal } = require('./communityChallenge');
 const { portalCreateRental } = require('./rentals');
-const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance } = require('./insurance');
+const { portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance, portalStartRegistration } = require('./insurance');
 const { portalCreateShop, portalUpdateShop, portalToggleShop, portalDeleteShop, portalSetShopImages, portalAdminShop } = require('./playerShops');
 const { portalCreateSquad, portalUpdateSquad, portalToggleSquad, portalDeleteSquad, portalAdminSquad } = require('./squadFinder');
 const { portalCreateLore, portalUpdateLore, portalToggleLore, portalDeleteLore, portalSetLoreImages, portalAdminLore } = require('./playerLore');
-const { portalListEvents, portalRsvpEvent, portalCreateEvent, portalUpdateEvent, portalSetEventStatus, portalDeleteEvent, portalRetryEventPost } = require('./events');
+const { portalListEvents, portalRsvpEvent, portalCreateEvent, portalUpdateEvent, portalSetEventStatus, portalDeleteEvent } = require('./events');
 const {
   buildPlayerDetailsBySteamId,
   buildVehiclesBySteamId,
@@ -31,8 +22,6 @@ const {
   buildNearVehiclesBySteamId,
   getPlayerForLookup,
   getPlayerDisplayName,
-  getPlayerIpInfo,
-  getOnlinePlayers,
   jailPlayerBySteamId,
   unjailPlayerBySteamId,
 } = require('./ggcon');
@@ -44,6 +33,9 @@ const {
 } = require('discord.js');
 
 const DEFAULT_GGCON_BASE_URL = 'https://ggcon.gghost.games/s/2788404';
+const PORTAL_DISCORD_GUILD_ID = process.env.WATCHER_GUILD_ID || '1516269432538661025';
+const PORTAL_REGISTER_CHANNEL_ID = process.env.WATCHER_REGISTER_CHANNEL_ID || '1517255357888466964';
+const PORTAL_REGISTER_URL = `https://discord.com/channels/${PORTAL_DISCORD_GUILD_ID}/${PORTAL_REGISTER_CHANNEL_ID}`;
 const MOVEMENT_TABLE = process.env.TRACKER_MOVEMENT_TABLE || 'watcher_player_movement';
 const PLAYERS_TABLE = process.env.TRACKER_PLAYERS_TABLE || 'watcher_tracker_players';
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || 'watcher_player_links';
@@ -57,11 +49,6 @@ const PORTAL_SESSION_DAYS = Math.max(1, Number(process.env.PORTAL_SESSION_DAYS |
 const PORTAL_SESSION_MS = PORTAL_SESSION_DAYS * 24 * 60 * 60 * 1000;
 const PORTAL_ROLE_RECHECK_MS = Math.max(60_000, Number(process.env.PORTAL_ROLE_RECHECK_MINUTES || '15') * 60_000);
 const CLEANUP_MINUTES = Math.max(10, Number(process.env.TRACKER_CLEANUP_MINUTES || '60'));
-const IP_GEOLOOKUP_ENABLED = String(process.env.PORTAL_IP_GEOLOOKUP_ENABLED || 'true').toLowerCase() !== 'false';
-const IP_GEOLOOKUP_BASE_URL = String(process.env.PORTAL_IP_GEOLOOKUP_BASE_URL || 'https://ipwho.is').trim().replace(/\/+$/, '');
-const IP_GEOLOOKUP_CACHE_MS = Math.max(60_000, Number(process.env.PORTAL_IP_GEOLOOKUP_CACHE_HOURS || '24') * 60 * 60 * 1000);
-const ipGeoCache = new Map();
-
 const STAFF_ROLE_NAMES = new Set(
   String(process.env.TRACKER_STAFF_ROLES || 'Owner,Owners,Admin,Trial Admin,Baby Admin')
     .split(',')
@@ -84,36 +71,6 @@ const WORLD = {
 const mapPath = path.join(__dirname, 'tracker-map.png');
 const highResMapPath = path.join(__dirname, 'tracker-map-hi.webp');
 const portalMapTilesPath = path.join(__dirname, 'portal-map-tiles');
-const MAP_STORAGE_BUCKET = String(process.env.PORTAL_MAP_STORAGE_BUCKET || 'outpost-x-static').trim();
-const MAP_STORAGE_PREFIX = String(process.env.PORTAL_MAP_STORAGE_PREFIX || 'maps').trim().replace(/^\/+|\/+$/g, '');
-
-function externalMapAssetBaseUrl() {
-  const explicit = String(process.env.PORTAL_MAP_ASSET_BASE_URL || '').trim().replace(/\/+$/, '');
-  if (explicit) return explicit;
-  const supabaseUrl = String(process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
-  if (!supabaseUrl || !MAP_STORAGE_BUCKET) return '';
-  const bucket = encodeURIComponent(MAP_STORAGE_BUCKET);
-  const prefix = MAP_STORAGE_PREFIX.split('/').filter(Boolean).map(encodeURIComponent).join('/');
-  return `${supabaseUrl}/storage/v1/object/public/${bucket}${prefix ? `/${prefix}` : ''}`;
-}
-
-function externalMapAssetUrl(relativePath) {
-  const base = externalMapAssetBaseUrl();
-  if (!base) return '';
-  const encodedPath = String(relativePath || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
-  return encodedPath ? `${base}/${encodedPath}` : base;
-}
-
-function redirectToMapAsset(res, relativePath) {
-  const target = externalMapAssetUrl(relativePath);
-  if (!target) return false;
-  res.writeHead(302, {
-    Location: target,
-    'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
-  });
-  res.end();
-  return true;
-}
 const htmlPath = path.join(__dirname, 'surveillance.html');
 const portalHtmlPath = path.join(__dirname, 'portal.html');
 const portalCssPath = path.join(__dirname, 'portal.css');
@@ -129,11 +86,8 @@ function portalAssetVersion() {
 
 const portalOutpostPath = path.join(__dirname, 'portal-outpost.jpg');
 const portalWatcherPath = path.join(__dirname, 'portal-watcher.jpg');
-const portalFaviconPath = path.join(__dirname, 'portal-favicon.png');
 const portalStaffAssets = new Map(['josh','nivy','cat','deathbloom','crazylady','oneeyeddude','watcher-staff'].map((name) => [name, path.join(__dirname, `staff-${name}.webp`)]));
 const TRANSACTIONS_TABLE = process.env.WATCHER_TRANSACTIONS_TABLE || 'watcher_transactions';
-const WATCHER_VERSION = String(process.env.WATCHER_VERSION || process.env.RAILWAY_GIT_COMMIT_SHA || require('./package.json').version || 'development').slice(0,12);
-const WATCHER_DEPLOYED_AT = String(process.env.WATCHER_DEPLOYED_AT || process.env.RAILWAY_DEPLOYMENT_ID || 'Current deployment');
 
 let dbClient = null;
 let botRef = null;
@@ -141,16 +95,8 @@ let serverRef = null;
 let sampleTimer = null;
 const portalRevisions = new Map();
 let cleanupTimer = null;
-const responseCache = new Map();
-const inFlight = new Map();
-const revisionStreams = new Map();
-const retryQueue = [];
-let retryWorkerRunning = false;
-const RUNTIME_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || 'watcher_runtime_state';
-const PORTAL_SETTINGS_KEY_PREFIX = 'portal_settings:';
 let sampleRunning = false;
 let latestOnline = new Map();
-const onlineFirstSeen = new Map();
 const lastSaved = new Map();
 const accessTokens = new Map();
 const oauthStates = new Map();
@@ -177,12 +123,6 @@ function bumpPortalRevision(guildId) {
   const current = getPortalRevision(key);
   const next = { value: current.value + 1, updatedAt: Date.now() };
   portalRevisions.set(key, next);
-  responseCache.clear();
-  const listeners = revisionStreams.get(key);
-  if (listeners) {
-    const payload = `event: revision\ndata: ${JSON.stringify(next)}\n\n`;
-    for (const res of [...listeners]) { try { res.write(payload); } catch { listeners.delete(res); } }
-  }
   return next;
 }
 
@@ -496,9 +436,6 @@ async function recordMovementSample() {
       }
     }
 
-    const nowOnlineIds = new Set(online.keys());
-    for (const steamId of nowOnlineIds) if (!onlineFirstSeen.has(steamId)) onlineFirstSeen.set(steamId, nowMs);
-    for (const steamId of [...onlineFirstSeen.keys()]) if (!nowOnlineIds.has(steamId)) onlineFirstSeen.delete(steamId);
     latestOnline = online;
     const db = getDb();
     if (summaryRows.length) {
@@ -640,85 +577,6 @@ async function getRecordedPoint(steamId, recordedAt) {
 }
 
 
-function cacheGet(key) {
-  const item = responseCache.get(key);
-  if (!item || item.expiresAt <= Date.now()) { responseCache.delete(key); return null; }
-  return item.value;
-}
-function cacheSet(key, value, ttlMs) { responseCache.set(key, { value, expiresAt: Date.now() + Math.max(250, ttlMs) }); return value; }
-async function singleFlight(key, fn) {
-  if (inFlight.has(key)) return inFlight.get(key);
-  const promise = Promise.resolve().then(fn).finally(() => inFlight.delete(key));
-  inFlight.set(key, promise);
-  return promise;
-}
-async function cachedFlight(key, ttlMs, fn) {
-  const hit = cacheGet(key); if (hit !== null) return hit;
-  return singleFlight(key, async () => cacheSet(key, await fn(), ttlMs));
-}
-function defaultPortalSettings() {
-  return {
-    maintenanceTitle: String(process.env.PORTAL_MAINTENANCE_TITLE || 'WATCHER NOTICE').trim(),
-    maintenanceMessage: String(process.env.PORTAL_MAINTENANCE_MESSAGE || '').trim(),
-    maintenanceLevel: String(process.env.PORTAL_MAINTENANCE_LEVEL || 'notice').trim().toLowerCase(),
-    announcement: '',
-    features: { purchases:true, rentals:true, airlift:true, insurance:true, eventCreation:true, surveillanceTeleport:true },
-  };
-}
-async function loadPortalSettings(guildId) {
-  const key = `${PORTAL_SETTINGS_KEY_PREFIX}${guildId}`;
-  return cachedFlight(`settings:${key}`, 30_000, async () => {
-    const base = defaultPortalSettings();
-    try {
-      const { data, error } = await getDb().from(RUNTIME_TABLE).select('value').eq('key', key).maybeSingle();
-      if (error) throw error;
-      const value = data?.value || {};
-      return { ...base, ...value, features: { ...base.features, ...(value.features || {}) } };
-    } catch (error) {
-      console.warn(`⚠️ Portal settings fallback: ${error.message}`);
-      return base;
-    }
-  });
-}
-async function savePortalSettings(guildId, input) {
-  const current = await loadPortalSettings(guildId);
-  const next = {
-    ...current,
-    maintenanceTitle: String(input.maintenanceTitle ?? current.maintenanceTitle).slice(0,80),
-    maintenanceMessage: String(input.maintenanceMessage ?? current.maintenanceMessage).slice(0,1000),
-    maintenanceLevel: ['info','notice','critical'].includes(String(input.maintenanceLevel)) ? String(input.maintenanceLevel) : current.maintenanceLevel,
-    announcement: String(input.announcement ?? current.announcement).slice(0,1000),
-    features: { ...current.features, ...(input.features || {}) },
-  };
-  const key = `${PORTAL_SETTINGS_KEY_PREFIX}${guildId}`;
-  const { error } = await getDb().from(RUNTIME_TABLE).upsert({ key, value: next, updated_at: new Date().toISOString() }, { onConflict:'key' });
-  if (error) throw error;
-  responseCache.delete(`settings:${key}`);
-  bumpPortalRevision(guildId);
-  return next;
-}
-async function featureEnabled(guildId, feature) { return (await loadPortalSettings(guildId)).features?.[feature] !== false; }
-async function requireFeature(guildId, feature, label) { if (!(await featureEnabled(guildId, feature))) throw new Error(`${label || feature} is temporarily disabled by the Owner.`); }
-function queueRetry(name, handler, options={}) {
-  retryQueue.push({ id: crypto.randomUUID(), name, handler, attempts:0, maxAttempts:Math.max(1,Number(options.maxAttempts||3)), nextAt:Date.now()+Math.max(1000,Number(options.delayMs||3000)), lastError:null });
-  runRetryWorker().catch(()=>{});
-}
-async function runRetryWorker() {
-  if (retryWorkerRunning) return;
-  retryWorkerRunning = true;
-  try {
-    while (retryQueue.length) {
-      retryQueue.sort((a,b)=>a.nextAt-b.nextAt);
-      const item=retryQueue[0], wait=item.nextAt-Date.now();
-      if(wait>0){await new Promise(r=>setTimeout(r,Math.min(wait,30000)));continue;}
-      retryQueue.shift(); item.attempts++;
-      try { await item.handler(); }
-      catch(error){ item.lastError=String(error?.message||error); if(item.attempts<item.maxAttempts){item.nextAt=Date.now()+Math.min(60000,3000*(2**item.attempts));retryQueue.push(item);} }
-    }
-  } finally { retryWorkerRunning=false; }
-}
-
-
 async function safeRows(table, build) {
   try { const q = build(getDb().from(table)); const { data, error } = await q; if (error) throw error; return data || []; }
   catch (err) { console.warn(`⚠️ Portal could not read ${table}: ${err.message}`); return []; }
@@ -728,86 +586,26 @@ async function portalLink(session) {
   if (error) throw error; return data || null;
 }
 
-const EVENT_TELEPORT_OPEN_MS = 15 * 60 * 1000;
-function eventReturnKey(guildId,eventId,steamId){return `event_return:${String(guildId)}:${String(eventId)}:${String(steamId)}`;}
-function extractPlayerLocation(player){
-  const candidates=[player?.location,player?.position,player?.coordinates,player?.pos,player];
-  for(const c of candidates){
-    const x=Number(c?.x??c?.X),y=Number(c?.y??c?.Y),z=Number(c?.z??c?.Z);
-    if([x,y,z].every(Number.isFinite))return{x,y,z};
+async function requireRegisteredPortalPlayer(session) {
+  if (session?.isAdmin || session?.isOwner) return null;
+  const link = await portalLink(session);
+  const steamId = String(link?.steam_id || '').trim();
+  if (!/^\d{15,20}$/.test(steamId)) {
+    throw new Error('Register your SCUM character in Discord before using Command Center player services.');
   }
-  return null;
+  return link;
 }
-async function getEventForTeleport(session,eventId){
-  const {data,error}=await getDb().from('events').select('*').eq('id',String(eventId||'')).maybeSingle();
-  if(error)throw error;
-  if(!data)throw new Error('This event was removed.');
-  const x=Number(data.coordinate_x),y=Number(data.coordinate_y),z=Number(data.coordinate_z);
-  if(![x,y,z].every(Number.isFinite))throw new Error('This event does not have valid teleport coordinates.');
-  const startsAt=Date.parse(String(data.event_time||''));
-  if(!Number.isFinite(startsAt))throw new Error('This event has an invalid start time.');
-  return{event:data,destination:{x,y,z},startsAt,availableAt:startsAt-EVENT_TELEPORT_OPEN_MS};
-}
-async function getEventReturnState(session,eventId,steamId){
-  const key=eventReturnKey(session.guildId,eventId,steamId);
-  const {data,error}=await getDb().from('watcher_runtime_state').select('value,updated_at').eq('key',key).maybeSingle();
-  if(error)throw error;
-  return data?.value?{...data.value,updatedAt:data.updated_at}:null;
-}
-async function setEventReturnState(session,eventId,steamId,value){
-  const key=eventReturnKey(session.guildId,eventId,steamId);
-  const now=new Date().toISOString();
-  const {error}=await getDb().from('watcher_runtime_state').upsert({key,value,updated_at:now},{onConflict:'key'});
-  if(error)throw error;
-}
-async function clearEventReturnState(session,eventId,steamId){
-  const key=eventReturnKey(session.guildId,eventId,steamId);
-  const {error}=await getDb().from('watcher_runtime_state').delete().eq('key',key);
-  if(error)throw error;
-}
-async function portalEventTeleportState(session,eventId){
-  const link=await portalLink(session);
-  if(!link?.steam_id)throw new Error('Link your SCUM account before using event teleport.');
-  const info=await getEventForTeleport(session,eventId);
-  const saved=await getEventReturnState(session,eventId,link.steam_id);
-  const now=Date.now();
-  return{ok:true,eventId:String(info.event.id),available:now>=info.availableAt,availableAt:new Date(info.availableAt).toISOString(),startsAt:new Date(info.startsAt).toISOString(),hasReturn:!!saved};
-}
-async function portalEventTeleport(session,body={}){
-  const eventId=String(body.id||'').trim();
-  const action=String(body.action||'to').toLowerCase();
-  const link=await portalLink(session);
-  if(!link?.steam_id)throw new Error('Link your SCUM account before using event teleport.');
-  const steamId=String(link.steam_id);
-  const info=await getEventForTeleport(session,eventId);
-  if(Date.now()<info.availableAt)throw new Error(`Event teleport opens 15 minutes before the event starts.`);
-  const player=currentPlayerBySteam(steamId);
-  if(!player)throw new Error('You must be online in SCUM to use event teleport.');
-  if(action==='back'){
-    const saved=await getEventReturnState(session,eventId,steamId);
-    const returnLocation=saved?.location;
-    if(!returnLocation||![returnLocation.x,returnLocation.y,returnLocation.z].every(v=>Number.isFinite(Number(v))))throw new Error('Watcher does not have a saved return position for this event.');
-    const result=await ggconPost(`/players/${encodeURIComponent(steamId)}/teleport`,{x:Number(returnLocation.x),y:Number(returnLocation.y),z:Number(returnLocation.z)});
-    await clearEventReturnState(session,eventId,steamId);
-    return{ok:true,verified:true,action:'back',message:'Returned to your saved pre-event position.',result};
-  }
-  if(action!=='to')throw new Error('Unknown event teleport action.');
-  let saved=await getEventReturnState(session,eventId,steamId);
-  let createdReturn=false;
-  if(!saved){
-    const location=extractPlayerLocation(player);
-    if(!location)throw new Error('Watcher could not verify your current SCUM position. Move a few steps and try again.');
-    saved={eventId:String(info.event.id),eventTitle:String(info.event.title||'Event'),steamId,playerName:link.scum_name||getPlayerDisplayName(player),location,savedAt:new Date().toISOString()};
-    await setEventReturnState(session,eventId,steamId,saved);
-    createdReturn=true;
-  }
-  try{
-    const result=await ggconPost(`/players/${encodeURIComponent(steamId)}/teleport`,info.destination);
-    return{ok:true,verified:true,action:'to',hasReturn:true,message:`Teleported to ${info.event.title||'the event'}. Your return position is saved.`,result};
-  }catch(error){
-    if(createdReturn)await clearEventReturnState(session,eventId,steamId).catch(()=>{});
-    throw error;
-  }
+
+function registrationRequiredPortalPath(pathname, method) {
+  if (!['POST','PUT','PATCH','DELETE'].includes(String(method || 'GET').toUpperCase())) return false;
+  return [
+    '/portal/api/action/',
+    '/portal/api/events/rsvp',
+    '/portal/api/insurance/',
+    '/portal/api/player-shop/',
+    '/portal/api/squad/',
+    '/portal/api/lore/'
+  ].some((prefix) => String(pathname || '').startsWith(prefix));
 }
 function currentPlayerBySteam(steamId) {
   const p = latestOnline.get(String(steamId));
@@ -815,152 +613,6 @@ function currentPlayerBySteam(steamId) {
 }
 function playerCash(p){ const n=Number(p?.accountBalance ?? p?.account_balance ?? p?.cash ?? p?.currency ?? p?.money ?? p?.balance ?? p?.wallet?.balance ?? p?.account?.balance); return Number.isFinite(n)?n:null; }
 function playerFame(p){ const n=Number(p?.famePoints ?? p?.fame ?? p?.fame_points); return Number.isFinite(n)?n:null; }
-async function portalHealthSnapshot(session){
-  return cachedFlight(`health:${session.guildId}`,15000,async()=>{
-  const now=new Date().toISOString();
-  const checks={watcher:{ok:!!botRef?.isReady?.(),detail:botRef?.isReady?.()?'Discord bot connected':'Discord bot is not ready'},supabase:{ok:false,detail:'Not checked'},ggcon:{ok:false,detail:'Not checked'},eventPosting:{ok:false,detail:'Not checked'},surveillance:{ok:!!externalMapAssetBaseUrl(),detail:externalMapAssetBaseUrl()?'Supabase map storage configured':'Map asset URL is not configured'}};
-  try{const {error}=await getDb().from(PLAYER_LINKS_TABLE).select('discord_id').limit(1);if(error)throw error;checks.supabase={ok:true,detail:'Database reachable'};}catch(e){checks.supabase={ok:false,detail:e.message};}
-  try{const data=await ggconGet('/players.json');checks.ggcon={ok:true,detail:`GGCON reachable • ${Array.isArray(data?.players)?data.players.length:0} online`};}catch(e){checks.ggcon={ok:false,detail:e.message};}
-  try{const guild=botRef?.guilds?.cache?.get(String(session.guildId));const channelId=String(process.env.EVENTS_CHANNEL_ID||'');const ch=guild?.channels?.cache?.get(channelId)||await botRef?.channels?.fetch(channelId).catch(()=>null);checks.eventPosting={ok:!!ch?.isTextBased?.(),detail:ch?.isTextBased?.()?`Ready in #${ch.name}`:'Configured event channel is unavailable'};}catch(e){checks.eventPosting={ok:false,detail:e.message};}
-  const settings=await loadPortalSettings(session.guildId);
-  const config={eventsChannel:!!String(process.env.EVENTS_CHANNEL_ID||''),supabase:!!(process.env.SUPABASE_URL&&process.env.SUPABASE_KEY),ggcon:!!process.env.GGCON_PASSWORD,discordOAuth:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),mapStorage:!!externalMapAssetBaseUrl()};
-  return {ok:true,checkedAt:now,version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT,deploymentCoordinator:deploymentCoordinator.state(),checks,config,settings,scheduler:watcherScheduler.snapshot(),retryQueue:retryQueue.map(x=>({id:x.id,name:x.name,attempts:x.attempts,maxAttempts:x.maxAttempts,nextAt:new Date(x.nextAt).toISOString(),lastError:x.lastError}))};
-  });
-}
-async function portalAttentionCounts(session){
-  if(!session.isAdmin)return {};
-  const events=await safeRows('events',q=>q.select('id,channel_id,message_id,status').eq('status','open').limit(250));
-  const failedEvents=events.filter(e=>!e.channel_id||!e.message_id||String(e.message_id)==='portal').length;
-  const failedTransactions=await safeRows(TRANSACTIONS_TABLE,q=>q.select('id').eq('guild_id',String(session.guildId)).eq('status','failed').gte('created_at',new Date(Date.now()-15*86400000).toISOString()).limit(250));
-  const pendingInsurance=await safeRows('watcher_vehicle_insurance',q=>q.select('id').eq('guild_id',String(session.guildId)).in('status',['claim_available','pending']).limit(250));
-  return {total:failedEvents+failedTransactions.length+pendingInsurance.length,failedEvents,failedTransactions:failedTransactions.length,pendingInsurance:pendingInsurance.length};
-}
-
-function isPublicLookupIp(ip) {
-  const value = String(ip || '').trim();
-  const kind = net.isIP(value);
-  if (!kind) return false;
-  if (kind === 4) {
-    const parts = value.split('.').map(Number);
-    const [a,b] = parts;
-    if (a === 10 || a === 127 || a === 0) return false;
-    if (a === 169 && b === 254) return false;
-    if (a === 172 && b >= 16 && b <= 31) return false;
-    if (a === 192 && b === 168) return false;
-    if (a >= 224) return false;
-    return true;
-  }
-  const lower = value.toLowerCase();
-  if (lower === '::1' || lower === '::' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) return false;
-  return true;
-}
-
-function formatApproximateIpLocation(data) {
-  const place = [data.city, data.region, data.country].filter(Boolean).join(', ') || 'Location unavailable';
-  const provider = data.connection?.isp || data.connection?.org || 'Unknown';
-  const asn = data.connection?.asn ? `AS${data.connection.asn}` : 'Unknown';
-  const timezone = data.timezone?.id || data.timezone?.utc || 'Unknown';
-  return [
-    '🌐 Approximate IP Location',
-    '',
-    `IP: ${data.ip || 'Unknown'}`,
-    `Approximate Location: ${place}`,
-    `Provider: ${provider}`,
-    `ASN: ${asn}`,
-    `Time Zone: ${timezone}`,
-    '',
-    'This is an IP-network estimate, not a home address. Mobile networks, VPNs, proxies, and ISP routing can show a different city or region.',
-  ].join('\n');
-}
-
-async function lookupApproximateIp(ip) {
-  if (!IP_GEOLOOKUP_ENABLED) throw new Error('IP location lookup is disabled.');
-  const value = String(ip || '').trim();
-  if (!isPublicLookupIp(value)) throw new Error('No public IP address is available for this player.');
-  const cached = ipGeoCache.get(value);
-  if (cached && cached.expiresAt > Date.now()) return cached.data;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-  timeout.unref?.();
-  try {
-    const endpoint = `${IP_GEOLOOKUP_BASE_URL}/${encodeURIComponent(value)}?fields=ip,success,message,country,region,city,connection,time_zone,timezone`;
-    const response = await fetch(endpoint, { signal: controller.signal, headers: { Accept: 'application/json', 'User-Agent': 'Outpost-X-Watcher/1.0' } });
-    if (!response.ok) throw new Error(response.status === 429 ? 'IP lookup limit reached. Try again later.' : `IP lookup service returned ${response.status}.`);
-    const data = await response.json();
-    if (data?.success === false) throw new Error(data.message || 'IP location lookup failed.');
-    const normalized = {
-      ip: data.ip || value,
-      city: data.city || null,
-      region: data.region || null,
-      country: data.country || null,
-      connection: data.connection || {},
-      timezone: data.timezone || data.time_zone || {},
-      lookedUpAt: new Date().toISOString(),
-    };
-    ipGeoCache.set(value, { data: normalized, expiresAt: Date.now() + IP_GEOLOOKUP_CACHE_MS });
-    return normalized;
-  } catch (err) {
-    if (err?.name === 'AbortError') throw new Error('IP location lookup timed out.');
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function portalAdminIpLocation(session, steamId) {
-  if (!session.isAdmin) throw new Error('Admin access required.');
-  const id = String(steamId || '').trim();
-  if (!/^\d{15,20}$/.test(id)) throw new Error('A valid Steam64 ID is required.');
-  const result = await getPlayerForLookup(id);
-  if (result.type !== 'single') throw new Error('Player could not be found in current or recent server data.');
-  const ipInfo = await getPlayerIpInfo(result.player).catch(() => null);
-  if (!ipInfo?.ip) throw new Error('No recent public IP was found for this player.');
-  const location = await lookupApproximateIp(ipInfo.ip);
-  return {
-    steamId: id,
-    playerName: getPlayerDisplayName(result.player),
-    source: ipInfo.source || 'server data',
-    seenAt: ipInfo.seenAt || null,
-    location,
-    content: formatApproximateIpLocation(location),
-  };
-}
-
-async function portalActiveUnregisteredPlayers(session) {
-  if (!session.isAdmin) throw new Error('Admin access required.');
-  const players = [...latestOnline.values()];
-  if (!players.length) return { players: [], count: 0, sampledAt: new Date().toISOString() };
-  const steamIds = players.map((p) => String(p.steamId || '')).filter(Boolean);
-  const links = await safeRows(PLAYER_LINKS_TABLE, (q) => q.select('steam_id,discord_id,scum_name').eq('guild_id', String(session.guildId)).in('steam_id', steamIds));
-  const linked = new Set(links.map((row) => String(row.steam_id || '')));
-  const now = Date.now();
-  const unknown = players.filter((p) => !linked.has(String(p.steamId))).map((p) => {
-    const firstSeenMs = onlineFirstSeen.get(String(p.steamId)) || now;
-    return {
-      steamId: String(p.steamId),
-      name: p.name || 'Unknown',
-      firstSeenAt: new Date(firstSeenMs).toISOString(),
-      sessionMinutes: Math.max(0, Math.floor((now - firstSeenMs) / 60000)),
-      lastSeenAt: p.seenAt || new Date().toISOString(),
-      status: 'No known Discord registration',
-    };
-  }).sort((a,b) => b.sessionMinutes-a.sessionMinutes || a.name.localeCompare(b.name));
-  return { players: unknown, count: unknown.length, sampledAt: new Date().toISOString(), note: 'Watcher can confirm there is no linked Discord registration. A player may still use a different Discord name.' };
-}
-
-async function portalAdminRecentActivity(session){
-  if(!session.isAdmin)return [];
-  return safeRows(TRANSACTIONS_TABLE,q=>q.select('*').eq('guild_id',String(session.guildId)).gte('created_at',new Date(Date.now()-15*86400000).toISOString()).order('created_at',{ascending:false}).limit(12));
-}
-async function portalBackupExport(session){
-  if(!session.isOwner)throw new Error('Owner access required.');
-  const tables=['events','watcher_server_shop_products','watcher_vehicle_insurance','watcher_dirtbike_rentals','watcher_player_shops','watcher_squad_listings','watcher_player_lore',TRANSACTIONS_TABLE];
-  const data={exportedAt:new Date().toISOString(),watcherVersion:WATCHER_VERSION,guildId:String(session.guildId),tables:{}};
-  for(const table of tables)data.tables[table]=await safeRows(table,q=>{let x=q.select('*');if(table!== 'events')x=x.eq('guild_id',String(session.guildId));return x.limit(5000)});
-  return data;
-}
-
 async function buildPortalOverview(session) {
   const link = await portalLink(session);
   const steamId = String(link?.steam_id || '');
@@ -1007,23 +659,13 @@ async function buildPortalOverview(session) {
     console.warn(`⚠️ Portal vehicle lookup failed for ${steamId}: ${err.message}`);
   }
   const shopCatalog = await getPortalCatalog(session.guildId);
-  const portalSettings = await loadPortalSettings(session.guildId);
   return {
-    me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,permissions,permissionCatalog:session.isOwner?permissionCatalog():[],sessionExpiresAt:new Date(session.expiresAt).toISOString()},
+    me:{discordId:session.discordId,displayName:session.displayName||link?.discord_tag||'Outpost Player',avatar:session.avatar||null,isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,registered:!!steamId,permissions,permissionCatalog:session.isOwner?permissionCatalog():[],sessionExpiresAt:new Date(session.expiresAt).toISOString()},registrationUrl:PORTAL_REGISTER_URL,
     player:{steamId:steamId||null,name:link?.scum_name||playerDetail?.characterName||playerDetail?.name||onlineSample?.name||null,online:!!onlineSample,cash:playerCash(playerDetail),fame:playerFame(playerDetail)},
     vehicles,insurance,rental:rentals.find(r=>['active','removal_pending'].includes(r.status))||rentals[0]||null,
     airlift:{ready:!nextRide||nextRide<=new Date(),nextRide:nextRide?.toISOString()||null},shops,myShop:myShop[0]||null,squads,mySquad:mySquad[0]||null,lore,myLore:myLore[0]||null,events,transactions,
     shopCatalog,
-    mapCalibration: MAP_CALIBRATION,
-    attention: await portalAttentionCounts(session),
-    adminRecentActivity: await portalAdminRecentActivity(session),
-    settings: portalSettings,
-    system:{
-      verifiedAt:new Date().toISOString(),
-      onlinePlayers:latestOnline.size,
-      maintenance:portalSettings.maintenanceMessage?{id:crypto.createHash('sha1').update(portalSettings.maintenanceMessage).digest('hex').slice(0,12),title:portalSettings.maintenanceTitle,message:portalSettings.maintenanceMessage,level:portalSettings.maintenanceLevel}:null
-    },
-    build:{version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT}
+    mapCalibration: MAP_CALIBRATION
   };
 }
 const PORTAL_SECTORS = {D4:[493707,525891],D3:[193707,525891],D2:[-106293,525891],D1:[-406293,525891],D0:[-693133,480558],C4:[493707,225891],C3:[193707,225891],C2:[-152325,290058],C1:[-406293,225891],C0:[-706293,225891],B4:[493707,-74109],B3:[193707,-74109],B2:[-123750,-166083],B1:[-406293,-74109],B0:[-825081,-141941],A4:[493707,-374109],A3:[193707,-374109],A2:[-106293,-374109],A1:[-406293,-374109],A0:[-706293,-374109],Z4:[410705,-755571],Z3:[193707,-674109],Z2:[-106293,-674109],Z1:[-406293,-674109],Z0:[-712773,-706255]};
@@ -1146,11 +788,11 @@ async function portalTaxiSend(session, body) {
     const before = await verifyPortalAirliftReady(session, link, player);
     const [x, y] = PORTAL_SECTORS[sector];
     const z = PORTAL_AIRLIFT_ALTITUDE_Z;
-    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -Math.abs(PORTAL_AIRLIFT_PRICE) });
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -PORTAL_AIRLIFT_PRICE });
     try {
       await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/teleport`, { x, y, z });
     } catch (err) {
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: Math.abs(PORTAL_AIRLIFT_PRICE) }).catch(() => {});
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: PORTAL_AIRLIFT_PRICE }).catch(() => {});
       throw new Error(`Airlift failed and your $${PORTAL_AIRLIFT_PRICE.toLocaleString('en-CA')} was returned. ${err.message}`);
     }
     const now = new Date().toISOString();
@@ -1169,7 +811,7 @@ async function portalRefund(session,body){
   const id=String(body.transactionId||''); const amount=Number(body.amount); const reason=String(body.reason||'').trim(); if(!id||!Number.isFinite(amount)||amount<=0) throw new Error('Enter a valid refund amount.'); if(!reason) throw new Error('A refund reason is required.');
   const {data:tx,error}=await getDb().from(TRANSACTIONS_TABLE).select('*').eq('id',id).eq('guild_id',String(session.guildId)).maybeSingle(); if(error) throw error; if(!tx) throw new Error('Transaction not found.'); if(!tx.refundable) throw new Error('This transaction is not refundable.');
   const max=Math.abs(Number(tx.amount||0))-Number(tx.refunded_amount||0); if(amount>max+0.001) throw new Error(`Maximum remaining refund is $${max.toFixed(2)}.`); if(!tx.steam_id) throw new Error('No linked Steam ID is attached to this transaction.');
-  await ggconPost(`/players/${encodeURIComponent(tx.steam_id)}/currency`,{action:'change',amount:Math.abs(amount)}); const total=Number(tx.refunded_amount||0)+amount; const full=total>=Math.abs(Number(tx.amount||0))-0.001; const now=new Date().toISOString();
+  await ggconPost(`/players/${encodeURIComponent(tx.steam_id)}/currency`,{action:'change',amount}); const total=Number(tx.refunded_amount||0)+amount; const full=total>=Math.abs(Number(tx.amount||0))-0.001; const now=new Date().toISOString();
   const {error:updateError}=await getDb().from(TRANSACTIONS_TABLE).update({refunded_amount:total,refund_status:full?'fully_refunded':'partially_refunded',refunded_by_discord_id:String(session.discordId),refunded_by_name:session.displayName||'Admin',refund_reason:reason,refunded_at:now,updated_at:now}).eq('id',id); if(updateError) throw updateError;
   await getDb().from(TRANSACTIONS_TABLE).insert({guild_id:String(session.guildId),discord_id:tx.discord_id,steam_id:tx.steam_id,player_name:tx.player_name,type:'refund',title:`Refund: ${tx.title}`,amount, currency:'cash',status:'completed',details:{reason,admin:session.displayName||'Admin'},refundable:false,original_transaction_id:tx.id,created_at:now,updated_at:now}); return {ok:true,amount};
 }
@@ -1184,193 +826,16 @@ async function adminSearchPlayers(session, body) {
   const matches=result?.type==='single'?[result.player]:(result?.matches||[]);
   return {players:matches.slice(0,25).map(p=>({steamId:String(p.userId||p.steamId||''),name:getPlayerDisplayName(p),online:!!(p.online===true||p.ping!==undefined),cash:playerCash(p),fame:playerFame(p)}))};
 }
-
-async function portalAbandonedVehicleReview(session, days = 14) {
-  if (!session?.isAdmin) throw new Error('Admin access required.');
-  const thresholdDays = [7, 14, 30].includes(Number(days)) ? Number(days) : 14;
-  const data = await ggconGet('/vehicles.json');
-  const vehicles = Array.isArray(data?.vehicles) ? data.vehicles : [];
-  const now = Date.now();
-  const rows = vehicles.map((vehicle) => {
-    const raw = vehicle?.lastActive;
-    const ms = raw ? new Date(raw).getTime() : NaN;
-    const hasActivity = Number.isFinite(ms);
-    const inactiveDays = hasActivity ? Math.max(0, Math.floor((now - ms) / 86400000)) : null;
-    return {
-      id: String(vehicle?.id ?? ''),
-      name: String(vehicle?.name || vehicle?.class || 'Vehicle'),
-      className: String(vehicle?.class || ''),
-      owner: vehicle?.owner ? String(vehicle.owner) : null,
-      ownerSteamId: vehicle?.ownerSteamId ? String(vehicle.ownerSteamId) : null,
-      rendered: vehicle?.rendered === true,
-      lastActive: hasActivity ? new Date(ms).toISOString() : null,
-      inactiveDays,
-      reviewCandidate: hasActivity && inactiveDays >= thresholdDays,
-      location: vehicle?.location || null,
-      activityStatus: hasActivity ? 'reported' : 'unavailable',
-      ownershipStatus: vehicle?.owner ? 'owned' : 'unowned',
-    };
-  });
-  const candidates = rows.filter((row) => row.reviewCandidate).sort((a, b) => (b.inactiveDays || 0) - (a.inactiveDays || 0));
-  return {
-    thresholdDays,
-    totalVehicles: rows.length,
-    withActivity: rows.filter((row) => row.lastActive).length,
-    withoutActivity: rows.filter((row) => !row.lastActive).length,
-    vehicles: rows,
-    candidates,
-    note: 'Read-only review. Vehicles with lastActive=null are not considered abandoned.',
-  };
-}
-
-
-async function adminCatalogValidation(session) {
-  if (!session?.isAdmin) throw new Error('Admin access required.');
-  const products = await listManagedProducts(session.guildId, false);
-  const packs = [];
-  for (const product of products) {
-    const results = await validateItemClasses(product.items || []);
-    const issues = results.filter((row) => !row.valid || row.issues.length);
-    packs.push({ id: product.id, name: product.name, type: 'Server Shop', itemCount: results.length, issueCount: issues.length, issues });
-  }
-  const status = getItemCatalogStatus();
-  return { checkedAt: new Date().toISOString(), catalog: status, packs, totalIssues: packs.reduce((sum,p)=>sum+p.issueCount,0), note:'Read-only validation. Watcher never changes saved packs automatically.' };
-}
-
-async function adminSpawnPlayers(session) {
-  const players = await getOnlinePlayers();
-  return {
-    players: (Array.isArray(players) ? players : []).map((player) => ({
-      steamId: String(player?.userId || player?.steamId || player?.steam_id || '').trim(),
-      name: getPlayerDisplayName(player, String(player?.userId || player?.steamId || player?.steam_id || 'Unknown')),
-      checkedAt: new Date().toISOString(),
-    })).filter((player) => /^\d{17}$/.test(player.steamId)).sort((a, b) => a.name.localeCompare(b.name)),
-  };
-}
-
-async function adminSpawnVehicleTypes() {
-  const payload = await ggconGet('/vehicle-types.json');
-  const items = Array.isArray(payload?.items) ? payload.items : [];
-  return {
-    vehicles: items.map((item) => {
-      const vehicleClass = String(item?.i || '').trim();
-      const icon = String(item?.ico || '').trim();
-      return {
-        vehicleClass,
-        label: vehicleClass.replace(/^BPC_/, '').replace(/^BP_/, '').replaceAll('_', ' '),
-        iconUrl: icon ? `https://icons.gghost.games/icons/${encodeURIComponent(icon)}.webp` : null,
-      };
-    }).filter((item) => item.vehicleClass).sort((a, b) => a.label.localeCompare(b.label)),
-  };
-}
-
-async function adminSpawnExecute(session, body) {
-  const steamId = String(body?.steamId || '').trim();
-  const kind = String(body?.kind || '').trim();
-  if (!/^\d{17}$/.test(steamId)) throw new Error('Choose a valid online player.');
-  if (!['item', 'vehicle'].includes(kind)) throw new Error('Choose item or vehicle spawning.');
-
-  const online = await adminSpawnPlayers(session);
-  const target = online.players.find((player) => player.steamId === steamId);
-  if (!target) throw new Error('That player is no longer online. Refresh the player list and try again.');
-
-  if (kind === 'item') {
-    const item = String(body?.item || '').trim();
-    const qty = Math.floor(Number(body?.qty || 1));
-    if (!/^[A-Za-z0-9_]+$/.test(item)) throw new Error('Choose a valid item from the GGCON catalog.');
-    if (!Number.isInteger(qty) || qty < 1 || qty > 20) throw new Error('Item quantity must be between 1 and 20.');
-    const result = await ggconPost('/spawn', { steamId, item, qty });
-    await portalTransaction({guildId:session.guildId,discordId:session.discordId,steamId,playerName:target.name,type:'admin_item_spawn',title:`Admin spawned ${qty}x ${item}`,amount:0,details:{kind,item,qty,admin:session.displayName||'Admin',ggconMessage:result?.message||null}});
-    return { ok: true, message: result?.message || `Spawned ${qty}x ${item} for ${target.name}.` };
-  }
-
-  const vehicle = String(body?.vehicle || '').trim();
-  if (!/^(?:BPC_|BP_)[A-Za-z0-9_]+$/.test(vehicle)) throw new Error('Choose a valid vehicle from the GGCON vehicle catalog.');
-  const result = await ggconPost('/spawn-vehicle', { steamId, vehicle });
-  await portalTransaction({guildId:session.guildId,discordId:session.discordId,steamId,playerName:target.name,type:'admin_vehicle_spawn',title:`Admin spawned ${vehicle}`,amount:0,details:{kind,vehicle,admin:session.displayName||'Admin',ggconMessage:result?.message||null}});
-  return { ok: true, message: result?.message || `Spawned ${vehicle} for ${target.name}.` };
-}
-
 async function adminPlayerInfo(session, steamId, view) {
   steamId=String(steamId||'').trim(); if(!steamId) throw new Error('Steam ID is required.');
   let content;
-  if(view==='details') {
-    content=await buildPlayerDetailsBySteamId(steamId, session.guildId);
-    try {
-      const geo = await portalAdminIpLocation(session, steamId);
-      if (geo?.content) content = `${content}\n\n${geo.content}`;
-    } catch (err) {
-      const message = String(err?.message || 'Location unavailable.');
-      content = `${content}\n\n🌐 Approximate IP Location\n\nUnavailable: ${message}`;
-    }
-  }
+  if(view==='details') content=await buildPlayerDetailsBySteamId(steamId, session.guildId);
   else if(view==='vehicles') content=await buildVehiclesBySteamId(steamId);
   else if(view==='squad') content=await buildSquadBySteamId(steamId);
   else if(view==='nearby') content=await buildNearVehiclesBySteamId(steamId);
   else throw new Error('Unknown player view.');
   return {content:cleanAdminText(content)};
 }
-
-async function portalWeather() {
-  const data = await ggconGet('/weather.json');
-  return {
-    ok: true,
-    timeOfDay: data.timeOfDay ?? null,
-    dayPeriod: data.dayPeriod || null,
-    airTemperature: data.airTemperature ?? null,
-    rainIntensity: data.rainIntensity ?? null,
-    snowIntensity: data.snowIntensity ?? null,
-    windSpeedKph: data.windSpeedKph ?? null,
-    fogEnabled: data.fogEnabled ?? null,
-    fogDensity: data.fogDensity ?? null,
-    lightningRate: data.lightningRate ?? null,
-  };
-}
-
-async function portalBaseFlags(session) {
-  const data = await ggconGet('/flags.json');
-  const flags = Array.isArray(data.flags) ? data.flags : [];
-  return {
-    ok: true,
-    count: Number(data.count ?? flags.length),
-    rules: {
-      maxElementsPerFlag: data.maxElementsPerFlag ?? null,
-      maxExpandedPerFlag: data.maxExpandedPerFlag ?? null,
-      extraElementsPerSquadMember: data.extraElementsPerSquadMember ?? null,
-      flagInfluenceRadius: data.flagInfluenceRadius ?? null,
-      allowMultipleFlagsPerPlayer: data.allowMultipleFlagsPerPlayer ?? null,
-    },
-    flags: flags.map(f => ({
-      flagId: f.flagId ?? null, baseId: f.baseId ?? null, baseName: f.baseName || `Base #${f.baseId ?? f.flagId ?? '?'}`,
-      owner: f.owner || null, ownerSteamId: f.ownerSteamId || null, ownerProfileId: f.ownerProfileId ?? null,
-      location: f.location || null, elementCount: Number(f.elementCount || 0), expandedElements: Number(f.expandedElements || 0),
-      maxElements: f.maxElements == null ? null : Number(f.maxElements),
-    })).sort((a,b) => (b.elementCount||0) - (a.elementCount||0)),
-  };
-}
-
-async function adminDirectAction(session, body) {
-  const steamId = String(body.steamId || '').trim();
-  const action = String(body.action || '').trim();
-  if (!steamId) throw new Error('Steam64 ID is required.');
-  if (action === 'kick') {
-    const online = await getOnlinePlayers();
-    const match = online.find(p => String(p.userId || p.steamId || '') === steamId);
-    if (!match) throw new Error('Player is no longer online.');
-    const result = await ggconPost(`/players/${encodeURIComponent(steamId)}/kick`, {});
-    return { ok:true, message:'Player kicked from SCUM.', result };
-  }
-  if (action === 'teleport') {
-    const x=Number(body.x), y=Number(body.y), z=Number(body.z);
-    if (![x,y,z].every(Number.isFinite)) throw new Error('Valid X, Y and Z coordinates are required.');
-    const online = await getOnlinePlayers();
-    if (!online.some(p => String(p.userId || p.steamId || '') === steamId)) throw new Error('Player is no longer online.');
-    const result = await ggconPost(`/players/${encodeURIComponent(steamId)}/teleport`, {x,y,z});
-    return { ok:true, message:`Player teleported to ${x}, ${y}, ${z}.`, result };
-  }
-  throw new Error('Unsupported direct action.');
-}
-
 function portalAdminContext(session, sink){
   return {guildId:String(session.guildId),user:{id:String(session.discordId),username:session.displayName||'Admin',tag:session.displayName||'Admin'},reply:async payload=>sink(payload),update:async payload=>sink(payload)};
 }
@@ -1378,7 +843,7 @@ async function adminAdjust(session, body){
   const steamId=String(body.steamId||'').trim(),kind=String(body.kind||''),amount=Math.floor(Number(body.amount)),reason=String(body.reason||'').trim();
   if(!steamId||!['cash','fame'].includes(kind)||!Number.isFinite(amount)||amount===0) throw new Error('Choose cash or fame and enter a non-zero whole amount.');
   if(!reason) throw new Error('A reason is required.');
-  await ggconPost(`/players/${encodeURIComponent(steamId)}/${kind==='cash'?'currency':'fame'}`,{action:'change',amount:Number(amount)});
+  await ggconPost(`/players/${encodeURIComponent(steamId)}/${kind==='cash'?'currency':'fame'}`,{action:'change',amount});
   const target=await getPlayerForLookup(steamId).catch(()=>null); const p=target?.type==='single'?target.player:null;
   await portalTransaction({guildId:session.guildId,discordId:session.discordId,steamId,playerName:p?getPlayerDisplayName(p):steamId,type:`admin_${kind}_adjustment`,title:`Admin ${kind} adjustment`,amount:kind==='cash'?amount:0,details:{kind,amount,reason,admin:session.displayName||'Admin'}});
   return {ok:true};
@@ -1404,50 +869,31 @@ async function adminModeration(session,body){
   const guild=botRef?.guilds?.cache?.get(String(session.guildId));
   if(action==='ban'){
     if(link?.discord_id){const member=await guild?.members?.fetch(String(link.discord_id)).catch(()=>null);if(String(link.discord_id)===String(guild?.ownerId)||member?.roles?.cache?.some(r=>STAFF_ROLE_NAMES.has(String(r.name||'').toLowerCase()))) throw new Error('Ban blocked because the linked Discord account is staff or owns the server.');}
-    const results={scum:null,discord:null};
-    try{results.scum=await runScumBan(steamId);}catch(err){results.scum={ok:false,error:err.message};}
-    if(link?.discord_id&&guild){try{await guild.members.ban(String(link.discord_id),{reason:`Outpost X portal ban by ${session.displayName||'Admin'}: ${reason}`});results.discord={ok:true};}catch(err){results.discord={ok:false,error:err.message};}}else results.discord={ok:false,skipped:true,error:'No linked Discord account was found.'};
-    if(!results.scum?.ok&&!results.discord?.ok) throw new Error(`Ban failed in SCUM and Discord. ${results.scum?.error||''} ${results.discord?.error||''}`.trim());
-    const parts=[results.scum?.ok?`SCUM ban succeeded (${results.scum.method==='command'?'native command fallback':'direct endpoint'}).`:`SCUM ban failed: ${results.scum?.error}`,results.discord?.ok?'Discord ban succeeded.':`Discord ban not completed: ${results.discord?.error}`];
-    return {ok:true,partial:!(results.scum?.ok&&results.discord?.ok),message:parts.join(' '),results};
+    await ggconPost(`/players/${encodeURIComponent(steamId)}/ban`,{});
+    if(link?.discord_id&&guild) await guild.members.ban(String(link.discord_id),{reason:`Outpost X portal ban by ${session.displayName||'Admin'}: ${reason}`}).catch(()=>{});
+    return {ok:true,message:'Player banned from SCUM. Linked Discord account was also banned when available.'};
   }
-  const results={scum:null,discord:null};
-  try{results.scum=await runScumUnban(steamId);}catch(err){results.scum={ok:false,error:err.message};}
-  if(link?.discord_id&&guild){try{await guild.bans.remove(String(link.discord_id),`Outpost X portal unban by ${session.displayName||'Admin'}: ${reason}`);results.discord={ok:true};}catch(err){results.discord={ok:false,error:err.message};}}else results.discord={ok:false,skipped:true,error:'No linked Discord account was found.'};
-  if(!results.scum?.ok&&!results.discord?.ok) throw new Error(`Unban failed in SCUM and Discord. ${results.scum?.error||''} ${results.discord?.error||''}`.trim());
-  return {ok:true,partial:!(results.scum?.ok&&results.discord?.ok),message:[results.scum?.ok?`SCUM unban succeeded (${results.scum.method==='command'?'native command fallback':'direct endpoint'}).`:`SCUM unban failed: ${results.scum?.error}`,results.discord?.ok?'Discord unban succeeded.':`Discord unban not completed: ${results.discord?.error}`].join(' '),results};
+  await ggconPost(`/players/${encodeURIComponent(steamId)}/unban`,{});
+  if(link?.discord_id&&guild) await guild.bans.remove(String(link.discord_id),`Outpost X portal unban by ${session.displayName||'Admin'}: ${reason}`).catch(()=>{});
+  return {ok:true,message:'Player unbanned from SCUM. Linked Discord ban was removed when available.'};
 }
 
 function portalCtx(session){return {guildId:String(session.guildId),discordId:String(session.discordId),displayName:session.displayName||'Player',isAdmin:!!session.isAdmin,isOwner:!!session.isOwner,db:getDb(),bot:botRef};}
 async function portalInsuranceData(session){const link=await portalLink(session);if(!link?.steam_id)return{policies:[],claims:[],vehicles:[]};return portalInsuranceOptions({...portalCtx(session),steamId:String(link.steam_id)});}
 
-function acceptsCompression(req) {
-  const value = String(req?.headers?.['accept-encoding'] || '');
-  if (/\bbr\b/.test(value)) return 'br';
-  if (/\bgzip\b/.test(value)) return 'gzip';
-  return '';
-}
-function sendPayload(res, status, body, contentType, cacheControl='no-store') {
-  const raw = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
-  const encoding = raw.length >= 1024 ? acceptsCompression(res._watcherReq) : '';
-  let payload = raw;
-  if (encoding === 'br') payload = zlib.brotliCompressSync(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } });
-  else if (encoding === 'gzip') payload = zlib.gzipSync(raw, { level: 6 });
-  const headers = {
-    'Content-Type': contentType,
-    'Cache-Control': cacheControl,
-    'Content-Length': payload.length,
-    'Vary': 'Accept-Encoding',
-  };
-  if (encoding) headers['Content-Encoding'] = encoding;
-  res.writeHead(status, headers);
+function json(res, status, body) {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Length': Buffer.byteLength(payload),
+  });
   res.end(payload);
 }
-function json(res, status, body, cacheControl='no-store') {
-  sendPayload(res, status, JSON.stringify(body), 'application/json; charset=utf-8', cacheControl);
-}
-function text(res, status, body, contentType = 'text/plain; charset=utf-8', cacheControl='no-store') {
-  sendPayload(res, status, body, contentType, cacheControl);
+
+function text(res, status, body, contentType = 'text/plain; charset=utf-8') {
+  res.writeHead(status, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
+  res.end(body);
 }
 
 function unauthorized(res, status = 403) {
@@ -1459,7 +905,6 @@ async function requirePermission(session, key) {
 }
 
 async function handleHttp(req, res) {
-  res._watcherReq = req;
   pruneAuthState();
   const host = req.headers.host || 'localhost';
   const url = new URL(req.url, `http://${host}`);
@@ -1525,12 +970,12 @@ async function handleHttp(req, res) {
     return setPortalSessionCookie(res, session, '/portal');
   }
 
-  if (url.pathname === '/tracker/health' || url.pathname === '/health') { const d=deploymentCoordinator.state(); const validation=startupValidation.report(); const ready=d.ready && validation.status!=='not_ready'; return json(res, ready?200:503, {ok:ready,status:ready?(validation.status==='degraded'?'degraded':'ready'):'not_ready',deployment:d,validation}); }
-  // Public favicon so browsers can load the Watcher emblem before or after login.
-  if (url.pathname === '/portal/assets/favicon.png' || url.pathname === '/favicon.ico') {
-    if (!fs.existsSync(portalFaviconPath)) return text(res, 404, 'Portal favicon is missing.');
-    res.writeHead(200, {'Content-Type':'image/png','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'});
-    return fs.createReadStream(portalFaviconPath).pipe(res);
+  if (url.pathname === '/tracker/health') return json(res, 200, { ok: true });
+
+  // Registration can be completed directly inside the portal.
+  if (url.pathname === '/portal/player-registration' || url.pathname === '/portal/register') {
+    res.writeHead(302, { Location: '/portal?section=dashboard', 'Cache-Control': 'no-store' });
+    return res.end();
   }
 
   let session = getSession(req);
@@ -1560,28 +1005,12 @@ async function handleHttp(req, res) {
     const html = fs.readFileSync(portalHtmlPath, 'utf8').replaceAll('__PORTAL_ASSET_VERSION__', portalAssetVersion());
     return text(res, 200, html, 'text/html; charset=utf-8');
   }
-  if (url.pathname === '/portal/assets/portal.css') return text(res,200,fs.readFileSync(portalCssPath,'utf8'),'text/css; charset=utf-8','public, max-age=31536000, immutable');
-  if (url.pathname === '/portal/assets/portal.js') return text(res,200,fs.readFileSync(portalJsPath,'utf8'),'application/javascript; charset=utf-8','public, max-age=31536000, immutable');
+  if (url.pathname === '/portal/assets/portal.css') { res.writeHead(200, {'Content-Type':'text/css; charset=utf-8','Cache-Control':'public, max-age=31536000, immutable'}); return res.end(fs.readFileSync(portalCssPath, 'utf8')); }
+  if (url.pathname === '/portal/assets/portal.js') { res.writeHead(200, {'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'public, max-age=31536000, immutable'}); return res.end(fs.readFileSync(portalJsPath, 'utf8')); }
   if (url.pathname === '/portal/assets/outpost.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalOutpostPath).pipe(res); }
   if (url.pathname === '/portal/assets/watcher.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalWatcherPath).pipe(res); }
   const staffAssetMatch = url.pathname.match(/^\/portal\/assets\/staff\/([a-z-]+)\.webp$/);
   if (staffAssetMatch && portalStaffAssets.has(staffAssetMatch[1])) { const assetPath = portalStaffAssets.get(staffAssetMatch[1]); if (!fs.existsSync(assetPath)) return text(res, 404, 'Staff image not found.'); res.writeHead(200, {'Content-Type':'image/webp','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(assetPath).pipe(res); }
-
-  if (url.pathname === '/portal/api/stream') {
-    const key = portalRevisionKey(session.guildId);
-    res.writeHead(200, {
-      'Content-Type':'text/event-stream; charset=utf-8',
-      'Cache-Control':'no-cache, no-transform',
-      'Connection':'keep-alive',
-      'X-Accel-Buffering':'no',
-    });
-    res.write(`event: ready\ndata: ${JSON.stringify(getPortalRevision(session.guildId))}\n\n`);
-    const listeners = revisionStreams.get(key) || new Set();
-    listeners.add(res); revisionStreams.set(key,listeners);
-    const heartbeat=setInterval(()=>{try{res.write(': heartbeat\n\n')}catch{}},25000); heartbeat.unref?.();
-    req.on('close',()=>{clearInterval(heartbeat);listeners.delete(res);if(!listeners.size)revisionStreams.delete(key)});
-    return;
-  }
 
   if (url.pathname === '/portal/api/revision') {
     const revision = getPortalRevision(session.guildId);
@@ -1592,24 +1021,17 @@ async function handleHttp(req, res) {
     bumpPortalRevision(session.guildId);
   }
 
-  if (url.pathname === '/portal/api/bootstrap' && req.method === 'GET') {
-    try { const data=await buildPortalOverview(session); return json(res,200,{me:data.me,server:data.server,maintenance:data.maintenance,announcement:data.announcement,version:data.version}); }
-    catch(err){ return json(res,400,{error:err.message}); }
+  if (registrationRequiredPortalPath(url.pathname, req.method)) {
+    try { await requireRegisteredPortalPlayer(session); }
+    catch (err) { return json(res, 403, { error: err.message, registrationRequired: true, registrationUrl: PORTAL_REGISTER_URL }); }
   }
-  if (url.pathname === '/portal/api/account' && req.method === 'GET') {
-    try { const data=await buildPortalOverview(session); return json(res,200,{me:data.me,link:data.link,account:data.account,transactions:data.transactions?.slice?.(0,10)||[]}); }
-    catch(err){ return json(res,400,{error:err.message}); }
-  }
-  if (url.pathname === '/portal/api/dashboard' && req.method === 'GET') {
-    try { const data=await buildPortalOverview(session); return json(res,200,{me:data.me,server:data.server,vehicles:data.vehicles,events:data.events,transactions:data.transactions,airlift:data.airlift}); }
-    catch(err){ return json(res,400,{error:err.message}); }
-  }
+
   if (url.pathname === '/portal/api/overview') {
-    try { const key=`overview:${session.guildId}:${session.discordId}`; return json(res,200,await cachedFlight(key,8000,()=>buildPortalOverview(session))); }
+    try { return json(res, 200, await buildPortalOverview(session)); }
     catch (err) { return json(res, 500, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/taxi/prepare' && req.method === 'POST') {
-    try { await requireFeature(session.guildId,'airlift','Airlift Taxi'); return json(res, 200, await portalTaxiPrepare(session, await readJsonBody(req))); }
+    try { return json(res, 200, await portalTaxiPrepare(session, await readJsonBody(req))); }
     catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/taxi/send' && req.method === 'POST') {
@@ -1621,29 +1043,20 @@ async function handleHttp(req, res) {
     catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/rental' && req.method === 'POST') {
-    try { await requireFeature(session.guildId,'rentals','Dirtbike rentals'); return json(res, 200, await portalRental(session)); }
+    try { return json(res, 200, await portalRental(session)); }
     catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/action/shop' && req.method === 'POST') {
-    try { await requireFeature(session.guildId,'purchases','Server purchases'); const link=await portalLink(session); const body=await readJsonBody(req); return json(res,200,await buyPackageForPortal({guildId:session.guildId,discordId:session.discordId,steamId:link?.steam_id,playerName:link?.scum_name,packageId:body.id,requestId:body.requestId||req.headers['x-idempotency-key']})); }
+    try { const link=await portalLink(session); return json(res,200,await buyPackageForPortal({guildId:session.guildId,discordId:session.discordId,steamId:link?.steam_id,playerName:link?.scum_name,packageId:(await readJsonBody(req)).id})); }
     catch (err) { return json(res,400,{error:err.message}); }
   }
   if (url.pathname === '/portal/api/events/rsvp' && req.method === 'POST') { try{const b=await readJsonBody(req);return json(res,200,await portalRsvpEvent(portalCtx(session),b.id,b.attending!==false));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/events/teleport-state' && req.method === 'GET') { try{return json(res,200,await portalEventTeleportState(session,url.searchParams.get('id')));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/events/teleport' && req.method === 'POST') { try{return json(res,200,await portalEventTeleport(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/events/create' && req.method === 'POST') { try{await requirePermission(session,'manage_events');await requireFeature(session.guildId,'eventCreation','Event creation');return json(res,200,await portalCreateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/events/create' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalCreateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/update' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalUpdateEvent(portalCtx(session),await readJsonBody(req,60*1024*1024)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/status' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalSetEventStatus(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/events/delete' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalDeleteEvent(portalCtx(session),(await readJsonBody(req)).id));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/events/retry-post' && req.method === 'POST') { try{await requirePermission(session,'manage_events');return json(res,200,await portalRetryEventPost(portalCtx(session),(await readJsonBody(req)).id));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/health' && req.method === 'GET') { try{if(!session.isAdmin)throw new Error('Admin access required.');return json(res,200,await portalHealthSnapshot(session));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/owner/export' && req.method === 'GET') { try{return json(res,200,await portalBackupExport(session));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/owner/settings' && req.method === 'GET') { try{if(!session.isOwner)throw new Error('Owner access required.');return json(res,200,{settings:await loadPortalSettings(session.guildId)});}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/owner/settings' && req.method === 'POST') { try{if(!session.isOwner)throw new Error('Owner access required.');return json(res,200,{settings:await savePortalSettings(session.guildId,await readJsonBody(req))});}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/unregistered-active' && req.method === 'GET') { try{return json(res,200,await cachedFlight(`unregistered:${session.guildId}`,10000,()=>portalActiveUnregisteredPlayers(session)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/inbox' && req.method === 'GET') { try{if(!session.isAdmin)throw new Error('Admin access required.');const attention=await portalAttentionCounts(session);return json(res,200,{attention,retryQueue:retryQueue.map(x=>({name:x.name,attempts:x.attempts,maxAttempts:x.maxAttempts,nextAt:new Date(x.nextAt).toISOString(),lastError:x.lastError}))});}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/options') { try{return json(res,200,await portalInsuranceData(session));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/insurance/buy' && req.method === 'POST') { try{await requireFeature(session.guildId,'insurance','Vehicle insurance');const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalBuyInsurance({...portalCtx(session),steamId:link?.steam_id},b.vehicleId));}catch(err){return json(res,400,{error:err.message});} }
+  if (url.pathname === '/portal/api/insurance/buy' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalBuyInsurance({...portalCtx(session),steamId:link?.steam_id},b.vehicleId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/insurance/redeem' && req.method === 'POST') { try{const link=await portalLink(session);const b=await readJsonBody(req);return json(res,200,await portalRedeemInsurance({...portalCtx(session),steamId:link?.steam_id},b.claimId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/player-shop/create' && req.method === 'POST') { try{return json(res,200,await portalCreateShop(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/player-shop/update' && req.method === 'POST') { try{return json(res,200,await portalUpdateShop(portalCtx(session),await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
@@ -1672,25 +1085,12 @@ async function handleHttp(req, res) {
   }
 
   if (url.pathname === '/portal/api/admin/event-triggers' && req.method === 'GET') {
-    try {
-      await requirePermission(session, 'manage_events');
-      const special = await getSpecialEventAdminStatus();
-      const killRace = await getKillRaceAdminStatus(session.guildId);
-      const communityChallenge = await getCommunityChallenge(session.guildId).catch(() => null);
-      return json(res, 200, { ...special, killRace, communityChallenge });
-    } catch (err) { return json(res, 403, { error: err.message }); }
+    try { await requirePermission(session, 'manage_events'); return json(res, 200, await getSpecialEventAdminStatus()); }
+    catch (err) { return json(res, 403, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/admin/event-triggers' && req.method === 'POST') {
-    try {
-      await requirePermission(session, 'manage_events');
-      const body = await readJsonBody(req);
-      const action = String(body.action || '').toLowerCase();
-      const guild = botRef?.guilds?.cache?.get(String(session.guildId));
-      if ((action === 'kill-race-start' || action === 'kill-race-stop') && !guild) throw new Error('Discord guild is unavailable.');
-      if (action === 'kill-race-start') return json(res, 200, await startKillRaceFromPortal(guild, body.options?.type || ''));
-      if (action === 'kill-race-stop') return json(res, 200, await stopKillRaceFromPortal(guild));
-      return json(res, 200, await triggerSpecialEvent(body.action, { ...(body.options || {}), createdBy: session.discordId }));
-    } catch (err) { return json(res, 400, { error: err.message }); }
+    try { await requirePermission(session, 'manage_events'); const body = await readJsonBody(req); return json(res, 200, await triggerSpecialEvent(body.action, { ...(body.options || {}), createdBy: session.discordId })); }
+    catch (err) { return json(res, 400, { error: err.message }); }
   }
 
   if (url.pathname === '/portal/api/admin/shop/products' && req.method === 'GET') {
@@ -1701,17 +1101,9 @@ async function handleHttp(req, res) {
     try { await requirePermission(session, 'manage_server_shop'); return json(res, 200, { items: await searchItemCatalog(url.searchParams.get('q') || '', 80) }); }
     catch (err) { return json(res, 403, { error: err.message }); }
   }
-  if (url.pathname === '/portal/api/admin/shop/item-details' && req.method === 'POST') {
-    try { await requirePermission(session, 'manage_server_shop'); const body = await readJsonBody(req); return json(res, 200, { items: await getCatalogItemsByClass(body.itemClasses || []) }); }
-    catch (err) { return json(res, 403, { error: err.message }); }
-  }
   if (url.pathname === '/portal/api/admin/shop/product' && req.method === 'POST') {
     try { await requirePermission(session, 'edit_shop_products'); const body=await readJsonBody(req); if(body.id){const old=(await listManagedProducts(session.guildId,true)).find(x=>String(x.id)===String(body.id)); if(old&&Number(old.price)!==Number(body.price))await requirePermission(session,'edit_shop_prices');} return json(res, 200, { product: await saveManagedProduct(session.guildId, session.discordId, body) }); }
     catch (err) { return json(res, 403, { error: err.message }); }
-  }
-  if (url.pathname === '/portal/api/admin/shop/reorder' && req.method === 'POST') {
-    try { await requirePermission(session, 'edit_shop_products'); const body=await readJsonBody(req); return json(res, 200, await reorderManagedProducts(session.guildId, body.orderedIds)); }
-    catch (err) { return json(res, 400, { error: err.message }); }
   }
   if (url.pathname === '/portal/api/admin/shop/delete' && req.method === 'POST') {
     try { await requirePermission(session, 'delete_shop_products'); const body=await readJsonBody(req); return json(res, 200, await deleteManagedProduct(session.guildId, body.id)); }
@@ -1719,57 +1111,7 @@ async function handleHttp(req, res) {
   }
 
   if (url.pathname === '/portal/api/admin/content' && req.method === 'POST') { try{const b=await readJsonBody(req);const ctx=portalCtx(session);if(b.kind==='shop'){await requirePermission(session,'moderate_player_shops');return json(res,200,await portalAdminShop(ctx,b));}if(b.kind==='squad'){await requirePermission(session,'moderate_squads');return json(res,200,await portalAdminSquad(ctx,b));}if(b.kind==='lore'){await requirePermission(session,'moderate_player_lore');return json(res,200,await portalAdminLore(ctx,b));}throw new Error('Unknown content type.');}catch(err){return json(res,400,{error:err.message});} }
-
-  if (url.pathname === '/portal/api/admin/spawn/players' && req.method === 'GET') {
-    try { await requirePermission(session,'spawn_items_vehicles'); return json(res,200,await cachedFlight(`spawnPlayers:${session.guildId}`,5000,()=>adminSpawnPlayers(session))); }
-    catch(err){ return json(res,403,{error:err.message}); }
-  }
-  if (url.pathname === '/portal/api/admin/spawn/items' && req.method === 'GET') {
-    try { await requirePermission(session,'spawn_items_vehicles'); return json(res,200,{items:await searchItemCatalog(url.searchParams.get('q')||'',60)}); }
-    catch(err){ return json(res,403,{error:err.message}); }
-  }
-  if (url.pathname === '/portal/api/admin/spawn/vehicles' && req.method === 'GET') {
-    try { await requirePermission(session,'spawn_items_vehicles'); return json(res,200,await cachedFlight('spawnVehicleTypes',300000,adminSpawnVehicleTypes)); }
-    catch(err){ return json(res,403,{error:err.message}); }
-  }
-  if (url.pathname === '/portal/api/admin/spawn' && req.method === 'POST') {
-    try { await requirePermission(session,'spawn_items_vehicles'); return json(res,200,await adminSpawnExecute(session,await readJsonBody(req))); }
-    catch(err){ return json(res,400,{error:err.message}); }
-  }
-
-  if (url.pathname === '/portal/api/admin/pending-rewards' && req.method === 'GET') {
-    try { await requirePermission(session,'view_transactions'); return json(res,200,{ rewards: await popupRewardQueue.list(250) }); }
-    catch(err){ return json(res,403,{error:err.message}); }
-  }
-  if (url.pathname === '/portal/api/admin/pending-rewards/retry' && req.method === 'POST') {
-    try { await requirePermission(session,'view_transactions'); const body=await readJsonBody(req); return json(res,200,{ reward: await popupRewardQueue.retry(String(body.id||'')) }); }
-    catch(err){ return json(res,400,{error:err.message}); }
-  }
-
-  if (url.pathname === '/portal/api/admin/catalog-validation' && req.method === 'GET') {
-    try { await requirePermission(session,'manage_server_shop'); return json(res,200,await adminCatalogValidation(session)); }
-    catch(err){ return json(res,400,{error:err.message}); }
-  }
-
-  if (url.pathname === '/portal/api/weather' && req.method === 'GET') {
-    try { return json(res,200,await cachedFlight('portalWeather',30000,portalWeather)); }
-    catch(err){ return json(res,503,{error:err.message}); }
-  }
-  if (url.pathname === '/portal/api/admin/base-flags' && req.method === 'GET') {
-    try { await requirePermission(session,'search_players'); return json(res,200,await cachedFlight('portalBaseFlags',30000,()=>portalBaseFlags(session))); }
-    catch(err){ return json(res,400,{error:err.message}); }
-  }
-  if (url.pathname === '/portal/api/admin/direct-action' && req.method === 'POST') {
-    try { const body=await readJsonBody(req); await requirePermission(session,body.action==='kick'?'ban_unban':'teleport_surveillance'); return json(res,200,await adminDirectAction(session,body)); }
-    catch(err){ return json(res,400,{error:err.message}); }
-  }
-
-  if (url.pathname === '/portal/api/admin/abandoned-vehicles' && req.method === 'GET') {
-    try { await requirePermission(session,'search_players'); return json(res,200,await cachedFlight(`abandoned:${session.guildId}:${url.searchParams.get('days')||14}`,15000,()=>portalAbandonedVehicleReview(session,url.searchParams.get('days')))); }
-    catch(err){ return json(res,400,{error:err.message}); }
-  }
   if (url.pathname === '/portal/api/admin/search' && req.method === 'POST') { try{await requirePermission(session,'search_players');return json(res,200,await adminSearchPlayers(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
-  if (url.pathname === '/portal/api/admin/ip-location' && req.method === 'POST') { try{await requirePermission(session,'search_players');const b=await readJsonBody(req);return json(res,200,await portalAdminIpLocation(session,b.steamId));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/player' && req.method === 'POST') { try{await requirePermission(session,'search_players');const b=await readJsonBody(req);return json(res,200,await adminPlayerInfo(session,b.steamId,b.view));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/adjust' && req.method === 'POST') { try{await requirePermission(session,'adjust_balances');return json(res,200,await adminAdjust(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
   if (url.pathname === '/portal/api/admin/jail' && req.method === 'POST') { try{await requirePermission(session,'jail_release');return json(res,200,await adminJailAction(session,await readJsonBody(req)));}catch(err){return json(res,400,{error:err.message});} }
@@ -1790,40 +1132,29 @@ async function handleHttp(req, res) {
     const x = Number(match[1]);
     const y = Number(match[2]);
     if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 7 || y < 0 || y > 7) return text(res, 404, 'Map tile not found.');
-    const tileName = `${x}_${y}.jpg`;
-    const tilePath = path.join(portalMapTilesPath, 'hi', tileName);
-    if (fs.existsSync(tilePath)) {
-      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' });
-      return fs.createReadStream(tilePath).pipe(res);
-    }
-    if (redirectToMapAsset(res, `tiles/hi/${tileName}`)) return;
-    return text(res, 404, 'Map tile not configured.');
+    const tilePath = path.join(portalMapTilesPath, 'hi', `${x}_${y}.jpg`);
+    if (!fs.existsSync(tilePath)) return text(res, 404, 'Map tile not found.');
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=2592000, immutable' });
+    return fs.createReadStream(tilePath).pipe(res);
   }
 
   if (url.pathname === '/tracker/map.png') {
-    if (fs.existsSync(mapPath)) {
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
-      return fs.createReadStream(mapPath).pipe(res);
-    }
-    if (redirectToMapAsset(res, 'tracker-map.png')) return;
-    return text(res, 404, 'Map image not configured.');
+    if (!fs.existsSync(mapPath)) return text(res, 404, 'Map image not configured.');
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
+    return fs.createReadStream(mapPath).pipe(res);
   }
 
   if (url.pathname === '/tracker/map-hi.webp') {
-    if (fs.existsSync(highResMapPath)) {
-      res.writeHead(200, { 'Content-Type': 'image/webp', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
-      return fs.createReadStream(highResMapPath).pipe(res);
-    }
-    if (redirectToMapAsset(res, 'tracker-map-hi.webp')) return;
-    return text(res, 404, 'High-resolution map image not configured.');
+    if (!fs.existsSync(highResMapPath)) return text(res, 404, 'High-resolution map image not configured.');
+    res.writeHead(200, { 'Content-Type': 'image/webp', 'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400' });
+    return fs.createReadStream(highResMapPath).pipe(res);
   }
 
   if (url.pathname === '/tracker/api/config') {
     return json(res, 200, {
       retentionHours: RETENTION_HOURS,
       sampleSeconds: SAMPLE_SECONDS,
-      mapAvailable: fs.existsSync(mapPath) || !!externalMapAssetBaseUrl(),
-      mapAssetsExternal: !fs.existsSync(mapPath) && !!externalMapAssetBaseUrl(),
+      mapAvailable: fs.existsSync(mapPath),
       map: MAP_CALIBRATION,
       world: WORLD,
       sessionExpiresAt: new Date(session.expiresAt).toISOString(),
@@ -1855,7 +1186,6 @@ async function handleHttp(req, res) {
 
   if (url.pathname === '/tracker/api/teleport-me' && req.method === 'POST') {
     try {
-      await requireFeature(session.guildId,'surveillanceTeleport','Surveillance teleporting');
       const body = await readJsonBody(req);
       const targetSteamId = String(body.targetSteamId || '').trim();
       const recordedAt = String(body.recordedAt || '').trim();
@@ -1902,13 +1232,13 @@ function startWebServer() {
   return serverRef;
 }
 
-function startTrackerWebOnBoot(bot) { botRef = bot; startWebServer(); deploymentCoordinator.setWebReady(true); }
-
-async function startTrackerJobsOnBoot(bot) {
+async function startTrackerOnBoot(bot) {
   botRef = bot;
+  startWebServer();
   await recordMovementSample();
   scheduleMovementSample(latestOnline.size > 0 ? SAMPLE_SECONDS : IDLE_SAMPLE_SECONDS);
-  watcherScheduler.registerTask('movement-retention-cleanup', CLEANUP_MINUTES*60_000, cleanupOldTrackerData, {initialDelayMs:5000,jitterMs:30000,essential:true});
+  if (cleanupTimer) clearInterval(cleanupTimer);
+  cleanupTimer = setInterval(() => cleanupOldTrackerData(), CLEANUP_MINUTES * 60_000);
   await cleanupOldTrackerData();
   console.log(`👁️ Movement tracker active: ${SAMPLE_SECONDS}s online / ${IDLE_SAMPLE_SECONDS}s idle samples, ${RETENTION_HOURS}h retention.`);
 }
@@ -1987,12 +1317,8 @@ async function handleCommandCenterCommand(message) {
   return true;
 }
 
-async function startTrackerOnBoot(bot){ startTrackerWebOnBoot(bot); return startTrackerJobsOnBoot(bot); }
-
 module.exports = {
   startTrackerOnBoot,
-  startTrackerWebOnBoot,
-  startTrackerJobsOnBoot,
   handleTrackerCommand,
   handleTrackerInteraction,
   handleCommandCenterCommand,

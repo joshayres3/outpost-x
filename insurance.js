@@ -14,6 +14,7 @@ const STAFF_ROLE_NAMES = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 
 const INSURANCE_SCAN_SECONDS = Math.max(30, Number(process.env.WATCHER_INSURANCE_SCAN_SECONDS || "30"));
 const LINK_CODE_TTL_MINUTES = Math.max(5, Number(process.env.WATCHER_INSURANCE_LINK_CODE_TTL_MINUTES || "15"));
+const REGISTRATION_SCAN_SECONDS = Math.max(5, Number(process.env.WATCHER_REGISTRATION_SCAN_SECONDS || "5"));
 
 const INSURABLE_VEHICLES = [
   { type: "duster", label: "Kinglet Duster", price: 50000, aliases: ["duster", "kinglet_duster", "bpc_kinglet_duster", "kinglet duster"], spawnAliases: ["BPC_Duster", "Duster", "Kinglet Duster"] },
@@ -31,6 +32,8 @@ const INSURABLE_VEHICLES = [
 const BLOCKED_VEHICLE_TERMS = ["boat", "sup", "paddle", "raft", "kayak"];
 let supabaseClient = null;
 let insuranceTimer = null;
+let registrationTimer = null;
+let registrationScanRunning = false;
 
 function getSupabase() {
   if (supabaseClient) return supabaseClient;
@@ -72,9 +75,6 @@ async function serverPost(endpoint, body = {}) {
   const data = await res.json().catch(() => null);
   if (!res.ok || data?.ok === false) {
     throw new Error(data?.reason || data?.message || data?.error || `HTTP ${res.status}`);
-  }
-  if ((endpoint === "/spawn" || endpoint === "/spawn-vehicle") && data?.ok !== true) {
-    throw new Error(data?.reason || data?.message || data?.error || "GGCON did not confirm delivery.");
   }
   return data || { ok: true };
 }
@@ -397,13 +397,13 @@ async function savePendingLink(interaction, code) {
   return expires;
 }
 
-async function saveVerifiedLink(interaction, parsed) {
+async function saveVerifiedLinkData({ guildId, discordId, discordTag }, parsed) {
   const db = getSupabase();
   const { error } = await db.from(PLAYER_LINKS_TABLE).upsert(
     {
-      guild_id: String(interaction.guildId),
-      discord_id: String(interaction.user.id),
-      discord_tag: interaction.user.tag || interaction.user.username || null,
+      guild_id: String(guildId),
+      discord_id: String(discordId),
+      discord_tag: discordTag || null,
       steam_id: parsed.steamId,
       scum_name: parsed.name || null,
       profile_id: parsed.profileId || null,
@@ -415,6 +415,14 @@ async function saveVerifiedLink(interaction, parsed) {
     { onConflict: "guild_id,discord_id" }
   );
   if (error) throw error;
+}
+
+async function saveVerifiedLink(interaction, parsed) {
+  return saveVerifiedLinkData({
+    guildId: interaction.guildId,
+    discordId: interaction.user.id,
+    discordTag: interaction.user.tag || interaction.user.username || null,
+  }, parsed);
 }
 
 function sharedCodeHash(guildId, code) {
@@ -509,6 +517,94 @@ async function verifyPendingLink(interaction) {
   await markCodeUsed(interaction.guildId, link.pending_code, "registration", interaction.user.id, parsed.steamId);
   await saveVerifiedLink(interaction, parsed);
   return { ok: true, parsed };
+}
+
+async function getPendingRegistrationLinks() {
+  const nowIso = new Date().toISOString();
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(PLAYER_LINKS_TABLE)
+    .select("guild_id,discord_id,discord_tag,pending_code,pending_expires_at,updated_at")
+    .not("pending_code", "is", null)
+    .gt("pending_expires_at", nowIso)
+    .limit(100);
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+async function notifyAutomaticRegistration(bot, row, parsed) {
+  const content = [
+    "✅ **SCUM Account Linked Automatically**",
+    `SCUM Player: **${parsed.name || "Unknown"}**`,
+    `Steam ID: \`${parsed.steamId}\``,
+    "",
+    "You can now use Watcher player services. No Verify button is needed.",
+  ].join("\n");
+  const user = await bot.users.fetch(String(row.discord_id)).catch(() => null);
+  if (user) await user.send(content).catch(() => {});
+}
+
+async function scanPendingRegistrations(bot) {
+  if (registrationScanRunning) return;
+  registrationScanRunning = true;
+  try {
+    const pending = await getPendingRegistrationLinks();
+    if (!pending.length) return;
+
+    const earliest = pending.reduce((min, row) => {
+      const t = new Date(row.updated_at || Date.now()).getTime();
+      return Math.min(min, Number.isFinite(t) ? t : Date.now());
+    }, Date.now());
+    const since = Math.max(Date.now() - LINK_CODE_TTL_MINUTES * 60_000, earliest - 10_000);
+    const data = await fetchRawServerLogs({ since, label: "automatic registration" }, "chat,SCUM");
+    const lines = Array.isArray(data?.lines) ? data.lines : [];
+
+    for (const row of pending) {
+      const code = String(row.pending_code || "").trim();
+      if (!code) continue;
+      const match = lines.slice().reverse().find((entry) =>
+        String(entry?.line || entry || "").toLowerCase().includes(code.toLowerCase())
+      );
+      if (!match) continue;
+      const parsed = parsePlayerIdentityFromLine(match.line || match);
+      if (!parsed?.steamId) continue;
+
+      const current = await getLink(row.guild_id, row.discord_id);
+      if (!current?.pending_code || String(current.pending_code).toUpperCase() !== code.toUpperCase()) continue;
+
+      await markCodeUsed(row.guild_id, code, "registration", row.discord_id, parsed.steamId);
+      await saveVerifiedLinkData({
+        guildId: row.guild_id,
+        discordId: row.discord_id,
+        discordTag: row.discord_tag,
+      }, parsed);
+      await notifyAutomaticRegistration(bot, row, parsed);
+      console.log(`✅ Automatically linked Discord ${row.discord_id} to SCUM ${parsed.steamId} (${parsed.name || "Unknown"}).`);
+    }
+  } catch (err) {
+    console.error("❌ Automatic registration scan failed:", err.message);
+  } finally {
+    registrationScanRunning = false;
+  }
+}
+
+function ensureRegistrationLoop(bot) {
+  if (registrationTimer) return;
+  registrationTimer = setInterval(() => {
+    scanPendingRegistrations(bot).catch(() => {});
+  }, REGISTRATION_SCAN_SECONDS * 1000);
+  scanPendingRegistrations(bot).catch(() => {});
+}
+
+async function refreshRegisterPanel(bot) {
+  const config = await loadRuntimeValue("register_panel_config").catch(() => null);
+  if (!config?.channelId || !config?.messageId) return;
+  const channel = await bot.channels.fetch(String(config.channelId)).catch(() => null);
+  if (!channel?.messages?.fetch) return;
+  const message = await channel.messages.fetch(String(config.messageId)).catch(() => null);
+  if (!message) return;
+  const { buildRegisterPanelText, buildRegisterRows } = require("./mechPacks");
+  await message.edit({ content: buildRegisterPanelText(), components: buildRegisterRows() }).catch(() => {});
 }
 
 async function getActivePolicies(guildId, steamId) {
@@ -717,7 +813,7 @@ async function confirmBuy(interaction, vehicleId) {
     return;
   }
 
-  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -Math.abs(config.price) });
+  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -config.price });
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const afterPlayer = await getPlayerBySteamId(link.steam_id);
   const afterCash = getPlayerCash(afterPlayer);
@@ -929,6 +1025,8 @@ function ensureInsuranceLoop(bot) {
 
 async function startInsuranceOnBoot(bot) {
   try {
+    ensureRegistrationLoop(bot);
+    await refreshRegisterPanel(bot);
     const config = await loadRuntimeValue("insurance_config");
     if (!config?.guildId) return;
     ensureInsuranceLoop(bot);
@@ -1159,19 +1257,17 @@ async function handleInsuranceInteraction(interaction) {
     if (action === "register") {
       const code = await generateCode(interaction.guildId);
       const expires = await savePendingLink(interaction, code);
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("insurance:verify").setLabel("Verify Code").setEmoji("✅").setStyle(ButtonStyle.Success)
-      );
       await interaction.reply({
         content: [
           "🔗 **Register SCUM Account**",
           "Type this exact code in SCUM chat:",
           `\`${code}\``,
           "",
-          "After typing it in-game, click **Verify Code**.",
+          "Watcher will detect it and link your account automatically.",
+          "You will receive a Discord DM when registration is complete.",
           `Expires: ${formatDate(expires)}`,
         ].join("\n"),
-        components: [row],
+        components: [],
         ephemeral: true,
       }).catch(() => {});
       return true;
@@ -1249,6 +1345,19 @@ async function handleInsuranceInteraction(interaction) {
 }
 
 
+async function portalStartRegistration(ctx) {
+  const code = await generateCode(ctx.guildId);
+  const expires = await savePendingLink({
+    guildId: String(ctx.guildId),
+    user: {
+      id: String(ctx.discordId),
+      tag: ctx.displayName || 'Portal User',
+      username: ctx.displayName || 'Portal User',
+    },
+  }, code);
+  return { ok: true, code, expiresAt: expires };
+}
+
 function portalInteraction(ctx){
   let last=null;
   const capture=async payload=>{last=payload;return payload;};
@@ -1292,4 +1401,4 @@ async function portalInsuranceOptions(ctx){
 async function portalBuyInsurance(ctx,vehicleId){const i=portalInteraction(ctx);await confirmBuy(i,String(vehicleId));const content=String(i.result?.content||'');if(!content.startsWith('✅'))throw new Error(content||'Insurance purchase failed.');return{ok:true,message:content};}
 async function portalRedeemInsurance(ctx,claimId){const i=portalInteraction(ctx);await redeemClaim(i,String(claimId));const content=String(i.result?.content||'');if(!content.startsWith('✅'))throw new Error(content||'Insurance claim failed.');return{ok:true,message:content};}
 
-module.exports = { handleInsuranceCommand, handleInsuranceInteraction, startInsuranceOnBoot, processInsuranceDestructionEvents, portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance }; 
+module.exports = { handleInsuranceCommand, handleInsuranceInteraction, startInsuranceOnBoot, processInsuranceDestructionEvents, portalInsuranceOptions, portalBuyInsurance, portalRedeemInsurance, portalStartRegistration }; 
