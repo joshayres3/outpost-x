@@ -301,6 +301,43 @@ async function fetchDiscordOAuthUser(accessToken) {
   return data;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function resolvePortalGuildMember(userId, preferredGuildId) {
+  const discordId = String(userId || '').trim();
+  const preferred = String(preferredGuildId || '').trim();
+  if (!discordId || !botRef) return null;
+
+  // Railway may expose the web listener before Discord has completed login.
+  // Give the existing client time to become ready instead of denying a valid player.
+  const deadline = Date.now() + 30_000;
+  while (!botRef.isReady?.() && Date.now() < deadline) await sleep(500);
+
+  const tried = new Set();
+  const candidates = [];
+  if (preferred) candidates.push(preferred);
+  for (const guild of botRef.guilds?.cache?.values?.() || []) candidates.push(String(guild.id));
+
+  for (const guildId of candidates) {
+    if (!guildId || tried.has(guildId)) continue;
+    tried.add(guildId);
+    const guild = botRef.guilds?.cache?.get(guildId) || await botRef.guilds?.fetch(guildId).catch(() => null);
+    if (!guild) continue;
+    const member = await guild.members.fetch({ user: discordId, force: true }).catch(() => null);
+    if (member) return { guild, member };
+  }
+
+  // One final retry after the ready event has had time to populate guild caches.
+  if (Date.now() < deadline) await sleep(1_000);
+  for (const guild of botRef.guilds?.cache?.values?.() || []) {
+    const member = await guild.members.fetch({ user: discordId, force: true }).catch(() => null);
+    if (member) return { guild, member };
+  }
+  return null;
+}
+
 
 function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString('base64url');
@@ -939,12 +976,15 @@ async function handleHttp(req, res) {
     try {
       const accessToken = await exchangeDiscordOAuthCode(code, config);
       const user = await fetchDiscordOAuthUser(accessToken);
-      const guild = botRef?.guilds?.cache?.get(config.guildId) || await botRef?.guilds?.fetch(config.guildId).catch(() => null);
-      if (!guild) throw new Error('Outpost X Discord server could not be verified.');
-      const member = await guild.members.fetch(user.id).catch(() => null);
-      if (!member) throw new Error('You must be a member of the Outpost X Discord server.');
+      const resolved = await resolvePortalGuildMember(user.id, config.guildId);
+      if (!resolved) {
+        throw new Error(botRef?.isReady?.()
+          ? 'You must be a member of the Outpost X Discord server.'
+          : 'Watcher is still connecting to Discord. Please press Try Again in a few seconds.');
+      }
+      const { guild, member } = resolved;
       if (!hasPortalAccess(member)) throw new Error('You need the Outpost X player role before entering the Command Center.');
-      const session = createPortalSession(user, member, config.guildId);
+      const session = createPortalSession(user, member, guild.id);
       return setPortalSessionCookie(res, session, '/portal');
     } catch (err) {
       return oauthErrorPage(res, err.message);
