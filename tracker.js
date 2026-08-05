@@ -909,6 +909,10 @@ async function handleHttp(req, res) {
   const host = req.headers.host || 'localhost';
   const url = new URL(req.url, `http://${host}`);
 
+  if ((url.pathname === '/health' || url.pathname === '/healthz') && req.method === 'GET') {
+    return json(res, 200, { ok: true, service: 'watcher', uptimeSeconds: Math.floor(process.uptime()) });
+  }
+
   if (url.pathname === '/portal/login') {
     let existing = getSession(req);
     if (existing) existing = await refreshPortalSessionAccess(existing, true);
@@ -1318,6 +1322,7 @@ async function handleCommandCenterCommand(message) {
 }
 
 module.exports = {
+  startWebServer,
   startTrackerOnBoot,
   handleTrackerCommand,
   handleTrackerInteraction,

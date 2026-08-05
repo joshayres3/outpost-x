@@ -8,16 +8,15 @@ const {
 } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
 const { getPlayerForLookup, getPlayerDisplayName, ggconPost } = require("./ggcon");
-const idempotency = require("./transactionIdempotency");
-const log = require("./lib/logger");
-const { getItemCatalog } = require("./itemCatalog");
 
 const PLAYER_LINKS_TABLE = process.env.WATCHER_PLAYER_LINKS_TABLE || "watcher_player_links";
 const PURCHASES_TABLE = process.env.WATCHER_SHOP_PURCHASES_TABLE || "watcher_shop_purchases";
 const PRODUCTS_TABLE = process.env.WATCHER_SERVER_SHOP_PRODUCTS_TABLE || "watcher_server_shop_products";
+const CATALOG_CACHE_MS = 6 * 60 * 60 * 1000;
 const PRODUCT_CACHE_MS = 30 * 1000;
 const purchaseLocks = new Set();
 let db = null;
+let catalogCache = { loadedAt: 0, items: [] };
 const productCache = new Map();
 
 const PACKAGES = {
@@ -108,42 +107,14 @@ async function ensurePortalProducts(guildId) {
   return seeded || [];
 }
 
-function catalogIconUrl(icon) {
-  const value = String(icon || '').trim();
-  if (!value) return null;
-  if (/^https?:\/\//i.test(value)) return value;
-  return `https://icons.gghost.games/icons/${encodeURIComponent(value)}.webp`;
-}
-
-async function buildCatalogIndex() {
-  const catalog = await loadCatalog().catch(() => []);
-  return new Map((Array.isArray(catalog) ? catalog : []).map((item) => [String(item?.i || item?.itemClass || item?.class || item?.item || item?.id || '').trim().toLowerCase(), item]).filter((entry) => entry[0]));
-}
-
-function normalizeManagedItem(item, byClass = new Map()) {
-  const itemClass = String(item?.itemClass || item?.class || item?.i || '').trim() || null;
-  const catalogItem = itemClass ? byClass.get(itemClass.toLowerCase()) : null;
-  const icon = String(item?.icon || item?.ico || catalogItem?.ico || '').trim() || null;
-  return {
-    label: String(item?.label || item?.displayName || catalogItem?.dn || itemClass || 'Item'),
-    qty: Math.max(1, Number(item?.qty || 1)),
-    itemClass,
-    aliases: item?.aliases || [item?.label, itemClass].filter(Boolean),
-    icon,
-    iconUrl: String(item?.iconUrl || item?.icon_url || '').trim() || catalogIconUrl(icon),
-    category: String(item?.category || catalogItem?.c || '').trim() || null,
-  };
-}
-
-async function normalizeProductRow(row, byClass = null) {
-  const catalogIndex = byClass || await buildCatalogIndex();
+function normalizeProductRow(row) {
   const items = Array.isArray(row?.items) ? row.items : [];
   return {
     id: row.id, slug: row.slug, name: row.name, emoji: row.emoji || '📦', description: row.description || '',
     category: row.category || 'General', price: Number(row.price || 0), enabled: row.enabled !== false,
     sortOrder: Number(row.sort_order || 0), purchaseLimit: row.purchase_limit == null ? null : Number(row.purchase_limit),
     cooldownMinutes: Number(row.cooldown_minutes || 0),
-    items: items.map((item) => normalizeManagedItem(item, catalogIndex)),
+    items: items.map((item) => ({ label: String(item.label || item.displayName || item.itemClass || 'Item'), qty: Math.max(1, Number(item.qty || 1)), itemClass: item.itemClass || item.class || null, aliases: item.aliases || [item.label, item.itemClass].filter(Boolean) })),
   };
 }
 
@@ -157,8 +128,7 @@ async function listManagedProducts(guildId, includeDisabled = true) {
   const { data, error } = await q;
   if (error) throw error;
   const rows = data?.length ? data : await ensurePortalProducts(guildId);
-  const catalogIndex = await buildCatalogIndex();
-  const products = await Promise.all(rows.map((row) => normalizeProductRow(row, catalogIndex)));
+  const products = rows.map(normalizeProductRow);
   productCache.set(key, { loadedAt: Date.now(), products });
   return products.filter((x) => includeDisabled || x.enabled !== false);
 }
@@ -169,9 +139,7 @@ async function getManagedProduct(guildId, productId) {
   else q = q.eq('slug', String(productId || ''));
   const { data, error } = await q.maybeSingle();
   if (error) throw error;
-  if (!data) return null;
-  const catalogIndex = await buildCatalogIndex();
-  return normalizeProductRow(data, catalogIndex);
+  return data ? normalizeProductRow(data) : null;
 }
 
 function safeSlug(value) {
@@ -179,7 +147,6 @@ function safeSlug(value) {
 }
 
 async function saveManagedProduct(guildId, actorId, body = {}) {
-  const catalogIndex = await buildCatalogIndex();
   const items = (Array.isArray(body.items) ? body.items : []).map((item) => {
     const label = String(item.label || item.displayName || item.itemClass || '').trim();
     const itemClass = String(item.itemClass || item.class || '').trim();
@@ -188,15 +155,12 @@ async function saveManagedProduct(guildId, actorId, body = {}) {
       label,
       itemClass,
     ].filter(Boolean).map(String))];
-    return normalizeManagedItem({
+    return {
       label,
       qty: Math.max(1, Math.min(1000, Math.floor(Number(item.qty || 1)))),
       itemClass: itemClass || null,
       aliases,
-      icon: String(item.icon || item.ico || '').trim() || null,
-      iconUrl: String(item.iconUrl || '').trim() || null,
-      category: String(item.category || '').trim() || null,
-    }, catalogIndex);
+    };
   }).filter((item) => item.label && (item.itemClass || item.aliases.length));
   if (!String(body.name || '').trim()) throw new Error('Product name is required.');
   if (!items.length) throw new Error('This product has no usable package items. Add an item from the catalogue or restore its existing package contents.');
@@ -216,31 +180,6 @@ async function saveManagedProduct(guildId, actorId, body = {}) {
   return normalizeProductRow(result.data);
 }
 
-
-async function reorderManagedProducts(guildId, orderedIds = []) {
-  const current = await listManagedProducts(guildId, true);
-  const currentIds = current.map((p) => String(p.id));
-  const requested = Array.isArray(orderedIds) ? orderedIds.map(String) : [];
-  if (requested.length !== currentIds.length || new Set(requested).size !== requested.length) {
-    throw new Error('The product order is incomplete or contains duplicates. Refresh the manager and try again.');
-  }
-  const currentSet = new Set(currentIds);
-  if (requested.some((id) => !currentSet.has(id))) {
-    throw new Error('The product list changed while you were reordering it. Refresh the manager and try again.');
-  }
-  const updates = requested.map((id, index) =>
-    getDb().from(PRODUCTS_TABLE)
-      .update({ sort_order: index, updated_at: new Date().toISOString() })
-      .eq('guild_id', String(guildId))
-      .eq('id', id)
-  );
-  const results = await Promise.all(updates);
-  const failed = results.find((r) => r.error);
-  if (failed?.error) throw failed.error;
-  productCache.delete(String(guildId));
-  return { ok: true, products: await listManagedProducts(guildId, true) };
-}
-
 async function deleteManagedProduct(guildId, id) {
   const { error } = await getDb().from(PRODUCTS_TABLE).delete().eq('guild_id', String(guildId)).eq('id', String(id));
   if (error) throw error;
@@ -256,39 +195,8 @@ async function searchItemCatalog(query = '', limit = 60) {
     const itemClass = catalogClass(item);
     const label = String(item?.dn || item?.displayName || item?.display_name || item?.name || item?.label || itemClass || 'Unknown Item');
     const haystack = normalize(`${label} ${itemClass} ${names.join(' ')}`);
-    const icon = String(item?.ico || item?.icon || '').trim();
-    return {
-      label,
-      itemClass,
-      category: String(item?.c || item?.category || item?.cat || item?.type || 'SCUM Item'),
-      icon,
-      iconUrl: catalogIconUrl(icon),
-      score: !wanted ? 1 : haystack.includes(wanted) ? (normalize(label).startsWith(wanted) ? 3 : 2) : 0,
-    };
+    return { label, itemClass, category: String(item?.category || item?.cat || item?.type || 'SCUM Item'), score: !wanted ? 1 : haystack.includes(wanted) ? (normalize(label).startsWith(wanted) ? 3 : 2) : 0 };
   }).filter((item) => item.itemClass && item.score > 0).sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)).slice(0, Math.max(1, Math.min(100, Number(limit || 60))));
-}
-
-
-async function getCatalogItemsByClass(itemClasses = []) {
-  const wanted = [...new Set((Array.isArray(itemClasses) ? itemClasses : [])
-    .map((value) => String(value || '').trim())
-    .filter(Boolean))].slice(0, 100);
-  if (!wanted.length) return [];
-  const catalog = await loadCatalog();
-  const byClass = new Map((Array.isArray(catalog) ? catalog : []).map((item) => [catalogClass(item).toLowerCase(), item]).filter(([key]) => key));
-  return wanted.map((itemClass) => {
-    const item = byClass.get(itemClass.toLowerCase());
-    if (!item) return { itemClass, found: false, icon: null, iconUrl: null, category: null, label: itemClass };
-    const icon = String(item?.ico || item?.icon || '').trim();
-    return {
-      itemClass,
-      found: true,
-      label: String(item?.dn || item?.displayName || item?.display_name || item?.name || item?.label || itemClass),
-      category: String(item?.c || item?.category || item?.cat || item?.type || 'SCUM Item'),
-      icon,
-      iconUrl: catalogIconUrl(icon),
-    };
-  });
 }
 
 function getDb() {
@@ -338,7 +246,17 @@ async function getLink(guildId, discordId) {
 }
 
 async function loadCatalog() {
-  return getItemCatalog();
+  if (catalogCache.items.length && Date.now() - catalogCache.loadedAt < CATALOG_CACHE_MS) return catalogCache.items;
+  const base = (process.env.GGCON_BASE_URL || "https://ggcon.gghost.games/s/2788404").replace(/\/+$/, "");
+  const response = await fetch(`${base}/items.json`, {
+    headers: { Accept: "application/json", "X-Password": process.env.GGCON_PASSWORD || "" },
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.ok === false) throw new Error(payload?.reason || payload?.message || `Item catalog failed (${response.status}).`);
+  const items = Array.isArray(payload?.items) ? payload.items : Array.isArray(payload) ? payload : [];
+  if (!items.length) throw new Error("GGCON returned an empty item catalog.");
+  catalogCache = { loadedAt: Date.now(), items };
+  return items;
 }
 
 function catalogNames(item) {
@@ -459,11 +377,6 @@ async function recordPurchase(values) {
 }
 
 async function buyPackage(interaction, pkg) {
-  const idem = await idempotency.begin({ scope: "shop", identity: `${interaction.guildId}:${interaction.user.id}`, requestId: interaction.id });
-  if (idem.duplicate) {
-    if (idem.processing) throw new Error("That purchase is already being processed.");
-    return idem.result || { playerName: "your character", duplicate: true };
-  }
   const lockKey = `${interaction.guildId}:${interaction.user.id}`;
   if (purchaseLocks.has(lockKey)) throw new Error("A shop purchase is already being processed for you.");
   purchaseLocks.add(lockKey);
@@ -473,7 +386,6 @@ async function buyPackage(interaction, pkg) {
     const playerResult = await getPlayerForLookup(link.steam_id);
     const player = playerResult?.type === "single" ? playerResult.player : null;
     if (!player || !isOnline(player)) throw new Error("You must be online in SCUM to receive a shop purchase.");
-    await idempotency.stage(idem.key, 'player_verified_online', { steamId: String(link.steam_id), packageId: pkg.id }).catch(()=>{});
     const cash = getCash(player);
     if (cash === null) throw new Error("Watcher could not verify your current in-game cash.");
     if (cash < pkg.price) throw new Error(`You need $${formatMoney(pkg.price)}. Your current balance is $${formatMoney(cash)}.`);
@@ -481,15 +393,13 @@ async function buyPackage(interaction, pkg) {
     const resolved = [];
     for (const item of pkg.items) resolved.push({ ...item, itemClass: await resolveItemClass(item) });
 
-    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -Math.abs(pkg.price) });
-    await idempotency.stage(idem.key, 'payment_reserved', { amount: pkg.price }).catch(()=>{});
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -pkg.price });
     try {
-      await idempotency.stage(idem.key, 'delivery_requested', { itemCount: resolved.length }).catch(()=>{});
       for (const item of resolved) {
         await ggconPost("/spawn", { steamId: String(link.steam_id), item: item.itemClass, qty: item.qty });
       }
     } catch (error) {
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: Math.abs(pkg.price) }).catch(() => {});
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: pkg.price }).catch(() => {});
       await recordPurchase({
         guild_id: String(interaction.guildId), discord_id: String(interaction.user.id), steam_id: String(link.steam_id),
         player_name: link.scum_name || getPlayerDisplayName(player), package_id: pkg.id, package_name: pkg.name,
@@ -498,20 +408,13 @@ async function buyPackage(interaction, pkg) {
       throw new Error(`Delivery failed, so your $${formatMoney(pkg.price)} was refunded. ${error.message}`);
     }
 
-    await idempotency.stage(idem.key, 'delivery_confirmed').catch(()=>{});
     await recordPurchase({
       guild_id: String(interaction.guildId), discord_id: String(interaction.user.id), steam_id: String(link.steam_id),
       player_name: link.scum_name || getPlayerDisplayName(player), package_id: pkg.id, package_name: pkg.name,
       price: pkg.price, status: "delivered", error_message: null, created_at: new Date().toISOString(),
     });
     await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId: link.steam_id, playerName: link.scum_name || getPlayerDisplayName(player), type: 'server_shop', title: `Server Shop: ${pkg.name}`, amount: -pkg.price, balanceBefore: cash, balanceAfter: cash - pkg.price, details: { packageId: pkg.id, packageName: pkg.name, items: pkg.items } });
-    const result = { playerName: link.scum_name || getPlayerDisplayName(player) };
-    await idempotency.complete(idem.key, result);
-    log.info("shop.purchase.completed", { requestId: interaction.id, steamId: link.steam_id, packageId: pkg.id, price: pkg.price });
-    return result;
-  } catch (error) {
-    await idempotency.fail(idem.key, error).catch(() => {});
-    throw error;
+    return { playerName: link.scum_name || getPlayerDisplayName(player) };
   } finally {
     purchaseLocks.delete(lockKey);
   }
@@ -601,7 +504,7 @@ async function getPortalCatalog(guildId) {
   }
 }
 
-async function buyPackageForPortal({ guildId, discordId, steamId, playerName, packageId, requestId }) {
+async function buyPackageForPortal({ guildId, discordId, steamId, playerName, packageId }) {
   let pkg = null;
   try { pkg = await getManagedProduct(guildId, packageId); } catch {}
   if (!pkg) {
@@ -609,8 +512,6 @@ async function buyPackageForPortal({ guildId, discordId, steamId, playerName, pa
     if (fallback) pkg = { ...fallback, slug: fallback.id, enabled: true };
   }
   if (!pkg || pkg.enabled === false) throw new Error('That shop package no longer exists or is disabled.');
-  const idem = await idempotency.begin({ scope: 'shop', identity: `${guildId}:${discordId}`, requestId });
-  if (idem.duplicate) { if (idem.processing) throw new Error('That purchase is already being processed.'); return idem.result; }
   const lockKey = `${guildId}:${discordId}`;
   if (purchaseLocks.has(lockKey)) throw new Error('A shop purchase is already being processed for you.');
   purchaseLocks.add(lockKey);
@@ -620,29 +521,22 @@ async function buyPackageForPortal({ guildId, discordId, steamId, playerName, pa
     const playerResult = await getPlayerForLookup(link.steam_id);
     const player = playerResult?.type === 'single' ? playerResult.player : null;
     if (!player || !isOnline(player)) throw new Error('You must be online in SCUM to receive a shop purchase.');
-    await idempotency.stage(idem.key, 'player_verified_online', { steamId: String(link.steam_id), packageId: pkg.id }).catch(()=>{});
     const cash = getCash(player);
     if (cash === null) throw new Error('Watcher could not verify your current in-game cash.');
     if (cash < pkg.price) throw new Error(`You need $${formatMoney(pkg.price)}. Your current balance is $${formatMoney(cash)}.`);
     const resolved = [];
     for (const item of pkg.items) resolved.push({ ...item, itemClass: item.itemClass || await resolveItemClass(item) });
-    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -Math.abs(pkg.price) });
-    await idempotency.stage(idem.key, 'payment_reserved', { amount: pkg.price }).catch(()=>{});
+    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: -pkg.price });
     try {
-      await idempotency.stage(idem.key, 'delivery_requested', { itemCount: resolved.length }).catch(()=>{});
       for (const item of resolved) await ggconPost('/spawn', { steamId: String(link.steam_id), item: item.itemClass, qty: item.qty });
     } catch (error) {
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: Math.abs(pkg.price) }).catch(() => {});
-      await idempotency.stage(idem.key, 'delivery_confirmed').catch(()=>{});
-    await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.slug||pkg.id, package_name:pkg.name, price:pkg.price, status:'refunded', error_message:error.message, created_at:new Date().toISOString() });
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: 'change', amount: pkg.price }).catch(() => {});
+      await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.slug||pkg.id, package_name:pkg.name, price:pkg.price, status:'refunded', error_message:error.message, created_at:new Date().toISOString() });
       throw new Error(`Delivery failed, so your $${formatMoney(pkg.price)} was refunded. ${error.message}`);
     }
     await recordPurchase({ guild_id:String(guildId), discord_id:String(discordId), steam_id:String(link.steam_id), player_name:link.scum_name||getPlayerDisplayName(player), package_id:pkg.slug||pkg.id, package_name:pkg.name, price:pkg.price, status:'delivered', error_message:null, created_at:new Date().toISOString() });
     await recordTransaction({ guildId, discordId, steamId:link.steam_id, playerName:link.scum_name||getPlayerDisplayName(player), type:'server_shop', title:`Server Shop: ${pkg.name}`, amount:-pkg.price, balanceBefore:cash, balanceAfter:cash-pkg.price, details:{ packageId:pkg.id, packageName:pkg.name, items:pkg.items } });
-    const result = { ok:true, package:pkg, playerName:link.scum_name||getPlayerDisplayName(player), balanceBefore:cash, balanceAfter:cash-pkg.price };
-    await idempotency.complete(idem.key, result);
-    log.info('shop.purchase.completed', { requestId, steamId: link.steam_id, packageId: pkg.id, price: pkg.price });
-    return result;
-  } catch (error) { await idempotency.fail(idem.key, error).catch(()=>{}); throw error; } finally { purchaseLocks.delete(lockKey); }
+    return { ok:true, package:pkg, playerName:link.scum_name||getPlayerDisplayName(player), balanceBefore:cash, balanceAfter:cash-pkg.price };
+  } finally { purchaseLocks.delete(lockKey); }
 }
-module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, reorderManagedProducts, deleteManagedProduct, searchItemCatalog, getCatalogItemsByClass };
+module.exports = { handleShopCommand, handleShopInteraction, getPortalCatalog, buyPackageForPortal, listManagedProducts, saveManagedProduct, deleteManagedProduct, searchItemCatalog };

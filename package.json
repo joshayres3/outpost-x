@@ -7,10 +7,7 @@
     "node": "22.x"
   },
   "scripts": {
-    "start": "node index.js",
-    "upload:map-assets": "node scripts/uploadMapAssetsToSupabase.js",
-    "test": "node test/ggcon-client.test.js && node test/transaction-state.test.js",
-    "check": "node --check index.js && node --check ggcon.js && node --check tracker.js && npm test"
+    "start": "node index.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.15.0",

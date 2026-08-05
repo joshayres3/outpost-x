@@ -4,8 +4,6 @@ const path = require("path");
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
 const CARGO_FRENZY_SAFE_POINTS = require("./cargoSafePoints");
-const ggconClient = require("./ggcon/client");
-const ggconServices = require("./ggcon/index");
 
 const DEFAULT_GGCON_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const STATUS_FILE = path.join(__dirname, "data", "ggcon-status.json");
@@ -94,19 +92,106 @@ function getDiscordActorName(context) {
   return context?.member?.displayName || context?.user?.tag || context?.author?.tag || "Unknown";
 }
 
-function getBaseUrl() { return ggconClient.baseUrl(); }
-function hasPasswordConfigured() { return ggconClient.hasPasswordConfigured(); }
+function getBaseUrl() {
+  return (process.env.GGCON_BASE_URL || DEFAULT_GGCON_BASE_URL).replace(/\/+$/, "");
+}
+
+function getPassword() {
+  const password = process.env.GGCON_PASSWORD;
+  if (!password) {
+    throw new Error("Missing server API password Railway variable.");
+  }
+  return password;
+}
+
+function hasPasswordConfigured() {
+  return !!process.env.GGCON_PASSWORD;
+}
 
 async function ggconGet(endpoint) {
-  return ggconClient.get(endpoint, { attempts: 2 });
+  const url = `${getBaseUrl()}${endpoint}`;
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "X-Password": getPassword(),
+    },
+  });
+
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok) {
+    const reason = data?.reason || data?.message || data?.error || `HTTP ${res.status}`;
+    throw new Error(`Server request failed: ${reason}`);
+  }
+
+  if (data && data.ok === false) {
+    const reason = data.reason || data.message || data.error || "Unknown server API error";
+    throw new Error(`Server request failed: ${reason}`);
+  }
+
+  return data;
 }
 
 async function ggconPost(endpoint, body = {}) {
-  return ggconClient.post(endpoint, body);
+  const url = `${getBaseUrl()}${endpoint}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Password": getPassword(),
+    },
+    body: JSON.stringify(body || {}),
+  });
+
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok) {
+    const reason = data?.reason || data?.message || data?.error || `HTTP ${res.status}`;
+    throw new Error(`Server request failed: ${reason}`);
+  }
+
+  if (data && data.ok === false) {
+    const reason = data.reason || data.message || data.error || "Unknown server API error";
+    throw new Error(`Server request failed: ${reason}`);
+  }
+
+  return data || { ok: true };
 }
 
 async function ggconPostRaw(endpoint, body = {}) {
-  return ggconClient.rawPost(endpoint, body);
+  const url = `${getBaseUrl()}${endpoint}`;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Password": getPassword(),
+      },
+      body: JSON.stringify(body || {}),
+    });
+
+    const data = await res.json().catch(() => null);
+
+    return {
+      httpOk: res.ok,
+      status: res.status,
+      data,
+      error: null,
+    };
+  } catch (err) {
+    return {
+      httpOk: false,
+      status: 0,
+      data: null,
+      error: err?.message || String(err),
+    };
+  }
 }
 
 function hasStaffRole(member) {
@@ -1493,20 +1578,6 @@ async function getPlayerIpInfo(player) {
       source: entry?.src || "server logs",
       seenAt: entry?.t || null,
       kind: classifyIpLogLine(entry?.line),
-    };
-  }
-
-  // Offline player lookups often come from the saved Watcher snapshot rather than
-  // the live GGCON object. Use the same saved Last IP displayed in Player Details
-  // so the admin location lookup does not incorrectly report that no IP exists.
-  const snapshot = await loadPlayerSnapshot(steamId).catch(() => null);
-  const snapshotIp = extractIpv4(snapshot?.last_ip);
-  if (snapshotIp) {
-    return {
-      ip: snapshotIp,
-      source: "Watcher player snapshot",
-      seenAt: snapshot?.last_seen_online_at || snapshot?.last_updated_at || null,
-      kind: "saved player snapshot",
     };
   }
 
@@ -6223,7 +6294,7 @@ async function handleGgconInteraction(interaction) {
         await interaction.reply({ content: "Refund target was not found or the amount was invalid.", ephemeral: true }).catch(() => {});
         return true;
       }
-      await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action: "change", amount: Math.abs(amount) });
+      await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action: "change", amount });
       await interaction.reply({
         content: `💸 Refund sent to **${getPlayerDisplayName(playerResult.player)}**: **$${formatMoney(amount)}**.`,
         ephemeral: true,
@@ -6553,10 +6624,8 @@ module.exports = {
   getOnlinePlayers,
   getServerSummary,
   getPlayerDisplayName,
-  getPlayerIpInfo,
   ggconPost,
   ggconGet,
-  services: ggconServices,
   triggerCargoFrenzyFromPortal,
   jailPlayerBySteamId,
   unjailPlayerBySteamId,

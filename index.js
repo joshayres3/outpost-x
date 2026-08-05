@@ -95,20 +95,13 @@ const { startPlayerShops, handlePlayerShopCommand, handlePlayerShopMessage, hand
 const { startSquadFinder, handleSquadFinderCommand, handleSquadFinderInteraction, handleSquadFinderModal } = require("./squadFinder");
 const { startPlayerLore, handlePlayerLoreCommand, handlePlayerLoreMessage, handlePlayerLoreInteraction, handlePlayerLoreModal } = require("./playerLore");
 const { startAnalyticsOnBoot, handleAnalyticsCommand } = require("./analytics");
-const { startCommunityChallengeOnBoot } = require("./communityChallenge");
 const { startTicketSystem, handleTicketCommand, handleTicketInteraction } = require("./tickets");
 const {
   handleRulesAcceptCommand,
   handleRulesAcceptInteraction,
 } = require("./rulesAccept");
-const { startTrackerWebOnBoot, startTrackerJobsOnBoot, handleTrackerCommand, handleTrackerInteraction, handleCommandCenterCommand } = require("./tracker");
-const deploymentCoordinator = require('./deploymentCoordinator');
+const { startWebServer, startTrackerOnBoot, handleTrackerCommand, handleTrackerInteraction, handleCommandCenterCommand } = require("./tracker");
 const { startSpecialEventsOnBoot } = require("./watcherSpecialEvents");
-const { startGlobalChatBridge, handleGlobalChatMessage } = require("./globalChatBridge");
-const watcherScheduler = require("./watcherScheduler");
-const { syncItemCatalog, ITEM_CATALOG_SYNC_INTERVAL_MS } = require("./itemCatalog");
-const { validateStartup } = require('./startupValidation');
-const log = require('./lib/logger');
 const {
   registerPlayerPanelCommands,
   handlePlayerPanelCommand,
@@ -245,14 +238,10 @@ bot.once(Events.ClientReady, async () => {
 
     startEventScheduler(bot, db);
     startGgconStatusOnBoot(bot);
-    watcherScheduler.registerTask('ggcon-item-catalog-sync', ITEM_CATALOG_SYNC_INTERVAL_MS, () => syncItemCatalog({ force: true }), {
-      initialDelayMs: 20_000,
-    });
   startSpecialEventsOnBoot(bot).catch((err) => console.error("❌ Special events startup failed:", err.message));
     startInsuranceOnBoot(bot);
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));
     startLotteryOnBoot(bot).catch((err) => console.error("❌ Lottery startup failed:", err.message));
-    await startGlobalChatBridge(bot).catch((err) => console.error("❌ Global chat bridge startup failed:", err.message));
     startPopupEventsOnBoot(bot).catch((err) => console.error("❌ Pop-up event startup failed:", err.message));
     startTicketSystem(bot, db);
     startRentalSystem(bot);
@@ -260,13 +249,8 @@ bot.once(Events.ClientReady, async () => {
     startSquadFinder(bot, db);
     startPlayerLore(bot, db);
     startAnalyticsOnBoot(bot);
-    startCommunityChallengeOnBoot(bot);
-    await startTrackerJobsOnBoot(bot);
-    const validation = await validateStartup(bot);
-    if (validation.status === 'not_ready') throw new Error('Startup validation found an essential failure.');
-    deploymentCoordinator.setBotReady(true);
+    startTrackerOnBoot(bot).catch((err) => console.error("❌ Tracker startup failed:", err.message));
   } catch (err) {
-    deploymentCoordinator.setBotReady(false);
     console.error("❌ Startup database load failed:", err);
   }
 });
@@ -379,8 +363,6 @@ bot.on(Events.MessageCreate, async (msg) => {
     await handleWelcomeMessage(msg, db);
 
     if (msg.author.bot) return;
-
-    if (await handleGlobalChatMessage(msg)) return;
 
     if (await handlePlayerShopMessage(msg)) return;
     if (await handlePlayerLoreMessage(msg)) return;
@@ -516,31 +498,18 @@ If the rules do not clearly answer the question, say:
 
 bot.on("error", (err) => console.error("❌ Discord error:", err));
 
-async function gracefulShutdown(signal){
-  console.log(`⚠️ ${signal} received. Draining Watcher safely.`);
-  deploymentCoordinator.setBotReady(false);
-  watcherScheduler.stopAll();
-  await deploymentCoordinator.shutdown(signal).catch(()=>{});
+process.on("SIGTERM", () => {
+  console.log("⚠️ SIGTERM received. The host/container is stopping the bot.");
   bot.destroy();
-  setTimeout(()=>process.exit(0),250).unref?.();
-}
-process.on("SIGTERM",()=>gracefulShutdown("SIGTERM"));
+  process.exit(0);
+});
 
-watcherScheduler.registerTask('watcher-heartbeat', 15 * 60 * 1000, async () => {
-  const ggconMetrics = require('./ggcon/client').metricsSnapshot({ reset: true });
-  const scheduler = watcherScheduler.snapshot();
-  log.info('watcher.health_summary', {
-    deployment: deploymentCoordinator.state(),
-    schedulerTasks: scheduler.length,
-    schedulerFailures: scheduler.filter((task) => task.consecutiveFailures > 0).map((task) => ({ name: task.name, failures: task.consecutiveFailures })),
-    ggcon: ggconMetrics,
-  });
-}, { leaderOnly: false, initialDelayMs: 15 * 60 * 1000 });
+setInterval(() => {
+  console.log(`💓 Watcher heartbeat: ${new Date().toISOString()}`);
+}, 5 * 60 * 1000);
 
-startTrackerWebOnBoot(bot);
-(async()=>{
-  try{
-    await deploymentCoordinator.waitForLeadership({onRelinquish:async()=>{deploymentCoordinator.setBotReady(false);bot.destroy();setTimeout(()=>process.exit(0),250).unref?.();}});
-    await bot.login(process.env.DISCORD_TOKEN);
-  }catch(err){console.error('❌ Watcher deployment startup failed:',err);process.exit(1);}
-})();
+// Start the HTTP listener before Discord or database startup so Railway can pass
+// its network healthcheck even if an external dependency is slow.
+startWebServer();
+
+bot.login(process.env.DISCORD_TOKEN);

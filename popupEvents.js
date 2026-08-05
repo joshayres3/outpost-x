@@ -1,9 +1,6 @@
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
 const { triggerBonusLottery } = require("./lottery");
-const ggconServices = require('./ggcon/index');
-const rewardQueue = require('./popupRewardQueue');
-const watcherScheduler = require('./watcherScheduler');
 
 const DEFAULT_SERVER_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const RUNTIME_STATE_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || "watcher_runtime_state";
@@ -12,8 +9,7 @@ const STATE_KEY = "popup_events_config";
 const PREFIX = "[The Watcher]";
 
 const CHECK_MINUTES = Math.max(1, Number(process.env.POPUP_ELIGIBILITY_CHECK_MINUTES || "15"));
-const ACTIVE_CHAT_SCAN_SECONDS = Math.max(1, Number(process.env.POPUP_ACTIVE_CHAT_SCAN_SECONDS || "2"));
-const IDLE_CHAT_SCAN_SECONDS = Math.max(10, Number(process.env.POPUP_IDLE_CHAT_SCAN_SECONDS || process.env.POPUP_CHAT_SCAN_SECONDS || "30"));
+const CHAT_SCAN_SECONDS = Math.max(5, Number(process.env.POPUP_CHAT_SCAN_SECONDS || "10"));
 const MIN_ELIGIBLE = Math.max(1, Number(process.env.POPUP_MIN_ELIGIBLE_PLAYERS || "4"));
 const QUICK_COOLDOWN_MS = Math.max(1, Number(process.env.POPUP_QUICK_COOLDOWN_MINUTES || "60")) * 60_000;
 const SHARED_QUIET_MS = Math.max(0, Number(process.env.POPUP_SHARED_QUIET_MINUTES || "10")) * 60_000;
@@ -33,9 +29,6 @@ let activeEvent = null;
 let botRef = null;
 let stormTimer = null;
 let stormActive = false;
-let chatProbeCapturedForEventId = null;
-let privateChatProbe = null;
-const chatRowConsumers = new Set();
 
 const MULTIPLE_CHOICE = [
   { prompt: "Which attribute governs the Thievery skill? 1) Dexterity 2) Strength 3) Intelligence", correct: 1 },
@@ -226,17 +219,31 @@ function serverPassword() {
 }
 
 async function serverGet(path) {
-  return ggconServices.client.get(path, { attempts: 2 });
+  const res = await fetch(`${serverBaseUrl()}${path}`, { headers: { Accept: "application/json", "X-Password": serverPassword() } });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!res.ok || data?.ok === false) throw new Error(data?.message || data?.error || `Server GET failed: ${res.status}`);
+  return data;
 }
 
 async function serverPost(path, body = {}) {
-  return ggconServices.client.post(path, body, { requireConfirmed: true });
+  const res = await fetch(`${serverBaseUrl()}${path}`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json", "X-Password": serverPassword() },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!res.ok || data?.ok === false || data?.accepted === false) throw new Error(data?.message || data?.error || `Server POST failed: ${res.status}`);
+  return data || { ok: true };
 }
 
 async function sendGame(text, steamId = null) {
   const body = { text: `${PREFIX} ${String(text || "").trim()}`, type: "ServerMessage" };
   if (steamId) body.steamId = String(steamId);
-  return ggconServices.client.post('/message', body, { requireConfirmed: true });
+  return serverPost("/message", body);
 }
 
 async function loadState() {
@@ -364,51 +371,16 @@ function normalizeAnswer(value) {
     .trim();
 }
 
-function rawChatRowText(row) {
-  if (typeof row === "string") return row;
-  return String(
-    row?.line ?? row?.message ?? row?.text ?? row?.raw ?? row?.content ?? row?.data?.line ?? row?.data?.message ?? ""
-  );
-}
-
-function parseScumChatLine(row) {
-  const raw = rawChatRowText(row);
-  // GGCON SCUM chat format:
-  // 2026.08.02-20.06.34: '76561198108396598:Josh Ayres(0)' 'Local: chat test'
-  const match = raw.match(/^.*?:\s*'(\d{15,20}):(.+?)\((\d+)\)'\s*'([^:']+):\s*(.*)'\s*$/);
-  if (!match) return null;
-  return {
-    steamId: match[1],
-    name: match[2].trim(),
-    profileId: match[3],
-    channel: match[4].trim(),
-    message: match[5].trim(),
-    raw,
-  };
-}
-
-function chatRowText(row) {
-  const parsed = parseScumChatLine(row);
-  return parsed?.message ?? rawChatRowText(row);
-}
-
 function parseChatIdentity(row) {
   const directSteamId = String(
-    row?.steamId || row?.steam_id || row?.userId || row?.user_id || row?.playerSteamId || row?.player_id ||
-    row?.data?.steamId || row?.data?.steam_id || row?.data?.userId || ""
+    row?.steamId || row?.steam_id || row?.userId || row?.user_id || row?.playerSteamId || ""
   ).trim();
-  const directName = String(
-    row?.playerName || row?.characterName || row?.name || row?.player || row?.username ||
-    row?.data?.playerName || row?.data?.characterName || row?.data?.name || ""
-  ).trim();
+  const directName = String(row?.playerName || row?.characterName || row?.name || "").trim();
   if (/^\d{15,20}$/.test(directSteamId)) {
     return { steamId: directSteamId, name: directName || directSteamId, profileId: row?.profileId || row?.profile_id || null };
   }
 
-  const scumLine = parseScumChatLine(row);
-  if (scumLine) return { steamId: scumLine.steamId, name: scumLine.name, profileId: scumLine.profileId };
-
-  const text = rawChatRowText(row);
+  const text = String(row?.line ?? row ?? "");
   const match = text.match(/'?(\d{15,20})\s*:\s*([^('\n\r]+?)\s*\((\d+)\)'?/);
   if (match) return { steamId: match[1], name: match[2].trim(), profileId: match[3] };
 
@@ -417,43 +389,10 @@ function parseChatIdentity(row) {
   return null;
 }
 
-function parseChatSpeakerName(row) {
-  const directName = String(
-    row?.playerName || row?.characterName || row?.name || row?.player || row?.username ||
-    row?.data?.playerName || row?.data?.characterName || row?.data?.name || ""
-  ).trim();
-  if (directName) return directName;
-
-  const scumLine = parseScumChatLine(row);
-  if (scumLine) return scumLine.name;
-
-  const text = rawChatRowText(row);
-  const patterns = [
-    /(?:^|\])\s*([^:\[\]\r\n]{1,64})\s*:\s*!/,
-    /^\s*([^:\r\n]{1,64})\s*:\s*!/,
-    /'?\d{15,20}\s*:\s*([^('\n\r]+?)\s*\(\d+\)'?/
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) return String(match[1]).trim();
-  }
-  return "";
-}
-
-function normalizePlayerName(value) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 function parseCommand(line) {
-  const text = String(line || "");
-  const match = text.match(/(?:^|\s)!(answer|guess|join|a|b|c|one|two|three|1|2|3|true|false|t|f|higher|lower|same)(?:\s+([^\r\n]*))?/i);
-  if (match) return { command: match[1].toLowerCase(), value: String(match[2] || "").trim() };
-
-  // Text-answer events historically accepted shorthand such as !AXE.
-  // Preserve that player-friendly format without treating punctuation-only text as an answer.
-  const shorthand = text.match(/(?:^|\s)!([a-z0-9][a-z0-9 _-]{0,79})(?=\s*$)/i);
-  if (!shorthand) return null;
-  return { command: "text_shorthand", value: String(shorthand[1] || "").trim() };
+  const match = String(line || "").match(/(?:^|\s)!(answer|guess|join|a|b|c|one|two|three|1|2|3|true|false|t|f|higher|lower|same)(?:\s+([^\r\n]*))?/i);
+  if (!match) return null;
+  return { command: match[1].toLowerCase(), value: String(match[2] || "").trim() };
 }
 
 function answerNumber(command) {
@@ -489,10 +428,9 @@ function formatRemaining(ms) {
 }
 
 async function logToDiscord(bot, state, text) {
-  // The former Watcher Events Discord status channel was retired. Popup-event
-  // status remains available in Railway logs and the portal, but is not posted
-  // to any replacement Discord channel.
-  return null;
+  if (!state?.logChannelId) return;
+  const channel = await bot.channels.fetch(String(state.logChannelId)).catch(() => null);
+  if (channel?.send) await channel.send(text).catch(() => {});
 }
 
 function chooseReward() {
@@ -566,8 +504,8 @@ async function restoreStormState(state) {
 
 async function deliverReward(event, winner, state) {
   const reward = event.reward || chooseReward();
-  if (reward.type === "fame") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/fame`, { action: "change", amount: Math.abs(reward.amount) });
-  else if (reward.type === "cash") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/currency`, { action: "change", amount: Math.abs(reward.amount) });
+  if (reward.type === "fame") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/fame`, { action: "change", amount: reward.amount });
+  else if (reward.type === "cash") await serverPost(`/players/${encodeURIComponent(winner.steamId)}/currency`, { action: "change", amount: reward.amount });
   else if (reward.type === "bonus_lottery") await triggerBonusLottery(botRef, state.guildId);
   return reward;
 }
@@ -590,25 +528,17 @@ async function completeWithWinner(winner, extra = {}) {
   if (!event || event.finished) return;
   event.finished = true;
   const state = await loadState();
-  const reward = event.reward || chooseReward();
   try {
-    await deliverReward(event, winner, state);
-    if (reward.type === "bonus_lottery") await sendGame(`${winner.name} triggered an extra lottery.`).catch(() => {});
-    else if (reward.type === "none") await sendGame(`${winner.name} was selected. Reward: nothing. The choice was statistically valid.`).catch(() => {});
-    else await sendGame(`${winner.name} wins ${reward.label}.`).catch(() => {});
+    const reward = await deliverReward(event, winner, state);
+    if (reward.type === "bonus_lottery") await sendGame(`${winner.name} triggered an extra lottery.`);
+    else if (reward.type === "none") await sendGame(`${winner.name} was selected. Reward: nothing. The choice was statistically valid.`);
+    else await sendGame(`${winner.name} wins ${reward.label}.`);
     await logToDiscord(botRef, state, `✅ **Chat Event Completed**\nType: ${event.type}\nWinner: **${winner.name}** (${winner.steamId})\nReward: ${reward.label}`);
     await finishEvent({ status: "completed", winner, reward, ...extra });
   } catch (err) {
-    const queued = await rewardQueue.enqueue({ eventId: event.id, eventType: event.type, winner, reward, error: err }).catch(() => null);
-    await logToDiscord(botRef, state, [
-      `⚠️ **Pop-Up Reward Saved for Retry**`,
-      `Type: ${event.type}`,
-      `Winner: **${winner.name}** (${winner.steamId})`,
-      `Reward: ${reward.label}`,
-      `Status: ${queued ? 'Saved and will retry automatically when the player and SCUM game thread are available.' : 'Queue save failed — manual review required.'}`,
-      `Error: ${err.message}`,
-    ].join('\n'));
-    await finishEvent({ status: queued ? "reward_pending" : "reward_failed", winner, reward, rewardQueueId: queued?.id || null, error: err.message, ...extra });
+    await sendGame(`${winner.name} won, but reward delivery failed. Staff has been notified.`).catch(() => {});
+    await logToDiscord(botRef, state, `⚠️ **Pop-Up Reward Failed**\nType: ${event.type}\nWinner: **${winner.name}** (${winner.steamId})\nError: ${err.message}`);
+    await finishEvent({ status: "reward_failed", winner, error: err.message, ...extra });
   }
 }
 
@@ -655,7 +585,6 @@ async function startQuickEvent({ forceType = null } = {}) {
   const type = forceType || pick(["multiple_choice", "text_answer", "true_false", "odd_one_out", "higher_lower", "number_guess", "mystery"]);
   const event = { id: randomId(), category: "quick", type, startedAt: Date.now(), finished: false, entries: new Map(), answered: new Set(), reward: chooseReward() };
   activeEvent = event;
-  scheduleChatScan(0);
   event.timeout = setTimeout(() => expireQuickEvent().catch(console.error), EVENT_DURATION_MS);
 
   if (["multiple_choice", "text_answer", "true_false", "odd_one_out", "higher_lower"].includes(type)) {
@@ -668,7 +597,7 @@ async function startQuickEvent({ forceType = null } = {}) {
       await sendGame(`RAPID ASSESSMENT: ${q.prompt}. Reply !1, !2 or !3. !a, !b or !c also work. First correct answer wins. You have 2 minutes.`);
     } else if (event.type === "text_answer") {
       event.answers = q.answers.map(normalizeAnswer);
-      await sendGame(`IDENTIFY IT: ${q.prompt}. Reply with !answer followed by your answer, or use the short form. Examples: !answer screwdriver or !screwdriver. First correct answer wins. You have 2 minutes.`);
+      await sendGame(`IDENTIFY IT: ${q.prompt}. Reply with !answer followed by your answer. Example: !answer screwdriver. First correct answer wins. You have 2 minutes.`);
     } else if (event.type === "true_false") {
       event.correct = q.correct;
       await sendGame(`TRUE OR FALSE: ${q.prompt} Reply !true or !false. !t or !f also work. First correct answer wins. You have 2 minutes.`);
@@ -694,175 +623,24 @@ async function fetchChatLogsSince(since) {
   return serverGet(`/logs?${params.toString()}`);
 }
 
-function sanitizeChatProbe(value, depth = 0) {
-  if (depth > 4) return "[depth-limit]";
-  if (value === null || value === undefined) return value;
-  if (typeof value === "string") return value.length > 500 ? `${value.slice(0, 500)}…[truncated]` : value;
-  if (["number", "boolean"].includes(typeof value)) return value;
-  if (Array.isArray(value)) return value.slice(0, 3).map((entry) => sanitizeChatProbe(entry, depth + 1));
-  if (typeof value !== "object") return String(value);
-
-  const out = {};
-  for (const [key, entry] of Object.entries(value).slice(0, 40)) {
-    if (/password|secret|token|authorization|cookie|api.?key/i.test(key)) {
-      out[key] = "[redacted]";
-      continue;
-    }
-    out[key] = sanitizeChatProbe(entry, depth + 1);
-  }
-  return out;
-}
-
-function candidateChatRows(data) {
-  const candidates = [
-    data?.lines,
-    data?.events,
-    data?.logs,
-    data?.entries,
-    data?.items,
-    data?.data?.lines,
-    data?.data?.events,
-    data?.data?.logs,
-    data?.data?.entries,
-    data?.data?.items,
-    Array.isArray(data?.data) ? data.data : null,
-  ];
-  return candidates.find(Array.isArray) || [];
-}
-
-function chatRowTimestamp(row) {
-  const raw = row?.t ?? row?.timestamp ?? row?.time ?? row?.createdAt ?? row?.created_at ?? row?.data?.t ?? row?.data?.timestamp ?? row?.data?.time;
-  const numeric = Number(raw);
-  if (Number.isFinite(numeric) && numeric > 0) return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
-  const parsed = Date.parse(String(raw || ""));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-async function processPrivateChatProbe(rows, data) {
-  const probe = privateChatProbe;
-  if (!probe) return;
-  if (Date.now() >= probe.expiresAt) {
-    privateChatProbe = null;
-    const channel = await botRef?.channels?.fetch?.(probe.channelId).catch(() => null);
-    await channel?.send?.("⚠️ Private chat test expired without receiving a new SCUM chat row.").catch(() => {});
-    return;
-  }
-
-  const freshRows = rows.filter((row) => {
-    const ts = chatRowTimestamp(row);
-    return !ts || ts >= probe.startedAt - 2_000;
-  });
-  if (!freshRows.length) return;
-
-  const sample = freshRows[freshRows.length - 1];
-  privateChatProbe = null;
-  const payload = {
-    mode: "private",
-    requestedAt: probe.startedAt,
-    detectedRowCount: freshRows.length,
-    detectedSample: sanitizeChatProbe(sample),
-    topLevelKeys: data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data).slice(0, 40) : [],
-  };
-  console.warn(`🧪 POPUP_CHAT_PROBE ${JSON.stringify(payload)}`);
-
-  const text = chatRowText(sample);
-  const speaker = parseChatSpeakerName(sample);
-  const identity = parseChatIdentity(sample);
-  const channel = await botRef?.channels?.fetch?.(probe.channelId).catch(() => null);
-  await channel?.send?.([
-    "✅ **Private SCUM chat test detected a new row.**",
-    `Message: ${text ? `\`${String(text).slice(0, 180)}\`` : "not extracted"}`,
-    `Speaker: ${speaker || identity?.name || "not extracted"}`,
-    `Steam64: ${identity?.steamId || "not present in chat row"}`,
-    "A sanitized `POPUP_CHAT_PROBE` sample was also written to Railway.",
-  ].join("\n")).catch(() => {});
-}
-
-function emitChatProbe(event, since, data) {
-  if (!event?.id || chatProbeCapturedForEventId === event.id) return;
-  chatProbeCapturedForEventId = event.id;
-
-  const rows = candidateChatRows(data);
-  const payload = {
-    eventId: event.id,
-    eventType: event.type,
-    requestedSince: since,
-    topLevelType: Array.isArray(data) ? "array" : typeof data,
-    topLevelKeys: data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data).slice(0, 40) : [],
-    detectedRowCount: rows.length,
-    detectedSample: rows.length ? sanitizeChatProbe(rows[0]) : null,
-    responseSample: rows.length ? undefined : sanitizeChatProbe(data),
-  };
-
-  console.warn(`🧪 POPUP_CHAT_PROBE ${JSON.stringify(payload)}`);
-}
-
-function registerChatRowConsumer(consumer) {
-  if (typeof consumer !== "function") throw new TypeError("Chat row consumer must be a function.");
-  chatRowConsumers.add(consumer);
-  if (botRef) {
-    startTimers(botRef);
-    scheduleChatScan(0);
-  }
-  return () => chatRowConsumers.delete(consumer);
-}
-
-async function dispatchChatRows(rows, data) {
-  if (!chatRowConsumers.size || !rows.length) return;
-  for (const consumer of [...chatRowConsumers]) {
-    try {
-      await consumer(rows, data);
-    } catch (err) {
-      console.error("❌ SCUM chat consumer failed:", err.message);
-    }
-  }
-}
-
 async function scanChat() {
   if (chatRunning) return;
   chatRunning = true;
   try {
     const state = await loadState();
-    if (!state.enabled && !privateChatProbe && !chatRowConsumers.size) return;
+    if (!state.enabled || !state.guildId) return;
     const since = state.chatCursor || Math.max(0, Date.now() - 120_000);
     const data = await fetchChatLogsSince(since);
+    const lines = Array.isArray(data?.lines) ? data.lines.slice().sort((a, b) => Number(a?.t || 0) - Number(b?.t || 0)) : [];
+    const next = Number(data?.next || lines.reduce((max, row) => Math.max(max, Number(row?.t || 0)), since) || Date.now());
     const event = activeEvent;
-    if (event) emitChatProbe(event, since, data);
-
-    const rawLines = candidateChatRows(data);
-    await processPrivateChatProbe(rawLines, data);
-    const lines = rawLines.slice().sort((a, b) => chatRowTimestamp(a) - chatRowTimestamp(b));
-    await dispatchChatRows(lines, data);
-    const next = Number(data?.next || data?.cursor || data?.data?.next || lines.reduce((max, row) => Math.max(max, Number(row?.t || row?.timestamp || row?.time || 0)), since) || Date.now());
 
     if (event) {
       const staffIds = await getStaffSteamIds(botRef, state.guildId);
-      let onlinePlayersByName = null;
       for (const row of lines) {
         if (!activeEvent || activeEvent.id !== event.id || event.finished) break;
-        let identity = parseChatIdentity(row);
-        const parsed = parseCommand(chatRowText(row));
-
-        // Some GGCON chat rows contain the visible character name but omit Steam64.
-        // Resolve those rows against the current player list so valid answers are not ignored.
-        if (!identity && parsed) {
-          const speakerName = parseChatSpeakerName(row);
-          if (speakerName) {
-            if (!onlinePlayersByName) {
-              const onlinePlayers = await getOnlinePlayers().catch(() => []);
-              onlinePlayersByName = new Map();
-              for (const player of onlinePlayers) {
-                const key = normalizePlayerName(playerName(player));
-                if (key && !onlinePlayersByName.has(key)) onlinePlayersByName.set(key, player);
-              }
-            }
-            const wanted = normalizePlayerName(speakerName);
-            const match = onlinePlayersByName.get(wanted);
-            const steamId = match ? playerSteamId(match) : "";
-            if (steamId) identity = { steamId, name: playerName(match) || speakerName, profileId: null };
-          }
-        }
-
+        const identity = parseChatIdentity(row);
+        const parsed = parseCommand(row?.line ?? row);
         // A fresh chat-log entry already proves the player was in game when they answered.
         // Do not reject valid answers because the live-player endpoint briefly lagged behind.
         if (!identity || !parsed || staffIds.has(identity.steamId)) continue;
@@ -873,7 +651,7 @@ async function scanChat() {
           event.answered.add(identity.steamId);
           if (choice === event.correct) await completeWithWinner(identity);
         } else if (event.type === "text_answer") {
-          if (!["answer", "text_shorthand"].includes(parsed.command) || event.answered.has(identity.steamId)) continue;
+          if (parsed.command !== "answer" || event.answered.has(identity.steamId)) continue;
           event.answered.add(identity.steamId);
           if (event.answers.includes(normalizeAnswer(parsed.value))) await completeWithWinner(identity);
         } else if (event.type === "true_false") {
@@ -942,36 +720,20 @@ async function schedulerTick(bot) {
   }
 }
 
-function nextChatScanDelayMs() {
-  const bridgeSeconds = Math.max(2, Number(process.env.GLOBAL_CHAT_SCAN_SECONDS || "3"));
-  if (activeEvent || privateChatProbe) return ACTIVE_CHAT_SCAN_SECONDS * 1000;
-  if (chatRowConsumers.size) return bridgeSeconds * 1000;
-  return IDLE_CHAT_SCAN_SECONDS * 1000;
-}
-
-function scheduleChatScan(delayMs = nextChatScanDelayMs()) {
-  if (chatTimer) clearTimeout(chatTimer);
-  chatTimer = setTimeout(async () => {
-    await scanChat().catch(() => {});
-    scheduleChatScan();
-  }, Math.max(0, Number(delayMs || 0)));
-  chatTimer.unref?.();
-}
-
 function startTimers(bot) {
   botRef = bot;
   if (schedulerTimer) clearInterval(schedulerTimer);
-  if (chatTimer) clearTimeout(chatTimer);
+  if (chatTimer) clearInterval(chatTimer);
   schedulerTimer = setInterval(() => schedulerTick(bot), CHECK_MINUTES * 60_000);
+  chatTimer = setInterval(() => scanChat(), CHAT_SCAN_SECONDS * 1000);
   schedulerTick(bot).catch(() => {});
-  scheduleChatScan(0);
+  scanChat().catch(() => {});
 }
 
 async function startPopupEventsOnBoot(bot) {
   botRef = bot;
-  watcherScheduler.registerTask('popup-pending-rewards', 60_000, () => rewardQueue.processPending(), { initialDelayMs: 15_000, leaderOnly: true });
   const state = await loadState().catch((err) => { console.error("❌ Pop-up event startup read failed:", err.message); return null; });
-  if (!state?.enabled && !chatRowConsumers.size) return;
+  if (!state?.enabled) return;
   await restoreStormState(state).catch((err) => console.error("❌ Watcher storm restore failed:", err.message));
   startTimers(bot);
   await logToDiscord(bot, state, "👁️ Watcher in-game chat event scheduler is online.").catch(() => {});
@@ -1018,25 +780,6 @@ async function handlePopupEventCommand(message, bot) {
       await message.reply(cancelled ? "Active chat event cancelled." : "No chat event is active.").catch(() => {});
       return true;
     }
-    if (action === "probe" || action === "chattest") {
-      if (!state.guildId) {
-        state = await saveState({ ...state, guildId: message.guild.id, logChannelId: message.channel.id });
-      }
-      privateChatProbe = {
-        channelId: message.channel.id,
-        requestedBy: message.author.id,
-        startedAt: Date.now(),
-        expiresAt: Date.now() + 120_000,
-      };
-      startTimers(bot);
-      scheduleChatScan(0);
-      await message.reply([
-        "🧪 **Private SCUM chat test armed for 2 minutes.**",
-        "Nothing was posted in-game. Type any harmless test message in SCUM chat from your own character.",
-        "Watcher will report the detected row only in this Discord channel and write one sanitized Railway probe line.",
-      ].join("\n")).catch(() => {});
-      return true;
-    }
     if (action === "quick" || action === "chat") {
       const check = await canLaunch(bot, state, { force });
       if (!check.ok) {
@@ -1059,9 +802,8 @@ async function handlePopupEventCommand(message, bot) {
       `Restart Check: **${restartMinutes === null ? "Not configured" : `${restartMinutes} minutes`}**`,
       "Event Pool: 150 fixed SCUM/Outpost X trivia questions + number guess and mystery signals",
       `Reward Pool: 25–50 fame, $250–$1,500 cash, bonus lottery, or a rare empty result`,
-      `Chat Scan: every ${ACTIVE_CHAT_SCAN_SECONDS}s during an event; every ${IDLE_CHAT_SCAN_SECONDS}s while idle`,
       `Watcher Anger: ${Math.round(ANGRY_STORM_CHANCE * 100)}% chance of a ${ANGRY_STORM_MINUTES}-minute storm after a winner`,
-      "Commands: `!popupevent quick`, `!popupevent probe`, `!popupevent cancel`, `!popupevent enable`, `!popupevent disable`",
+      "Commands: `!popupevent quick`, `!popupevent cancel`, `!popupevent enable`, `!popupevent disable`",
       "Testing: `!popupevent quick force` or add an event type, such as `!popupevent quick force number_guess`.",
     ].join("\n")).catch(() => {});
   } catch (err) {
@@ -1071,6 +813,4 @@ async function handlePopupEventCommand(message, bot) {
   return true;
 }
 
-function isPopupEventActive() { return !!activeEvent; }
-
-module.exports = { handlePopupEventCommand, startPopupEventsOnBoot, registerChatRowConsumer, isPopupEventActive };
+module.exports = { handlePopupEventCommand, startPopupEventsOnBoot };

@@ -14,7 +14,6 @@ const PERMISSION_DEFS = [
   ['use_surveillance','Use Surveillance',true,true],
   ['teleport_surveillance','Teleport from Surveillance',true,true],
   ['manage_events','Manage Events',true,false],
-  ['spawn_items_vehicles','Spawn Items / Vehicles',true,true],
   ['manage_server_shop','Open Server Shop Manager',false,true],
   ['edit_shop_products','Create and Edit Shop Products',false,true],
   ['edit_shop_prices','Change Shop Prices',false,true],

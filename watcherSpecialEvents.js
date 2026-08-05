@@ -273,7 +273,7 @@ async function handleRiskCommand(event, cmd, steamId, name, players) {
     else if (roll < .75) { reward = Math.round(event.maxReward * .7 / 50) * 50; result = `risked it and won $${reward.toLocaleString()}`; }
     else { reward = event.maxReward; result = `risked it and won the maximum $${reward.toLocaleString()}`; }
   }
-  if (reward > 0) await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action:'change', amount:Math.abs(reward) });
+  if (reward > 0) await ggconPost(`/players/${encodeURIComponent(steamId)}/currency`, { action:'change', amount:reward });
   await privateMessage(steamId, `WATCHER RESULT: You ${result}.`, reward ? '#47d67d' : '#ff6b6b', 10);
   await publicMessage(`WATCHER RESULT: ${event.contestant.name} ${result}.`);
   return 'complete';
@@ -333,7 +333,7 @@ async function tick() {
             const hp=posOf(players.get(id)); if(!hp) continue;
             if(distanceUnits(hp,bp)<=event.winDistanceUnits) event.proximity[id]=(event.proximity[id]||0)+1; else event.proximity[id]=0;
             if(event.proximity[id]>=2){
-              if(event.rewardCash>0) await ggconPost(`/players/${encodeURIComponent(id)}/currency`,{action:'change',amount:Math.abs(event.rewardCash)}).catch(()=>{});
+              if(event.rewardCash>0) await ggconPost(`/players/${encodeURIComponent(id)}/currency`,{action:'change',amount:event.rewardCash}).catch(()=>{});
               await privateMessage(id,`WATCHER: Target confirmed within 50 metres. Hunt complete. $${event.rewardCash.toLocaleString()} issued.`,'#47d67d',10).catch(()=>{});
               await publicMessage(`WATCHER HUNT COMPLETE. Hunter: ${p.name}. The hidden bounty was ${event.bounty.name}. Target confirmed within 50 metres.`);
               state.recentBounties=[...(state.recentBounties||[]),event.bounty.steamId].slice(-12); state.active=null; break;
