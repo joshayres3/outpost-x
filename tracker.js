@@ -910,7 +910,24 @@ async function handleHttp(req, res) {
   const url = new URL(req.url, `http://${host}`);
 
   if ((url.pathname === '/health' || url.pathname === '/healthz') && req.method === 'GET') {
-    return json(res, 200, { ok: true, service: 'watcher', uptimeSeconds: Math.floor(process.uptime()) });
+    return json(res, 200, {
+      ok: true,
+      service: 'watcher',
+      runtimeReady: !!botRef?.isReady?.(),
+      uptimeSeconds: Math.floor(process.uptime()),
+    });
+  }
+
+  // Railway only needs the HTTP listener for /health. Portal API calls must wait
+  // until Discord has connected and Watcher has attached its runtime context.
+  // Return quickly instead of letting a browser request hang during startup.
+  if (url.pathname.startsWith('/portal/api/') && !botRef?.isReady?.()) {
+    res.setHeader('Retry-After', '3');
+    return json(res, 503, {
+      error: 'Watcher is finishing startup. Retrying automatically…',
+      code: 'WATCHER_STARTING',
+      retryAfterMs: 3000,
+    });
   }
 
   if (url.pathname === '/portal/login') {
