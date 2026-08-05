@@ -2,7 +2,7 @@
 
 const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
-const ggcon = require('./ggcon');
+const { getOnlinePlayers, services: ggconServices } = require('./ggcon');
 const log = require('./lib/logger');
 
 const TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || 'watcher_runtime_state';
@@ -61,9 +61,10 @@ async function enqueue({ eventId, eventType, winner, reward, error }) {
   return record;
 }
 async function playerOnline(steamId) {
-  const data = await ggcon.players.listOnline({ attempts: 1 });
-  return (data.players || []).some((p) => String(p.userId || p.steamId || '') === String(steamId));
+  const players = await getOnlinePlayers();
+  return players.some((player) => String(player.userId || player.steamId || '') === String(steamId));
 }
+
 async function deliver(record) {
   if (!record || record.status === 'completed' || record.status === 'manual_review') return record;
   if (record.reward?.type === 'bonus_lottery' || record.reward?.type === 'none') {
@@ -86,7 +87,7 @@ async function deliver(record) {
   await save(record);
   try {
     const endpoint = record.reward.type === 'cash' ? 'currency' : 'fame';
-    const data = await ggcon.client.post(`/players/${encodeURIComponent(record.steamId)}/${endpoint}`, { action: 'change', amount: Math.abs(Number(record.reward.amount || 0)) }, { requireConfirmed: true });
+    const data = await ggconServices.client.post(`/players/${encodeURIComponent(record.steamId)}/${endpoint}`, { action: 'change', amount: Math.abs(Number(record.reward.amount || 0)) }, { requireConfirmed: true });
     record.status = 'completed';
     record.completedAt = now();
     record.updatedAt = now();
