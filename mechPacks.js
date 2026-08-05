@@ -1,5 +1,6 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const { createClient } = require("@supabase/supabase-js");
+const { getItemCatalog } = require("./itemCatalog");
 
 const DEFAULT_SERVER_BASE_URL = "https://ggcon.gghost.games/s/2788404";
 const RUNTIME_STATE_TABLE = process.env.WATCHER_RUNTIME_STATE_TABLE || "watcher_runtime_state";
@@ -56,8 +57,6 @@ const MECH_PACKS = {
 };
 
 let supabase;
-let cachedItems = null;
-let cachedItemsAt = 0;
 
 function getSupabase() {
   if (!supabase) {
@@ -102,6 +101,7 @@ async function serverPost(path, body) {
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!res.ok) throw new Error(data?.message || data?.error || `Server POST failed: ${res.status}`);
   if (data?.ok === false || data?.accepted === false) throw new Error(data?.message || data?.error || "Server rejected the request.");
+  if ((path === "/spawn" || path === "/spawn-vehicle") && data?.ok !== true) throw new Error(data?.message || data?.error || "GGCON did not confirm delivery.");
   return data;
 }
 
@@ -166,14 +166,6 @@ async function loadRuntimeValue(key) {
   const { data, error } = await db.from(RUNTIME_STATE_TABLE).select("value").eq("key", key).maybeSingle();
   if (error) throw error;
   return data?.value || null;
-}
-
-async function getItemCatalog() {
-  if (cachedItems && Date.now() - cachedItemsAt < 10 * 60 * 1000) return cachedItems;
-  const data = await serverGet("/items.json");
-  cachedItems = Array.isArray(data?.items) ? data.items : [];
-  cachedItemsAt = Date.now();
-  return cachedItems;
 }
 
 function itemScore(item, pack) {
@@ -260,7 +252,8 @@ function buildMechPackText(guild) {
 function buildRegisterRows() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("insurance:register").setLabel("Register Steam").setEmoji("🔗").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId("insurance:register").setLabel("Register Steam").setEmoji("🔗").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("insurance:verify").setLabel("Verify Code").setEmoji("✅").setStyle(ButtonStyle.Success)
     ),
   ];
 }
@@ -278,9 +271,7 @@ function buildRegisterPanelText() {
     "**How to register**",
     "1. Click **Register Steam**.",
     "2. Type the code Watcher gives you in SCUM chat.",
-    "3. Watcher detects the code and links you automatically.",
-    "",
-    "You will receive a Discord DM when registration is complete.",
+    "3. Come back here and click **Verify Code**.",
   ].join("\n");
 }
 
@@ -391,7 +382,7 @@ async function confirmBuy(interaction, packKey) {
 
   const item = await resolvePackItem(pack);
 
-  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -pack.price });
+  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -Math.abs(pack.price) });
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const afterPlayer = await getPlayerBySteamId(link.steam_id);
   const afterCash = getPlayerCash(afterPlayer);
@@ -405,7 +396,7 @@ async function confirmBuy(interaction, packKey) {
     await serverPost("/spawn", { steamId: String(link.steam_id), item: item.itemClass, qty: pack.quantity });
   } catch (err) {
     // Payment succeeded but item spawn failed. Refund immediately to avoid taking player money.
-    await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: pack.price }).catch(() => {});
+    await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: Math.abs(pack.price) }).catch(() => {});
     await interaction.update({
       content: [
         "The purchase was charged, but the item could not be spawned, so Watcher attempted an automatic refund.",
@@ -485,7 +476,7 @@ async function handleMechPackInteraction(interaction) {
   return true;
 }
 
-module.exports = { buildRegisterPanelText, buildRegisterRows,
+module.exports = {
   handleMechPackCommand,
   handleMechPackInteraction,
 };

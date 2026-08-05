@@ -238,7 +238,8 @@ function buildEventEmbeds(event, rsvpCount = 0, closed = false) {
     .setColor(closed ? 0x6b7280 : 0x3b82f6)
     .setFooter({ text: "Outpost X Events" });
   const images = Array.isArray(event.image_urls) ? event.image_urls.filter(Boolean).slice(0, MAX_EVENT_IMAGES) : [];
-  return [main, ...images.map((url, index) => new EmbedBuilder().setColor(closed ? 0x6b7280 : 0x3b82f6).setImage(url).setFooter({ text: `${event.title} • Image ${index + 1}` }))];
+  if (images[0]) main.setImage(images[0]);
+  return [main];
 }
 
 function decodePortalEventImages(images, prefix) {
@@ -283,18 +284,54 @@ async function postEvent(bot, db, event) {
   return msg;
 }
 
+function isPublicEventMessage(message, eventId) {
+  if (!message) return false;
+  const expectedIds = new Set([
+    `event_rsvp:${eventId}`,
+    `event_unrsvp:${eventId}`,
+    `event_details:${eventId}`,
+  ]);
+  return (message.components || []).some((row) =>
+    (row.components || []).some((component) => expectedIds.has(String(component.customId || component.custom_id || '')))
+  );
+}
+
+async function fetchPublicEventMessage(bot, event) {
+  if (!event?.channel_id || !event?.message_id || String(event.message_id) === 'portal') return null;
+  if (String(event.channel_id) !== String(EVENTS_CH)) return null;
+  const channel = await bot.channels.fetch(String(event.channel_id)).catch(() => null);
+  if (!channel?.messages) return null;
+  const message = await channel.messages.fetch(String(event.message_id)).catch(() => null);
+  return isPublicEventMessage(message, event.id) ? message : null;
+}
+
+async function editPublicEventMessage(db, event, message, closed = false) {
+  const count = await getRsvpCount(db, event.id);
+  await message.edit({
+    content: `<@&${EXILES_ROLE_ID}>`,
+    embeds: buildEventEmbeds(event, count, closed || event.status !== "open"),
+    components: eventButtons(event.id, closed || event.status !== "open"),
+    allowedMentions: { roles: [EXILES_ROLE_ID] },
+  });
+  return message;
+}
+
+async function ensurePublicEventPost(bot, db, event, closed = false) {
+  const existingMessage = await fetchPublicEventMessage(bot, event);
+  if (existingMessage) return editPublicEventMessage(db, event, existingMessage, closed);
+
+  // Older Command Center events sometimes stored an image-upload message ID in
+  // channel_id/message_id. Never treat that storage message as the public event post.
+  return postEvent(bot, db, event);
+}
+
 async function updateEventPost(bot, db, event, closed = false) {
   if (!event.channel_id || !event.message_id) return;
 
   try {
-    const channel = await bot.channels.fetch(event.channel_id);
-    const msg = await channel.messages.fetch(event.message_id);
-    const count = await getRsvpCount(db, event.id);
-
-    await msg.edit({
-      embeds: buildEventEmbeds(event, count, closed || event.status !== "open"),
-      components: eventButtons(event.id, closed || event.status !== "open"),
-    });
+    const message = await fetchPublicEventMessage(bot, event);
+    if (!message) throw new Error('The saved Discord message is not a public event post.');
+    await editPublicEventMessage(db, event, message, closed);
   } catch (err) {
     console.error("❌ Failed to update event post:", err.message);
   }
@@ -1269,11 +1306,16 @@ async function portalCreateEvent(ctx, body) {
   };
   const { data: event, error } = await ctx.db.from('events').insert(payload).select().single();
   if (error) throw error;
+
+  let finalEvent = event;
   if (Array.isArray(body.images) && body.images.length) {
-    const updated = await portalSetEventImages(ctx, event, body.images);
-    return { ok: true, event: updated };
+    finalEvent = await portalSetEventImages(ctx, event, body.images);
   }
-  return { ok: true, event };
+
+  await postEvent(ctx.bot, ctx.db, finalEvent);
+  const { data: postedEvent, error: reloadError } = await ctx.db.from('events').select('*').eq('id', finalEvent.id).single();
+  if (reloadError) throw reloadError;
+  return { ok: true, event: postedEvent, discordPost:{ok:!!postedEvent.channel_id&&!!postedEvent.message_id&&String(postedEvent.message_id)!=='portal',channelId:postedEvent.channel_id||null,messageId:postedEvent.message_id||null} };
 }
 
 async function portalUpdateEvent(ctx, body) {
@@ -1285,28 +1327,72 @@ async function portalUpdateEvent(ctx, body) {
   const { data: event, error } = await ctx.db.from('events').update(payload).eq('id', id).select().single(); if (error) throw error;
   let finalEvent={...existing,...event};
   if(body.replaceImages===true) finalEvent=await portalSetEventImages(ctx,finalEvent,Array.isArray(body.images)?body.images:[]);
-  else if(finalEvent.channel_id&&finalEvent.message_id&&String(finalEvent.message_id)!=='portal') await updateEventPost(ctx.bot,ctx.db,finalEvent,finalEvent.status!=='open').catch(()=>{});
-  return {ok:true,event:finalEvent};
+
+  await ensurePublicEventPost(ctx.bot,ctx.db,finalEvent,finalEvent.status!=='open');
+
+  const {data:reloaded,error:reloadError}=await ctx.db.from('events').select('*').eq('id',id).single();
+  if(reloadError)throw reloadError;
+  return {ok:true,event:reloaded,discordPost:{ok:!!reloaded.channel_id&&!!reloaded.message_id&&String(reloaded.message_id)!=='portal',channelId:reloaded.channel_id||null,messageId:reloaded.message_id||null}};
+}
+
+async function uploadPortalEventImagesToStorage(ctx, event, files) {
+  const bucket=String(process.env.PORTAL_EVENT_IMAGE_BUCKET||process.env.PORTAL_MAP_STORAGE_BUCKET||'outpost-x-static').trim();
+  if(!bucket||!ctx.db?.storage||!files.length)return [];
+  const urls=[];
+  for(let i=0;i<files.length;i++){
+    const file=files[i];
+    const ext=(String(file.name||'image.png').split('.').pop()||'png').replace(/[^a-z0-9]/gi,'').toLowerCase()||'png';
+    const objectPath=`event-images/${event.id}/${Date.now()}-${i}.${ext}`;
+    const {error}=await ctx.db.storage.from(bucket).upload(objectPath,file.attachment,{contentType:file.contentType||'image/png',cacheControl:'31536000',upsert:true});
+    if(error)throw error;
+    const {data}=ctx.db.storage.from(bucket).getPublicUrl(objectPath);
+    if(data?.publicUrl)urls.push(data.publicUrl);
+  }
+  return urls;
 }
 
 async function portalSetEventImages(ctx, event, images) {
   if (!ctx.isAdmin) throw new Error('Admin access required.');
   const files=decodePortalEventImages(images,`event-${event.id}`);
-  let message=await getPortalEventMediaMessage(ctx,event);
-  if(!message&&files.length){const channel=await getPortalEventMediaChannel(ctx);message=await channel.send({content:`Portal media storage • Event • ${event.title}`,allowedMentions:{parse:[]}});}
   let urls=[];
-  if(message&&files.length){const uploaded=await message.edit({content:`Portal media storage • Event • ${event.title}`,embeds:[],files,attachments:[]});urls=[...uploaded.attachments.values()].map(a=>a.url).slice(0,MAX_EVENT_IMAGES);}
-  else if(message&&!files.length){await message.delete().catch(()=>{});message=null;}
-  const patch={image_urls:urls,channel_id:message?String(message.channelId):String(PORTAL_MEDIA_CHANNEL_ID),message_id:message?String(message.id):'portal'};
-  const {data:updated,error}=await ctx.db.from('events').update(patch).eq('id',event.id).select('*').single();if(error)throw error;return updated;
+
+  if(files.length){
+    try{
+      urls=(await uploadPortalEventImagesToStorage(ctx,event,files)).slice(0,MAX_EVENT_IMAGES);
+    }catch(storageError){
+      console.warn(`⚠️ Event image Supabase mirror failed; using Discord storage: ${storageError.message}`);
+      const channel=await getPortalEventMediaChannel(ctx);
+      const storageMessage=await channel.send({content:`Portal media storage • Event • ${event.title}`,files,allowedMentions:{parse:[]}});
+      urls=[...storageMessage.attachments.values()].map(a=>a.url).slice(0,MAX_EVENT_IMAGES);
+    }
+  }
+
+  const patch={image_urls:urls};
+  const {data:updated,error}=await ctx.db.from('events').update(patch).eq('id',event.id).select('*').single();
+  if(error)throw error;
+  return updated;
 }
 
 async function portalSetEventStatus(ctx, body) {
   if (!ctx.isAdmin) throw new Error('Admin access required.');
   const id=String(body.id||''); const status=body.status==='open'?'open':'closed';
   const {data:event,error}=await ctx.db.from('events').update({status}).eq('id',id).select().single();if(error)throw error;
-  if(event.channel_id&&event.message_id&&String(event.message_id)!=='portal') await updateEventPost(ctx.bot,ctx.db,event,status!=='open').catch(()=>{});
-  return {ok:true,event};
+  await ensurePublicEventPost(ctx.bot,ctx.db,event,status!=='open');
+  const {data:reloaded,error:reloadError}=await ctx.db.from('events').select('*').eq('id',id).single();
+  if(reloadError)throw reloadError;
+  return {ok:true,event:reloaded};
+}
+
+
+async function portalRetryEventPost(ctx, eventId) {
+  if (!ctx.isAdmin) throw new Error('Admin access required.');
+  const id=String(eventId||'');
+  const {data:event,error}=await ctx.db.from('events').select('*').eq('id',id).single();
+  if(error)throw error;
+  const message=await ensurePublicEventPost(ctx.bot,ctx.db,event,event.status!=='open');
+  const {data:reloaded,error:reloadError}=await ctx.db.from('events').select('*').eq('id',id).single();
+  if(reloadError)throw reloadError;
+  return {ok:true,event:reloaded,discordPost:{ok:true,channelId:reloaded.channel_id,messageId:reloaded.message_id,url:message?.url||null}};
 }
 
 async function portalDeleteEvent(ctx, eventId) {
@@ -1330,4 +1416,5 @@ module.exports = {
   portalUpdateEvent,
   portalSetEventStatus,
   portalDeleteEvent,
+  portalRetryEventPost,
 };

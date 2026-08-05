@@ -25,6 +25,52 @@ const RECENT_WINNER_HOURS = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECEN
 const RECENT_WINNER_MIN_ELIGIBLE = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECENT_WINNER_MIN_ELIGIBLE || "4"));
 const LOTTERY_NORMAL_WEIGHT = Math.max(1, Number(process.env.WATCHER_LOTTERY_NORMAL_WEIGHT || "4"));
 const LOTTERY_RECENT_WINNER_WEIGHT = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECENT_WINNER_WEIGHT || "1"));
+const LOTTERY_RECENT_PACK_EXCLUSION_COUNT = Math.max(1, Number(process.env.WATCHER_LOTTERY_RECENT_PACK_EXCLUSION_COUNT || "3"));
+
+// Tier odds are evaluated first, then one pack is chosen randomly inside that tier.
+// Better packs therefore remain genuinely rarer while every draw is still random.
+const LOTTERY_RARITY_PERCENTAGES = Object.freeze({
+  common: 60,
+  uncommon: 27,
+  rare: 11,
+  jackpot: 2,
+});
+
+const LOTTERY_PACK_RARITY = Object.freeze({
+  field_medic: "uncommon",
+  roadside_rescue: "uncommon",
+  workshop_cache: "common",
+  builders_delivery: "uncommon",
+  survivors_pantry: "common",
+  m9_sidearm_kit: "uncommon",
+  mp5_patrol_kit: "rare",
+  aks74u_patrol_kit: "rare",
+  ump45_patrol_kit: "rare",
+  m1887_defense_kit: "rare",
+  jackpot: "jackpot",
+  fisherman: "common",
+  tactical_homeless: "common",
+  puppet_souvenir: "common",
+  master_builder: "rare",
+  romantic_dinner: "common",
+  almost_armed: "common",
+  professional_medic: "rare",
+  bear_necessities: "uncommon",
+  christmas_in_july: "uncommon",
+  influencer: "common",
+  grand_prize_sort_of: "common",
+  the_road_trip_pack: "uncommon",
+  the_rain_check_pack: "common",
+  the_kitchen_raid_pack: "common",
+  the_woodsman_pack: "uncommon",
+  the_budget_sniper_pack: "rare",
+  the_gas_station_dinner_pack: "common",
+  the_farmhand_pack: "common",
+  the_failed_robbery_pack: "common",
+  the_fake_soldier_pack: "uncommon",
+  the_sad_mechanic_pack: "common",
+  the_wrong_bunker_pack: "uncommon",
+});
 
 const STAFF_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const OWNER_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners"]);
@@ -38,6 +84,103 @@ let cachedItems = null;
 let cachedItemsAt = 0;
 
 const LOTTERY_PACKS = [
+  {
+    id: "field_medic",
+    name: "The Field Medic Pack",
+    items: [
+      { label: "Emergency_bandage_Big", qty: 2, fallback: "Emergency_bandage_Big", aliases: ["Emergency_bandage_Big"] },
+      { label: "Tourniquet", qty: 2, fallback: "Tourniquet", aliases: ["Tourniquet"] },
+      { label: "Antibiotics_01", qty: 1, fallback: "Antibiotics_01", aliases: ["Antibiotics_01"] },
+      { label: "Painkillers_01", qty: 1, fallback: "Painkillers_01", aliases: ["Painkillers_01"] },
+    ],
+  },
+  {
+    id: "roadside_rescue",
+    name: "The Roadside Rescue Pack",
+    items: [
+      { label: "Gasoline_Canister", qty: 1, fallback: "Gasoline_Canister", aliases: ["Gasoline_Canister"] },
+      { label: "Tire_Repair_Kit", qty: 1, fallback: "Tire_Repair_Kit", aliases: ["Tire_Repair_Kit"] },
+      { label: "Car_Battery_Cables", qty: 1, fallback: "Car_Battery_Cables", aliases: ["Car_Battery_Cables"] },
+      { label: "Air_Pump", qty: 1, fallback: "Air_Pump", aliases: ["Air_Pump"] },
+    ],
+  },
+  {
+    id: "workshop_cache",
+    name: "The Workshop Cache",
+    items: [
+      { label: "Tool_Box", qty: 1, fallback: "Tool_Box", aliases: ["Tool_Box"] },
+      { label: "Duct_Tape", qty: 2, fallback: "Duct_Tape", aliases: ["Duct_Tape"] },
+      { label: "Screwdriver", qty: 1, fallback: "Screwdriver", aliases: ["Screwdriver"] },
+      { label: "1H_Crowbar", qty: 1, fallback: "1H_Crowbar", aliases: ["1H_Crowbar"] },
+    ],
+  },
+  {
+    id: "builders_delivery",
+    name: "The Builder's Delivery",
+    items: [
+      { label: "Nails_Package_Box", qty: 2, fallback: "Nails_Package_Box", aliases: ["Nails_Package_Box"] },
+      { label: "Bolts_Package_Box", qty: 2, fallback: "Bolts_Package_Box", aliases: ["Bolts_Package_Box"] },
+      { label: "Bundle_Wooden_Plank", qty: 2, fallback: "Bundle_Wooden_Plank", aliases: ["Bundle_Wooden_Plank"] },
+      { label: "Metal_Scrap_01", qty: 5, fallback: "Metal_Scrap_01", aliases: ["Metal_Scrap_01"] },
+      { label: "CementBag", qty: 1, fallback: "CementBag", aliases: ["CementBag"] },
+    ],
+  },
+  {
+    id: "survivors_pantry",
+    name: "The Survivor's Pantry",
+    items: [
+      { label: "MRE_Cheeseburger", qty: 1, fallback: "MRE_Cheeseburger", aliases: ["MRE_Cheeseburger"] },
+      { label: "MRE_Stew", qty: 1, fallback: "MRE_Stew", aliases: ["MRE_Stew"] },
+      { label: "CannedGoulash", qty: 2, fallback: "CannedGoulash", aliases: ["CannedGoulash"] },
+      { label: "Canteen", qty: 1, fallback: "Canteen", aliases: ["Canteen"] },
+      { label: "Energy_Drink_Red_Ghoul", qty: 2, fallback: "Energy_Drink_Red_Ghoul", aliases: ["Energy_Drink_Red_Ghoul"] },
+    ],
+  },
+  {
+    id: "m9_sidearm_kit",
+    name: "The M9 Sidearm Kit",
+    items: [
+      { label: "Weapon_M9", qty: 1, fallback: "Weapon_M9", aliases: ["Weapon_M9"] },
+      { label: "Magazine_M9", qty: 2, fallback: "Magazine_M9", aliases: ["Magazine_M9"] },
+      { label: "Cal_9mm_Ammobox", qty: 1, fallback: "Cal_9mm_Ammobox", aliases: ["Cal_9mm_Ammobox"] },
+    ],
+  },
+  {
+    id: "mp5_patrol_kit",
+    name: "The MP5 Patrol Kit",
+    items: [
+      { label: "Weapon_MP5", qty: 1, fallback: "Weapon_MP5", aliases: ["Weapon_MP5"] },
+      { label: "Magazine_MP5", qty: 2, fallback: "Magazine_MP5", aliases: ["Magazine_MP5"] },
+      { label: "Cal_9mm_Ammobox", qty: 2, fallback: "Cal_9mm_Ammobox", aliases: ["Cal_9mm_Ammobox"] },
+    ],
+  },
+  {
+    id: "aks74u_patrol_kit",
+    name: "The AKS-74U Patrol Kit",
+    items: [
+      { label: "Weapon_AKS_74U", qty: 1, fallback: "Weapon_AKS_74U", aliases: ["Weapon_AKS_74U"] },
+      { label: "Magazine_AKS_74U", qty: 2, fallback: "Magazine_AKS_74U", aliases: ["Magazine_AKS_74U"] },
+      { label: "Cal_5_45x39mm_Ammobox", qty: 2, fallback: "Cal_5_45x39mm_Ammobox", aliases: ["Cal_5_45x39mm_Ammobox"] },
+    ],
+  },
+  {
+    id: "ump45_patrol_kit",
+    name: "The UMP-45 Patrol Kit",
+    items: [
+      { label: "Weapon_UMP45", qty: 1, fallback: "Weapon_UMP45", aliases: ["Weapon_UMP45"] },
+      { label: "Magazine_UMP45", qty: 2, fallback: "Magazine_UMP45", aliases: ["Magazine_UMP45"] },
+      { label: "Cal_45_Ammobox", qty: 2, fallback: "Cal_45_Ammobox", aliases: ["Cal_45_Ammobox"] },
+    ],
+  },
+  {
+    id: "m1887_defense_kit",
+    name: "The M1887 Defense Kit",
+    items: [
+      { label: "Weapon_M1887", qty: 1, fallback: "Weapon_M1887", aliases: ["Weapon_M1887"] },
+      { label: "12_Gauge_Buckshot_Ammobox", qty: 2, fallback: "12_Gauge_Buckshot_Ammobox", aliases: ["12_Gauge_Buckshot_Ammobox"] },
+      { label: "Weapon_Cleaning_Kit", qty: 1, fallback: "Weapon_Cleaning_Kit", aliases: ["Weapon_Cleaning_Kit"] },
+    ],
+  },
   {
     id: "jackpot",
     name: "The Jackpot",
@@ -355,6 +498,7 @@ async function serverPost(path, body = {}) {
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!res.ok) throw new Error(data?.message || data?.error || `Server POST failed: ${res.status}`);
   if (data?.ok === false || data?.accepted === false) throw new Error(data?.message || data?.error || "Server rejected the request.");
+  if ((path === "/spawn" || path === "/spawn-vehicle") && data?.ok !== true) throw new Error(data?.message || data?.error || "GGCON did not confirm delivery.");
   return data || { ok: true };
 }
 
@@ -511,7 +655,22 @@ async function markCodeUsed(guildId, code, codeType, discordId, steamId) {
 }
 
 function randomChoice(items) {
-  return items[Math.floor(Math.random() * items.length)];
+  if (!Array.isArray(items) || !items.length) return null;
+  return items[crypto.randomInt(items.length)];
+}
+
+function packRarity(pack) {
+  return LOTTERY_PACK_RARITY[String(pack?.id || "")] || "common";
+}
+
+function chooseRarityTier() {
+  const roll = crypto.randomInt(10000) / 100;
+  let threshold = 0;
+  for (const tier of ["common", "uncommon", "rare", "jackpot"]) {
+    threshold += Number(LOTTERY_RARITY_PERCENTAGES[tier] || 0);
+    if (roll < threshold) return tier;
+  }
+  return "common";
 }
 
 function currentToronto() {
@@ -850,6 +1009,51 @@ function selectWeightedWinner(eligiblePlayers, protection) {
   return randomChoice(tickets);
 }
 
+async function fetchRecentPackIds(guildId) {
+  const limit = Math.min(Math.max(1, LOTTERY_RECENT_PACK_EXCLUSION_COUNT), Math.max(1, LOTTERY_PACKS.length - 1));
+  const db = getSupabase();
+  const { data, error } = await db
+    .from(DRAWS_TABLE)
+    .select("selected_pack_id, actual_run_at")
+    .eq("guild_id", String(guildId))
+    .eq("status", "completed")
+    .not("selected_pack_id", "is", null)
+    .order("actual_run_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.warn("[lottery] Recent pack lookup failed:", error.message || error);
+    return [];
+  }
+
+  return (Array.isArray(data) ? data : [])
+    .map((row) => String(row?.selected_pack_id || "").trim())
+    .filter(Boolean);
+}
+
+async function chooseLotteryPack(guildId) {
+  const recentIds = new Set(await fetchRecentPackIds(guildId));
+  const selectedTier = chooseRarityTier();
+
+  let tierPool = LOTTERY_PACKS.filter((pack) => packRarity(pack) === selectedTier);
+  if (!tierPool.length) tierPool = LOTTERY_PACKS.slice();
+
+  // Keep the configured rarity odds, but avoid recently awarded packs whenever
+  // there is another pack available in the selected tier.
+  const freshTierPool = tierPool.filter((pack) => !recentIds.has(String(pack.id)));
+  const candidates = freshTierPool.length ? freshTierPool : tierPool;
+  const pack = randomChoice(candidates);
+  if (!pack) throw new Error("Lottery pack pool is empty.");
+
+  return {
+    pack,
+    rarity: packRarity(pack),
+    rarityPercent: Number(LOTTERY_RARITY_PERCENTAGES[packRarity(pack)] || 0),
+    excludedRecentCount: tierPool.length - candidates.length,
+    selectionMode: "weighted_rarity",
+  };
+}
+
 async function dmWinner(winner, code, pack) {
   const user = winner.member?.user;
   if (!user?.send) throw new Error("Discord user could not be messaged.");
@@ -913,21 +1117,19 @@ async function runLotteryDraw(bot, config, options = {}) {
       await updateDraw(draw.id, { status: "no_eligible", claim_status: "none" });
       const message = "🎟️ The Outpost X Lottery ended with no eligible players online. Better luck next hour!";
       await sendGameMessage(message).catch(() => {});
-      await postLotteryLogChannel(bot, config, [
-        "🎟️ **Outpost X Lottery**",
-        "No eligible registered players were online for this draw.",
-        "Better luck next hour.",
-      ].join("\n"));
+      // Routine draw-status posts are intentionally not sent to Discord. The
+      // configured lottery channel is reserved for winners and claim results.
       return { ran: true, status: "no_eligible", eligibleCount: 0 };
     }
 
     const protection = await buildRecentWinnerProtection(guildId, pool.eligible);
+    const packSelection = await chooseLotteryPack(guildId);
+    const pack = packSelection.pack;
     const remaining = pool.eligible.slice();
     while (remaining.length) {
       const winner = selectWeightedWinner(remaining, protection);
       const winnerIndex = remaining.findIndex((entry) => String(entry.steamId) === String(winner?.steamId));
       if (winnerIndex >= 0) remaining.splice(winnerIndex, 1);
-      const pack = randomChoice(LOTTERY_PACKS);
       const code = await generateClaimCode(guildId);
       const expiresAt = DateTime.now().plus({ hours: CLAIM_EXPIRY_HOURS }).toISO();
       const codeRow = await createCodeRecord({ guildId, drawId: draw.id, code, winner, pack, expiresAt });
@@ -959,6 +1161,7 @@ async function runLotteryDraw(bot, config, options = {}) {
           protection.applied
             ? `Recent Winner Protection: **${protection.reducedCount}** player(s) reduced (${protection.hours}h window, ${protection.normalWeight}:1 tickets)`
             : `Recent Winner Protection: not applied (${protection.reason})`,
+          `Pack Odds: **${packSelection.rarityPercent}% ${String(packSelection.rarity || "common").toUpperCase()} tier**`,
           "",
           "A one-time claim code has been sent through Discord.",
           "The winner must enter the code in SCUM chat to claim the mystery pack.",
@@ -971,18 +1174,12 @@ async function runLotteryDraw(bot, config, options = {}) {
           dm_error: String(dmErr?.message || dmErr),
           cancelled_at: new Date().toISOString(),
         });
-        await postLotteryLogChannel(bot, config, [
-          "⚠️ **Lottery DM failed**",
-          `Player: **${winner.scumName}**`,
-          `Discord: <@${winner.link.discord_id}>`,
-          "Watcher could not DM this player, so they were skipped for this draw.",
-          remaining.length ? "Trying another eligible player." : "No other eligible players remain.",
-        ].join("\n"));
+        // Do not post routine draw-attempt status to Discord. Railway logs and
+        // persisted draw records retain the failure details for staff review.
       }
     }
 
     await updateDraw(draw.id, { status: "dm_failed", dm_status: "failed", claim_status: "none" });
-    await postLotteryLogChannel(bot, config, "⚠️ **Lottery ended:** eligible players were found, but Watcher could not DM any selected winner.");
     return { ran: true, status: "dm_failed" };
   } catch (err) {
     await updateDraw(draw.id, { status: "failed", error_info: { message: err.message, stack: err.stack?.slice(0, 1000) } }).catch(() => {});
@@ -1494,11 +1691,19 @@ async function startLotteryOnBoot(bot) {
   });
   if (!config?.enabled) return;
   startLotteryTimers(bot);
-  await postLotteryLogChannel(bot, config, "🎟️ Lottery scheduler is online. Hourly draws remain active.").catch(() => {});
+  // Startup/status noise is intentionally kept out of Discord. Winner and
+  // claim messages continue to use the configured lottery result channel.
+}
+
+async function awardChallengePack(guildId, steamId) {
+  const selection = await chooseLotteryPack(guildId);
+  const delivery = await deliverPack(String(steamId), selection.pack);
+  return { pack: selection.pack, delivery };
 }
 
 module.exports = {
   handleLotteryCommand,
   startLotteryOnBoot,
   triggerBonusLottery,
+  awardChallengePack,
 };
