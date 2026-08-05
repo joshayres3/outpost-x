@@ -27,6 +27,51 @@ const LOTTERY_NORMAL_WEIGHT = Math.max(1, Number(process.env.WATCHER_LOTTERY_NOR
 const LOTTERY_RECENT_WINNER_WEIGHT = Math.max(0, Number(process.env.WATCHER_LOTTERY_RECENT_WINNER_WEIGHT || "1"));
 const LOTTERY_RECENT_PACK_EXCLUSION_COUNT = Math.max(1, Number(process.env.WATCHER_LOTTERY_RECENT_PACK_EXCLUSION_COUNT || "3"));
 
+// Tier odds are evaluated first, then one pack is chosen randomly inside that tier.
+// Better packs therefore remain genuinely rarer while every draw is still random.
+const LOTTERY_RARITY_PERCENTAGES = Object.freeze({
+  common: 60,
+  uncommon: 27,
+  rare: 11,
+  jackpot: 2,
+});
+
+const LOTTERY_PACK_RARITY = Object.freeze({
+  field_medic: "uncommon",
+  roadside_rescue: "uncommon",
+  workshop_cache: "common",
+  builders_delivery: "uncommon",
+  survivors_pantry: "common",
+  m9_sidearm_kit: "uncommon",
+  mp5_patrol_kit: "rare",
+  aks74u_patrol_kit: "rare",
+  ump45_patrol_kit: "rare",
+  m1887_defense_kit: "rare",
+  jackpot: "jackpot",
+  fisherman: "common",
+  tactical_homeless: "common",
+  puppet_souvenir: "common",
+  master_builder: "rare",
+  romantic_dinner: "common",
+  almost_armed: "common",
+  professional_medic: "rare",
+  bear_necessities: "uncommon",
+  christmas_in_july: "uncommon",
+  influencer: "common",
+  grand_prize_sort_of: "common",
+  the_road_trip_pack: "uncommon",
+  the_rain_check_pack: "common",
+  the_kitchen_raid_pack: "common",
+  the_woodsman_pack: "uncommon",
+  the_budget_sniper_pack: "rare",
+  the_gas_station_dinner_pack: "common",
+  the_farmhand_pack: "common",
+  the_failed_robbery_pack: "common",
+  the_fake_soldier_pack: "uncommon",
+  the_sad_mechanic_pack: "common",
+  the_wrong_bunker_pack: "uncommon",
+});
+
 const STAFF_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners", "Admin", "Trial Admin"]);
 const OWNER_ROLE_NAME_FALLBACK = new Set(["Owner", "Owners"]);
 
@@ -610,7 +655,22 @@ async function markCodeUsed(guildId, code, codeType, discordId, steamId) {
 }
 
 function randomChoice(items) {
-  return items[Math.floor(Math.random() * items.length)];
+  if (!Array.isArray(items) || !items.length) return null;
+  return items[crypto.randomInt(items.length)];
+}
+
+function packRarity(pack) {
+  return LOTTERY_PACK_RARITY[String(pack?.id || "")] || "common";
+}
+
+function chooseRarityTier() {
+  const roll = crypto.randomInt(10000) / 100;
+  let threshold = 0;
+  for (const tier of ["common", "uncommon", "rare", "jackpot"]) {
+    threshold += Number(LOTTERY_RARITY_PERCENTAGES[tier] || 0);
+    if (roll < threshold) return tier;
+  }
+  return "common";
 }
 
 function currentToronto() {
@@ -972,12 +1032,25 @@ async function fetchRecentPackIds(guildId) {
 }
 
 async function chooseLotteryPack(guildId) {
-  const recentPackIds = new Set(await fetchRecentPackIds(guildId));
-  const available = LOTTERY_PACKS.filter((pack) => !recentPackIds.has(String(pack.id)));
-  const pool = available.length ? available : LOTTERY_PACKS;
+  const recentIds = new Set(await fetchRecentPackIds(guildId));
+  const selectedTier = chooseRarityTier();
+
+  let tierPool = LOTTERY_PACKS.filter((pack) => packRarity(pack) === selectedTier);
+  if (!tierPool.length) tierPool = LOTTERY_PACKS.slice();
+
+  // Keep the configured rarity odds, but avoid recently awarded packs whenever
+  // there is another pack available in the selected tier.
+  const freshTierPool = tierPool.filter((pack) => !recentIds.has(String(pack.id)));
+  const candidates = freshTierPool.length ? freshTierPool : tierPool;
+  const pack = randomChoice(candidates);
+  if (!pack) throw new Error("Lottery pack pool is empty.");
+
   return {
-    pack: randomChoice(pool),
-    excludedRecentCount: recentPackIds.size,
+    pack,
+    rarity: packRarity(pack),
+    rarityPercent: Number(LOTTERY_RARITY_PERCENTAGES[packRarity(pack)] || 0),
+    excludedRecentCount: tierPool.length - candidates.length,
+    selectionMode: "weighted_rarity",
   };
 }
 
@@ -1088,7 +1161,7 @@ async function runLotteryDraw(bot, config, options = {}) {
           protection.applied
             ? `Recent Winner Protection: **${protection.reducedCount}** player(s) reduced (${protection.hours}h window, ${protection.normalWeight}:1 tickets)`
             : `Recent Winner Protection: not applied (${protection.reason})`,
-          `Recent Pack Rotation: **${packSelection.excludedRecentCount}** recently awarded pack(s) excluded`,
+          `Pack Odds: **${packSelection.rarityPercent}% ${String(packSelection.rarity || "common").toUpperCase()} tier**`,
           "",
           "A one-time claim code has been sent through Discord.",
           "The winner must enter the code in SCUM chat to claim the mystery pack.",
