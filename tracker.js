@@ -970,7 +970,7 @@ async function handleHttp(req, res) {
     return setPortalSessionCookie(res, session, '/portal');
   }
 
-  if (url.pathname === '/tracker/health') return json(res, 200, { ok: true });
+  if (url.pathname === '/tracker/health' || url.pathname === '/health' || url.pathname === '/healthz') return json(res, 200, { ok: true, service: 'watcher-web' });
 
   // Registration can be completed directly inside the portal.
   if (url.pathname === '/portal/player-registration' || url.pathname === '/portal/register') {
@@ -1232,15 +1232,24 @@ function startWebServer() {
   return serverRef;
 }
 
-async function startTrackerOnBoot(bot) {
+function startTrackerWebOnBoot(bot) {
   botRef = bot;
-  startWebServer();
+  return startWebServer();
+}
+
+async function startTrackerJobsOnBoot(bot) {
+  botRef = bot;
   await recordMovementSample();
   scheduleMovementSample(latestOnline.size > 0 ? SAMPLE_SECONDS : IDLE_SAMPLE_SECONDS);
   if (cleanupTimer) clearInterval(cleanupTimer);
   cleanupTimer = setInterval(() => cleanupOldTrackerData(), CLEANUP_MINUTES * 60_000);
   await cleanupOldTrackerData();
   console.log(`👁️ Movement tracker active: ${SAMPLE_SECONDS}s online / ${IDLE_SAMPLE_SECONDS}s idle samples, ${RETENTION_HOURS}h retention.`);
+}
+
+async function startTrackerOnBoot(bot) {
+  startTrackerWebOnBoot(bot);
+  return startTrackerJobsOnBoot(bot);
 }
 
 async function handleTrackerCommand(message) {
@@ -1319,6 +1328,8 @@ async function handleCommandCenterCommand(message) {
 
 module.exports = {
   startTrackerOnBoot,
+  startTrackerWebOnBoot,
+  startTrackerJobsOnBoot,
   handleTrackerCommand,
   handleTrackerInteraction,
   handleCommandCenterCommand,
