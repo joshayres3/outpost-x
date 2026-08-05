@@ -206,19 +206,31 @@ async function createRental(interaction, link, player) {
 
     const before = await fetchVehicles().catch(() => []);
     const beforeIds = new Set(before.map(vehicleId).filter(Boolean));
-    await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -Math.abs(RENTAL_PRICE) });
     let spawnResult;
     const spawnStartedAt = Date.now();
     try {
       spawnResult = await ggconPost("/spawn-vehicle", { steamId: String(link.steam_id), vehicle: VEHICLE_CLASS });
     } catch (err) {
-      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: Math.abs(RENTAL_PRICE) }).catch(() => {});
-      throw new Error(`The dirtbike could not be spawned. Your $${formatMoney(RENTAL_PRICE)} was refunded. ${err.message}`);
+      throw new Error(`The dirtbike could not be spawned. You were not charged. ${err.message}`);
     }
 
     let id = await discoverSpawnedBikeFromLogs(spawnStartedAt);
     if (id) console.log(`🏍️ Dirtbike rental captured spawned vehicle ID ${id} from SCUM logs.`);
     if (!id) id = await discoverSpawnedBike(link.steam_id, beforeIds, spawnResult, player);
+
+    // An accepted GGCON command is not proof that SCUM actually created the vehicle.
+    // Never charge or start a rental until a newly spawned dirtbike can be identified.
+    if (!id || beforeIds.has(String(id))) {
+      throw new Error("SCUM accepted the spawn request, but Watcher could not verify that a new dirtbike appeared. You were not charged and no rental was started.");
+    }
+
+    try {
+      await ggconPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -Math.abs(RENTAL_PRICE) });
+    } catch (err) {
+      await ggconPost(`/vehicles/${encodeURIComponent(id)}/destroy`, {}).catch(() => {});
+      throw new Error(`The dirtbike spawned, but payment could not be verified. The bike was removed and you were not charged. ${err.message}`);
+    }
+
     const now = new Date();
     const expires = new Date(now.getTime() + RENTAL_MINUTES * 60000);
     const warning = new Date(expires.getTime() - WARNING_MINUTES * 60000);
