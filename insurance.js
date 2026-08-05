@@ -76,6 +76,9 @@ async function serverPost(endpoint, body = {}) {
   if (!res.ok || data?.ok === false) {
     throw new Error(data?.reason || data?.message || data?.error || `HTTP ${res.status}`);
   }
+  if ((endpoint === "/spawn" || endpoint === "/spawn-vehicle") && data?.ok !== true) {
+    throw new Error(data?.reason || data?.message || data?.error || "GGCON did not confirm delivery.");
+  }
   return data || { ok: true };
 }
 
@@ -519,6 +522,7 @@ async function verifyPendingLink(interaction) {
   return { ok: true, parsed };
 }
 
+
 async function getPendingRegistrationLinks() {
   const nowIso = new Date().toISOString();
   const db = getSupabase();
@@ -566,9 +570,12 @@ async function scanPendingRegistrations(bot) {
         String(entry?.line || entry || "").toLowerCase().includes(code.toLowerCase())
       );
       if (!match) continue;
+
       const parsed = parsePlayerIdentityFromLine(match.line || match);
       if (!parsed?.steamId) continue;
 
+      // Re-read the row before linking so an old scan cannot overwrite a manual
+      // verification or a newer registration code.
       const current = await getLink(row.guild_id, row.discord_id);
       if (!current?.pending_code || String(current.pending_code).toUpperCase() !== code.toUpperCase()) continue;
 
@@ -593,6 +600,7 @@ function ensureRegistrationLoop(bot) {
   registrationTimer = setInterval(() => {
     scanPendingRegistrations(bot).catch(() => {});
   }, REGISTRATION_SCAN_SECONDS * 1000);
+  registrationTimer.unref?.();
   scanPendingRegistrations(bot).catch(() => {});
 }
 
@@ -813,7 +821,7 @@ async function confirmBuy(interaction, vehicleId) {
     return;
   }
 
-  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -config.price });
+  await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: -Math.abs(config.price) });
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const afterPlayer = await getPlayerBySteamId(link.steam_id);
   const afterCash = getPlayerCash(afterPlayer);
@@ -1345,17 +1353,22 @@ async function handleInsuranceInteraction(interaction) {
 }
 
 
+
 async function portalStartRegistration(ctx) {
+  const existing = await getLink(ctx.guildId, ctx.discordId);
+  if (/^\d{15,20}$/.test(String(existing?.steam_id || "").trim())) {
+    return { ok: true, registered: true, steamId: String(existing.steam_id), playerName: existing.scum_name || null };
+  }
   const code = await generateCode(ctx.guildId);
   const expires = await savePendingLink({
     guildId: String(ctx.guildId),
     user: {
       id: String(ctx.discordId),
-      tag: ctx.displayName || 'Portal User',
-      username: ctx.displayName || 'Portal User',
+      tag: ctx.displayName || "Portal User",
+      username: ctx.displayName || "Portal User",
     },
   }, code);
-  return { ok: true, code, expiresAt: expires };
+  return { ok: true, registered: false, code, expiresAt: expires };
 }
 
 function portalInteraction(ctx){
