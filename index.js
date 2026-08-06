@@ -105,6 +105,7 @@ const { startTrackerWebOnBoot, startTrackerJobsOnBoot, handleTrackerCommand, han
 const deploymentCoordinator = require('./deploymentCoordinator');
 const { startSpecialEventsOnBoot } = require("./watcherSpecialEvents");
 const { startGlobalChatBridge, handleGlobalChatMessage } = require("./globalChatBridge");
+const { startWelcomePackNudgeOnBoot } = require("./welcomePackNudge");
 const watcherScheduler = require("./watcherScheduler");
 const { syncItemCatalog, ITEM_CATALOG_SYNC_INTERVAL_MS } = require("./itemCatalog");
 const { validateStartup } = require('./startupValidation');
@@ -253,6 +254,7 @@ bot.once(Events.ClientReady, async () => {
     startMechScheduleOnBoot(bot).catch((err) => console.error("❌ Mech schedule startup failed:", err.message));
     startLotteryOnBoot(bot).catch((err) => console.error("❌ Lottery startup failed:", err.message));
     await startGlobalChatBridge(bot).catch((err) => console.error("❌ Global chat bridge startup failed:", err.message));
+    await startWelcomePackNudgeOnBoot().catch((err) => console.error("❌ Welcome-pack reminder startup failed:", err.message));
     startPopupEventsOnBoot(bot).catch((err) => console.error("❌ Pop-up event startup failed:", err.message));
     startTicketSystem(bot, db);
     startRentalSystem(bot);
