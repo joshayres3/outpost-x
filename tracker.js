@@ -123,8 +123,11 @@ const portalCssPath = path.join(__dirname, 'portal.css');
 const portalJsPath = path.join(__dirname, 'portal.js');
 function portalAssetVersion() {
   try {
-    const mtimes = [portalHtmlPath, portalCssPath, portalJsPath].map((file) => fs.statSync(file).mtimeMs);
-    return String(Math.max(...mtimes).toFixed(0));
+    const hash = crypto.createHash('sha256');
+    for (const file of [portalHtmlPath, portalCssPath, portalJsPath]) {
+      hash.update(fs.readFileSync(file));
+    }
+    return hash.digest('hex').slice(0, 16);
   } catch {
     return String(Date.now());
   }
@@ -1316,11 +1319,55 @@ async function portalRefund(session,body){
 function cleanAdminText(value) {
   return String(value || '').replace(/<@!?(\d+)>/g, '@DiscordUser').replace(/`/g, '');
 }
+
+function adminBanRecordKey(guildId, steamId) {
+  return `admin_ban:${String(guildId)}:${String(steamId)}`;
+}
+async function loadAdminBanRecord(guildId, steamId) {
+  try {
+    const { data, error } = await getDb().from(RUNTIME_TABLE).select('value').eq('key', adminBanRecordKey(guildId, steamId)).maybeSingle();
+    if (error) throw error;
+    return data?.value && typeof data.value === 'object' ? data.value : null;
+  } catch (err) {
+    console.warn('⚠️ Could not load player ban record:', err.message);
+    return null;
+  }
+}
+async function saveAdminBanRecord(guildId, steamId, value) {
+  const row = { key: adminBanRecordKey(guildId, steamId), value, updated_at: new Date().toISOString() };
+  const { error } = await getDb().from(RUNTIME_TABLE).upsert(row, { onConflict: 'key' });
+  if (error) throw error;
+  return value;
+}
+async function addBanStatusToPlayers(guildId, players) {
+  return Promise.all((players || []).map(async (player) => {
+    const steamId = String(player.userId || player.steamId || player.steam_id || '').trim();
+    const ban = steamId ? await loadAdminBanRecord(guildId, steamId) : null;
+    return {
+      steamId,
+      name: getPlayerDisplayName(player),
+      online: !!(player.online === true || player.ping !== undefined),
+      cash: playerCash(player),
+      fame: playerFame(player),
+      banned: ban?.status === 'banned',
+      banReason: ban?.reason || null,
+      bannedAt: ban?.bannedAt || null,
+      bannedBy: ban?.bannedBy || null,
+    };
+  }));
+}
+
 async function adminSearchPlayers(session, body) {
-  const query=String(body.query||'').trim(); if(!query) throw new Error('Enter a player name or Steam ID.');
-  const result=await getPlayerForLookup(query);
-  const matches=result?.type==='single'?[result.player]:(result?.matches||[]);
-  return {players:matches.slice(0,25).map(p=>({steamId:String(p.userId||p.steamId||''),name:getPlayerDisplayName(p),online:!!(p.online===true||p.ping!==undefined),cash:playerCash(p),fame:playerFame(p)}))};
+  const query = String(body.query || '').trim();
+  const onlineOnly = body?.onlineOnly === true;
+  if (onlineOnly || !query) {
+    const online = await getOnlinePlayers();
+    const rows = await addBanStatusToPlayers(session.guildId, Array.isArray(online) ? online : []);
+    return { players: rows.filter((p) => /^\d{17}$/.test(p.steamId)).sort((a,b) => a.name.localeCompare(b.name)).slice(0,100) };
+  }
+  const result = await getPlayerForLookup(query);
+  const matches = result?.type === 'single' ? [result.player] : (result?.matches || []);
+  return { players: (await addBanStatusToPlayers(session.guildId, matches.slice(0,25))).filter((p) => p.steamId) };
 }
 
 async function portalAbandonedVehicleReview(session, days = 14) {
@@ -1434,6 +1481,34 @@ async function adminPlayerInfo(session, steamId, view) {
   let content;
   if(view==='details') {
     content=await buildPlayerDetailsBySteamId(steamId, session.guildId);
+    const ban = await loadAdminBanRecord(session.guildId, steamId);
+    if (ban?.status === 'banned') {
+      content += `
+
+🚫 Ban Status
+
+BANNED
+Reason: ${ban.reason || 'No reason recorded'}
+Banned by: ${ban.bannedBy || 'Unknown admin'}
+Banned at: ${ban.bannedAt || 'Unknown time'}
+SCUM: ${ban.scumOk ? 'Confirmed' : 'Not confirmed'}
+Discord: ${ban.discordOk ? 'Confirmed' : (ban.discordSkipped ? 'No linked Discord account' : 'Not confirmed')}`;
+    } else if (ban?.lastBanReason) {
+      content += `
+
+✅ Ban Status
+
+NOT CURRENTLY BANNED
+Last ban reason: ${ban.lastBanReason}
+Unbanned by: ${ban.unbannedBy || 'Unknown admin'}
+Unbanned at: ${ban.unbannedAt || 'Unknown time'}`;
+    } else {
+      content += `
+
+✅ Ban Status
+
+No Watcher ban record found.`;
+    }
     try {
       const geo = await portalAdminIpLocation(session, steamId);
       if (geo?.content) content = `${content}\n\n${geo.content}`;
@@ -1547,12 +1622,15 @@ async function adminModeration(session,body){
     if(link?.discord_id&&guild){try{await guild.members.ban(String(link.discord_id),{reason:`Outpost X portal ban by ${session.displayName||'Admin'}: ${reason}`});results.discord={ok:true};}catch(err){results.discord={ok:false,error:err.message};}}else results.discord={ok:false,skipped:true,error:'No linked Discord account was found.'};
     if(!results.scum?.ok&&!results.discord?.ok) throw new Error(`Ban failed in SCUM and Discord. ${results.scum?.error||''} ${results.discord?.error||''}`.trim());
     const parts=[results.scum?.ok?`SCUM ban succeeded (${results.scum.method==='command'?'native command fallback':'direct endpoint'}).`:`SCUM ban failed: ${results.scum?.error}`,results.discord?.ok?'Discord ban succeeded.':`Discord ban not completed: ${results.discord?.error}`];
+    await saveAdminBanRecord(session.guildId, steamId, {status:'banned',reason,bannedAt:new Date().toISOString(),bannedBy:session.displayName||'Admin',bannedByDiscordId:String(session.discordId),scumOk:!!results.scum?.ok,discordOk:!!results.discord?.ok,discordSkipped:!!results.discord?.skipped,results});
     return {ok:true,partial:!(results.scum?.ok&&results.discord?.ok),message:parts.join(' '),results};
   }
   const results={scum:null,discord:null};
   try{results.scum=await runScumUnban(steamId);}catch(err){results.scum={ok:false,error:err.message};}
   if(link?.discord_id&&guild){try{await guild.bans.remove(String(link.discord_id),`Outpost X portal unban by ${session.displayName||'Admin'}: ${reason}`);results.discord={ok:true};}catch(err){results.discord={ok:false,error:err.message};}}else results.discord={ok:false,skipped:true,error:'No linked Discord account was found.'};
   if(!results.scum?.ok&&!results.discord?.ok) throw new Error(`Unban failed in SCUM and Discord. ${results.scum?.error||''} ${results.discord?.error||''}`.trim());
+  const previousBan = await loadAdminBanRecord(session.guildId, steamId);
+  await saveAdminBanRecord(session.guildId, steamId, {status:'not_banned',lastBanReason:previousBan?.reason||previousBan?.lastBanReason||reason,lastBannedAt:previousBan?.bannedAt||previousBan?.lastBannedAt||null,unbanReason:reason,unbannedAt:new Date().toISOString(),unbannedBy:session.displayName||'Admin',unbannedByDiscordId:String(session.discordId),scumOk:!!results.scum?.ok,discordOk:!!results.discord?.ok,results});
   return {ok:true,partial:!(results.scum?.ok&&results.discord?.ok),message:[results.scum?.ok?`SCUM unban succeeded (${results.scum.method==='command'?'native command fallback':'direct endpoint'}).`:`SCUM unban failed: ${results.scum?.error}`,results.discord?.ok?'Discord unban succeeded.':`Discord unban not completed: ${results.discord?.error}`].join(' '),results};
 }
 
@@ -1708,8 +1786,8 @@ async function handleHttp(req, res) {
     const html = fs.readFileSync(portalHtmlPath, 'utf8').replaceAll('__PORTAL_ASSET_VERSION__', portalAssetVersion());
     return text(res, 200, html, 'text/html; charset=utf-8');
   }
-  if (url.pathname === '/portal/assets/portal.css') return text(res,200,fs.readFileSync(portalCssPath,'utf8'),'text/css; charset=utf-8','public, max-age=31536000, immutable');
-  if (url.pathname === '/portal/assets/portal.js') return text(res,200,fs.readFileSync(portalJsPath,'utf8'),'application/javascript; charset=utf-8','public, max-age=31536000, immutable');
+  if (url.pathname === '/portal/assets/portal.css') return text(res,200,fs.readFileSync(portalCssPath,'utf8'),'text/css; charset=utf-8','no-cache, must-revalidate');
+  if (url.pathname === '/portal/assets/portal.js') return text(res,200,fs.readFileSync(portalJsPath,'utf8'),'application/javascript; charset=utf-8','no-cache, must-revalidate');
   if (url.pathname === '/portal/assets/outpost.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalOutpostPath).pipe(res); }
   if (url.pathname === '/portal/assets/watcher.jpg') { res.writeHead(200, {'Content-Type':'image/jpeg','Cache-Control':'public, max-age=604800, stale-while-revalidate=86400'}); return fs.createReadStream(portalWatcherPath).pipe(res); }
   const staffAssetMatch = url.pathname.match(/^\/portal\/assets\/staff\/([a-z-]+)\.webp$/);

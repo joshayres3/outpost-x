@@ -1,0 +1,9 @@
+Players directory and portal cache repair
+
+- The admin tool is labeled Players.
+- Opening Players automatically loads the current online-player list.
+- Name and Steam64 search remains available.
+- Clearing the search restores the online list.
+- Portal JS/CSS asset versions now use a SHA-256 content hash instead of ZIP-preserved file timestamps.
+- Portal JS/CSS now revalidate with the server so Railway deployments cannot keep serving an older immutable portal script under the same URL.
+- Existing offline-target ban carrier behavior is preserved: the target can be offline; GGCON only requires at least one player somewhere on the server.
