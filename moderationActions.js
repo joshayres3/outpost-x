@@ -1,6 +1,6 @@
 'use strict';
 
-const { ggconPost } = require('./ggcon');
+const { ggconPost, getOnlinePlayers } = require('./ggcon');
 
 function cleanSteamId(value) {
   const steamId = String(value || '').trim();
@@ -8,8 +8,24 @@ function cleanSteamId(value) {
   return steamId;
 }
 
+
+async function ensureCommandCarrierOnline() {
+  // SCUM's native moderation command may target an offline Steam64, but ggCON
+  // still needs at least one player connected to carry the command into the server.
+  // A failed online-player lookup should not falsely block moderation; the actual
+  // command attempt remains the final source of truth in that case.
+  const onlinePlayers = await getOnlinePlayers().catch(() => null);
+  if (Array.isArray(onlinePlayers) && onlinePlayers.length === 0) {
+    const err = new Error('No players are currently online. GGCON cannot send the SCUM moderation command until at least one player is connected.');
+    err.code = 'GGCON_NO_COMMAND_CARRIER';
+    throw err;
+  }
+  return onlinePlayers;
+}
+
 async function runScumBan(steamId) {
   const id = cleanSteamId(steamId);
+  await ensureCommandCarrierOnline();
   try {
     const result = await ggconPost(`/players/${encodeURIComponent(id)}/ban`, {});
     return { ok: true, method: 'direct', result };
@@ -28,6 +44,7 @@ async function runScumBan(steamId) {
 
 async function runScumUnban(steamId) {
   const id = cleanSteamId(steamId);
+  await ensureCommandCarrierOnline();
   try {
     const result = await ggconPost(`/players/${encodeURIComponent(id)}/unban`, {});
     return { ok: true, method: 'direct', result };
@@ -44,4 +61,4 @@ async function runScumUnban(steamId) {
   }
 }
 
-module.exports = { runScumBan, runScumUnban, cleanSteamId };
+module.exports = { runScumBan, runScumUnban, cleanSteamId, ensureCommandCarrierOnline };
