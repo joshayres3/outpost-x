@@ -827,7 +827,9 @@ async function confirmBuy(interaction, vehicleId) {
   const afterCash = getPlayerCash(afterPlayer);
 
   if (afterCash === null || afterCash > beforeCash - config.price + 1) {
-    await interaction.update({ content: "Payment could not be confirmed. Insurance was not saved. Ask staff to check your cash before trying again.", components: [] }).catch(() => {});
+    const refund = await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: Math.abs(config.price) }).then(() => true).catch(() => false);
+    await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId: link.steam_id, playerName: link.scum_name || getPlayerDisplayName(afterPlayer), type: 'vehicle_insurance', title: `Vehicle Insurance: ${config.label}`, amount: 0, balanceBefore: beforeCash, balanceAfter: beforeCash, status: refund ? 'refunded' : 'refund_failed', details: { vehicleId: String(vehicleId), reason: 'Payment confirmation failed before policy creation' } }).catch(() => {});
+    await interaction.update({ content: refund ? "Payment could not be confirmed, so Watcher returned the insurance charge. No policy was created." : "Payment could not be confirmed and the automatic refund also failed. No policy was created; contact an admin so the transaction can be reviewed.", components: [] }).catch(() => {});
     return;
   }
 
@@ -847,7 +849,11 @@ async function confirmBuy(interaction, vehicleId) {
     purchased_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   });
-  if (error) throw error;
+  if (error) {
+    const refunded = await serverPost(`/players/${encodeURIComponent(link.steam_id)}/currency`, { action: "change", amount: Math.abs(config.price) }).then(() => true).catch(() => false);
+    await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId: link.steam_id, playerName: link.scum_name || getPlayerDisplayName(afterPlayer), type: 'vehicle_insurance', title: `Vehicle Insurance: ${config.label}`, amount: 0, balanceBefore: beforeCash, balanceAfter: refunded ? beforeCash : afterCash, status: refunded ? 'refunded' : 'refund_failed', details: { vehicleId: String(vehicleId), reason: `Policy save failed: ${error.message}` } }).catch(() => {});
+    throw new Error(refunded ? `Insurance could not be saved, so the $${formatMoney(config.price)} charge was refunded.` : `Insurance could not be saved and the automatic refund failed. Contact an admin for review.`);
+  }
   await recordTransaction({ guildId: interaction.guildId, discordId: interaction.user.id, steamId: link.steam_id, playerName: link.scum_name || getPlayerDisplayName(afterPlayer), type: 'vehicle_insurance', title: `Vehicle Insurance: ${config.label}`, amount: -config.price, balanceBefore: beforeCash, balanceAfter: afterCash, details: { vehicleId: String(vehicleId), vehicleType: config.type, vehicleName: getVehicleName(vehicle) } });
 
   await interaction.update({

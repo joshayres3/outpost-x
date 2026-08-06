@@ -929,7 +929,13 @@ async function portalHealthSnapshot(session){
   try{const guild=botRef?.guilds?.cache?.get(String(session.guildId));const channelId=String(process.env.EVENTS_CHANNEL_ID||'');const ch=guild?.channels?.cache?.get(channelId)||await botRef?.channels?.fetch(channelId).catch(()=>null);checks.eventPosting={ok:!!ch?.isTextBased?.(),detail:ch?.isTextBased?.()?`Ready in #${ch.name}`:'Configured event channel is unavailable'};}catch(e){checks.eventPosting={ok:false,detail:e.message};}
   const settings=await loadPortalSettings(session.guildId);
   const config={eventsChannel:!!String(process.env.EVENTS_CHANNEL_ID||''),supabase:!!(process.env.SUPABASE_URL&&process.env.SUPABASE_KEY),ggcon:!!process.env.GGCON_PASSWORD,discordOAuth:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),mapStorage:!!externalMapAssetBaseUrl()};
-  return {ok:true,checkedAt:now,version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT,deploymentCoordinator:deploymentCoordinator.state(),checks,config,settings,scheduler:watcherScheduler.snapshot(),retryQueue:retryQueue.map(x=>({id:x.id,name:x.name,attempts:x.attempts,maxAttempts:x.maxAttempts,nextAt:new Date(x.nextAt).toISOString(),lastError:x.lastError}))};
+  const scheduler=watcherScheduler.snapshot();
+  const retryItems=retryQueue.map(x=>({id:x.id,name:x.name,attempts:x.attempts,maxAttempts:x.maxAttempts,nextAt:new Date(x.nextAt).toISOString(),lastError:x.lastError}));
+  const criticalTasks=scheduler.filter(x=>x.severity==='critical'||Number(x.consecutiveFailures||0)>=3);
+  const degradedTasks=scheduler.filter(x=>x.severity==='degraded');
+  const waitingTasks=scheduler.filter(x=>x.severity==='waiting');
+  const summary={status:criticalTasks.length?'critical':(!checks.ggcon.ok||!checks.supabase.ok||degradedTasks.length?'degraded':'healthy'),criticalTasks:criticalTasks.length,degradedTasks:degradedTasks.length,waitingTasks:waitingTasks.length,retryQueue:retryItems.length,message:criticalTasks.length?`${criticalTasks.length} background task${criticalTasks.length===1?'':'s'} need attention`:degradedTasks.length?`${degradedTasks.length} background task${degradedTasks.length===1?'':'s'} recently failed`:waitingTasks.length?`${waitingTasks.length} task${waitingTasks.length===1?' is':'s are'} waiting on players or external availability`:'All monitored systems are operating normally'};
+  return {ok:true,checkedAt:now,version:WATCHER_VERSION,deployment:WATCHER_DEPLOYED_AT,deploymentCoordinator:deploymentCoordinator.state(),summary,checks,config,settings,scheduler,retryQueue:retryItems};
   });
 }
 async function portalAttentionCounts(session){

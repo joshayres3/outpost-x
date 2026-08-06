@@ -1,0 +1,26 @@
+OUTPOST X WATCHER — PHASE 1, 3 AND 4 HARDENING
+
+Phase 1 — Stability
+- Background jobs now use bounded exponential backoff after failures instead of repeating the same failing request at full speed.
+- Expected player-offline/player-not-found conditions are marked as waiting warnings instead of critical scheduler failures.
+- Scheduler health now exposes healthy, waiting, degraded, and critical states with next retry timing.
+- Command Center System Health now includes a single summary showing critical tasks, degraded tasks, availability waits, and queued retries.
+
+Phase 3 — Transaction reliability
+- Existing Server Shop idempotency, delivery confirmation, and automatic refund behavior remain intact.
+- Existing dirtbike spawn verification and payment rollback remain intact.
+- Existing Airlift charge/refund protection remains intact.
+- Vehicle insurance now automatically refunds when payment confirmation fails.
+- Vehicle insurance now automatically refunds when the policy cannot be saved after payment.
+- Failed insurance refunds are clearly marked for admin review instead of silently losing the charge.
+
+Phase 4 — Command Center usability
+- Portal registration now checks automatically every three seconds after a code is generated.
+- The portal unlocks itself as soon as Watcher links the player; no manual browser refresh is required.
+- Registration polling stops after completion or code expiry to avoid unnecessary Railway/GGCON usage.
+- System Health gives owners a plain-language status instead of requiring them to interpret raw scheduler rows.
+
+Deployment
+- No new SQL is required.
+- No new Railway variables are required.
+- Keep Railway healthcheck path set to /health.

@@ -28,6 +28,8 @@ function registerTask(name, intervalMs, handler, options = {}) {
     lastError: null,
     lastDurationMs: null,
     consecutiveFailures: 0,
+    backoffUntil: null,
+    severity: 'healthy',
     runCount: 0,
     skipCount: 0,
   };
@@ -69,6 +71,8 @@ async function runTask(name) {
     task.lastSuccessAt = nowIso();
     task.lastError = null;
     task.consecutiveFailures = 0;
+    task.backoffUntil = null;
+    task.severity = 'healthy';
     if (process.env.WATCHER_TRACE_POLLS === 'true') {
       log.debug('scheduler.task.completed', { task: name, durationMs: Date.now() - started });
     }
@@ -76,12 +80,21 @@ async function runTask(name) {
     task.lastErrorAt = nowIso();
     task.lastError = String(error?.message || error).slice(0, 500);
     task.consecutiveFailures += 1;
-    log.error('scheduler.task.failed', { task: name, durationMs: Date.now() - started, consecutiveFailures: task.consecutiveFailures, message: task.lastError });
+    const expected = /player (?:is )?offline|player not found|no player found|temporarily unavailable|not currently online/i.test(task.lastError);
+    task.severity = expected ? 'waiting' : (task.consecutiveFailures >= 3 ? 'critical' : 'degraded');
+    const backoffMs = Math.min(task.intervalMs * Math.max(1, 2 ** Math.min(task.consecutiveFailures - 1, 4)), 30 * 60_000);
+    task.backoffUntil = new Date(Date.now() + backoffMs).toISOString();
+    const payload = { task: name, durationMs: Date.now() - started, consecutiveFailures: task.consecutiveFailures, severity: task.severity, retryInMs: backoffMs, message: task.lastError };
+    if (expected) log.warn('scheduler.task.waiting', payload);
+    else log.error('scheduler.task.failed', payload);
   } finally {
     task.lastDurationMs = Date.now() - started;
     task.running = false;
     task.lastFinishedAt = nowIso();
-    schedule(task, task.intervalMs);
+    const nextDelay = task.consecutiveFailures > 0
+      ? Math.min(task.intervalMs * Math.max(1, 2 ** Math.min(task.consecutiveFailures - 1, 4)), 30 * 60_000)
+      : task.intervalMs;
+    schedule(task, nextDelay);
   }
 }
 

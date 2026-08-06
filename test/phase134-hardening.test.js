@@ -1,0 +1,13 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const scheduler = fs.readFileSync(require.resolve('../watcherScheduler'), 'utf8');
+const portal = fs.readFileSync(require.resolve('../portal'), 'utf8');
+const insurance = fs.readFileSync(require.resolve('../insurance'), 'utf8');
+assert(scheduler.includes("severity = expected ? 'waiting'"), 'scheduler should classify expected availability failures');
+assert(scheduler.includes('30 * 60_000'), 'scheduler should cap failure backoff');
+assert(portal.includes('startRegistrationPolling'), 'portal should start automatic registration polling');
+assert(portal.includes('setInterval(pollRegistrationStatus,3000)'), 'portal should check registration every three seconds');
+assert(insurance.includes('automatic refund failed'), 'insurance should clearly handle failed refunds');
+assert(insurance.includes("status: refunded ? 'refunded' : 'refund_failed'"), 'insurance should record refund outcomes');
+console.log('phase 1/3/4 hardening tests passed');
