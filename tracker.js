@@ -1744,7 +1744,26 @@ async function handleHttp(req, res) {
     return setPortalSessionCookie(res, session, '/portal');
   }
 
-  if (url.pathname === '/tracker/health' || url.pathname === '/health' || url.pathname === '/healthz') { const d=deploymentCoordinator.state(); const validation=startupValidation.report(); const ready=d.ready && validation.status!=='not_ready'; return json(res, ready?200:503, {ok:ready,status:ready?(validation.status==='degraded'?'degraded':'ready'):'not_ready',deployment:d,validation}); }
+  // Railway liveness must only prove that the HTTP process is alive.
+  // Never couple /health to Discord, Supabase, GGCON, or startup validation: an
+  // external outage must not cause Railway to kill an otherwise healthy container.
+  if (url.pathname === '/health' || url.pathname === '/healthz') {
+    return json(res, 200, { ok: true, status: 'alive' });
+  }
+
+  // Readiness is intentionally separate from Railway liveness. Staff/diagnostics
+  // can use this endpoint to see whether Watcher has finished connecting.
+  if (url.pathname === '/tracker/health' || url.pathname === '/ready') {
+    const d = deploymentCoordinator.state();
+    const validation = startupValidation.report();
+    const ready = d.ready && validation.status !== 'not_ready';
+    return json(res, ready ? 200 : 503, {
+      ok: ready,
+      status: ready ? (validation.status === 'degraded' ? 'degraded' : 'ready') : 'not_ready',
+      deployment: d,
+      validation,
+    });
+  }
   // Public favicon so browsers can load the Watcher emblem before or after login.
   if (url.pathname === '/portal/assets/favicon.png' || url.pathname === '/favicon.ico') {
     if (!fs.existsSync(portalFaviconPath)) return text(res, 404, 'Portal favicon is missing.');
