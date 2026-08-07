@@ -30,7 +30,18 @@ function rangeForReportingDate(dt) {
   const startLocal = endLocal.minus({ days: 1 });
   return { start: startLocal.toUTC().toISO(), end: endLocal.toUTC().toISO() };
 }
-function rangeForWeek(dt) { return { start: dt.startOf('week').toUTC().toISO(), end: dt.endOf('week').toUTC().toISO() }; }
+function rangeForWeek(dt) {
+  // Weekly Awards are posted Friday around 6 PM ET, so the reporting window
+  // should be the seven days since the previous awards post, not ISO Monday-Sunday.
+  const endLocal = dt.setZone(TZ);
+  const startLocal = endLocal.minus({ days: 7 });
+  return {
+    start: startLocal.toUTC().toISO(),
+    end: endLocal.toUTC().toISO(),
+    startLocal,
+    endLocal,
+  };
+}
 async function safeRows(table, select, filters = []) {
   try {
     let q = getDb().from(table).select(select);
@@ -129,52 +140,87 @@ function rowDisplayName(row) {
     || null;
 }
 
+function discordIdFromRow(row) {
+  return String(
+    row?.discord_id
+    || row?.selected_discord_id
+    || row?.opener_id
+    || row?.closed_by_id
+    || ''
+  ).trim() || null;
+}
+
 function topBy(rows, key, value = () => 1) {
   const map = new Map();
   for (const r of rows) {
     const id = String(r?.[key] || '').trim();
     if (!id) continue;
-    const item = map.get(id) || { id, name: rowDisplayName(r), total: 0 };
+    const item = map.get(id) || { id, name: rowDisplayName(r), total: 0, discordId: discordIdFromRow(r) };
     if (!item.name) item.name = rowDisplayName(r);
+    if (!item.discordId) item.discordId = discordIdFromRow(r);
     item.total += Number(value(r) || 0);
     map.set(id, item);
   }
   return [...map.values()].sort((a, b) => b.total - a.total)[0] || null;
 }
 
+function buildSteamToDiscordMap(links = []) {
+  const map = new Map();
+  for (const link of links) {
+    const steamId = String(link?.steam_id || '').trim();
+    const discordId = String(link?.discord_id || '').trim();
+    if (steamId && discordId && !map.has(steamId)) map.set(steamId, discordId);
+  }
+  return map;
+}
+
+function awardDiscordId(award, steamToDiscord) {
+  if (!award) return null;
+  const direct = String(award.discordId || '').trim();
+  if (direct && /^\d{15,22}$/.test(direct)) return direct;
+  const mapped = steamToDiscord?.get(String(award.id || '').trim());
+  return mapped && /^\d{15,22}$/.test(mapped) ? mapped : null;
+}
+
 function pickLine(lines) {
   return lines[Math.floor(Math.random() * lines.length)];
 }
 
-async function awardName(guild, award) {
+async function awardName(guild, award, steamToDiscord) {
   if (!award) return 'Unknown Exile';
+  const discordId = awardDiscordId(award, steamToDiscord);
+  if (discordId) {
+    const member = await guild.members.fetch(discordId).catch(() => null);
+    if (member) return `<@${discordId}>`;
+  }
   if (award.name) return award.name;
-  const member = await guild.members.fetch(award.id).catch(() => null);
-  return member?.displayName || member?.user?.username || 'Unknown Exile';
+  return 'Unknown Exile';
 }
 
-async function addAward(awards, guild, award, icon, title, statText, jokes) {
+async function addAward(awards, guild, award, icon, title, statText, jokes, steamToDiscord) {
   if (!award || Number(award.total || 0) <= 0) return;
-  const name = await awardName(guild, award);
+  const name = await awardName(guild, award, steamToDiscord);
   awards.push(`${icon} **${title} — ${name}**\n${statText(award.total)} ${pickLine(jokes)}`);
 }
 
 async function buildWeeklyAwards(guild, date = nowEt()) {
-  const { start, end } = rangeForWeek(date);
+  const { start, end, startLocal, endLocal } = rangeForWeek(date);
   const insuranceTable = process.env.WATCHER_VEHICLE_INSURANCE_TABLE || 'watcher_vehicle_insurance';
   const claimsTable = process.env.WATCHER_INSURANCE_CLAIMS_TABLE || 'watcher_insurance_claims';
   const shopTable = process.env.WATCHER_SHOP_PURCHASES_TABLE || 'watcher_shop_purchases';
 
-  const [airlifts, rentals, purchases, lottery, policies, claims, ticketsOpened, ticketsClosed] = await Promise.all([
-    safeRows(process.env.WATCHER_AIRLIFT_TABLE || 'watcher_airlift_rides', '*', [['gte','completed_at',start],['lte','completed_at',end],['eq','guild_id',guild.id],['eq','status','completed']]),
-    safeRows(process.env.WATCHER_DIRTBIKE_RENTAL_TABLE || 'watcher_dirtbike_rentals', '*', [['gte','started_at',start],['lte','started_at',end],['eq','guild_id',guild.id]]),
-    safeRows(shopTable, '*', [['gte','created_at',start],['lte','created_at',end],['eq','guild_id',guild.id],['eq','status','delivered']]),
-    safeRows(process.env.WATCHER_LOTTERY_DRAWS_TABLE || 'watcher_lottery_draws', '*', [['gte','actual_run_at',start],['lte','actual_run_at',end],['eq','guild_id',guild.id],['eq','status','completed']]),
-    safeRows(insuranceTable, '*', [['gte','purchased_at',start],['lte','purchased_at',end],['eq','guild_id',guild.id]]),
-    safeRows(claimsTable, '*', [['gte','created_at',start],['lte','created_at',end],['eq','guild_id',guild.id]]),
-    safeRows('watcher_tickets', '*', [['gte','opened_at',start],['lte','opened_at',end],['eq','guild_id',guild.id]]),
-    safeRows('watcher_tickets', '*', [['gte','closed_at',start],['lte','closed_at',end],['eq','guild_id',guild.id],['eq','status','closed']]),
+  const [airlifts, rentals, purchases, lottery, policies, claims, ticketsOpened, ticketsClosed, playerLinks] = await Promise.all([
+    safeRows(process.env.WATCHER_AIRLIFT_TABLE || 'watcher_airlift_rides', '*', [['gte','completed_at',start],['lt','completed_at',end],['eq','guild_id',guild.id],['eq','status','completed']]),
+    safeRows(process.env.WATCHER_DIRTBIKE_RENTAL_TABLE || 'watcher_dirtbike_rentals', '*', [['gte','started_at',start],['lt','started_at',end],['eq','guild_id',guild.id]]),
+    safeRows(shopTable, '*', [['gte','created_at',start],['lt','created_at',end],['eq','guild_id',guild.id],['eq','status','delivered']]),
+    safeRows(process.env.WATCHER_LOTTERY_DRAWS_TABLE || 'watcher_lottery_draws', '*', [['gte','actual_run_at',start],['lt','actual_run_at',end],['eq','guild_id',guild.id],['eq','status','completed']]),
+    safeRows(insuranceTable, '*', [['gte','purchased_at',start],['lt','purchased_at',end],['eq','guild_id',guild.id]]),
+    safeRows(claimsTable, '*', [['gte','created_at',start],['lt','created_at',end],['eq','guild_id',guild.id]]),
+    safeRows('watcher_tickets', '*', [['gte','opened_at',start],['lt','opened_at',end],['eq','guild_id',guild.id]]),
+    safeRows('watcher_tickets', '*', [['gte','closed_at',start],['lt','closed_at',end],['eq','guild_id',guild.id],['eq','status','closed']]),
+    safeRows(process.env.WATCHER_PLAYER_LINKS_TABLE || 'watcher_player_links', 'steam_id,discord_id,scum_name,discord_tag,linked_at', [['eq','guild_id',guild.id]]),
   ]);
+  const steamToDiscord = buildSteamToDiscordMap(playerLinks);
 
   const awards = [];
   const delivered = purchases.filter(row => row.status === 'delivered');
@@ -184,52 +230,56 @@ async function buildWeeklyAwards(guild, date = nowEt()) {
 
   await addAward(awards, guild, topBy(airlifts, 'steam_id'), '✈️', 'Frequent Flyer',
     total => `Completed **${total}** airlift${total === 1 ? '' : 's'}.`,
-    ['Apparently roads are beneath them.', 'Has developed a complicated relationship with parachutes.', 'The ground remains optional.']);
+    ['Apparently roads are beneath them.', 'Has developed a complicated relationship with parachutes.', 'The ground remains optional.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(rentals, 'steam_id'), '🏍️', 'Rental Regular',
     total => `Rented **${total}** dirtbike${total === 1 ? '' : 's'}.`,
-    ['Ownership was considered and immediately rejected.', 'The rental counter knows them by name.', 'Thirty minutes at a time is apparently a lifestyle.']);
+    ['Ownership was considered and immediately rejected.', 'The rental counter knows them by name.', 'Thirty minutes at a time is apparently a lifestyle.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(delivered, 'steam_id', row => row.price), '💸', 'Big Spender',
     total => `Spent **$${money(total)}** in the Watcher Shop.`,
-    ['The economy thanks them. Their wallet does not.', 'Clicked Buy with remarkable confidence.', 'Financial restraint was not detected.']);
+    ['The economy thanks them. Their wallet does not.', 'Clicked Buy with remarkable confidence.', 'Financial restraint was not detected.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(lottery, 'selected_steam_id'), '🍀', 'Lucky Exile',
     total => `Won **${total}** lotter${total === 1 ? 'y' : 'ies'}.`,
-    ['Probability has filed a complaint.', 'The random number generator seems suspiciously friendly.', 'Luck continues to carry the operation.']);
+    ['Probability has filed a complaint.', 'The random number generator seems suspiciously friendly.', 'Luck continues to carry the operation.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(policies, 'steam_id'), '🛡️', 'Insurance Addict',
     total => `Purchased **${total}** insurance polic${total === 1 ? 'y' : 'ies'}.`,
-    ['Trusts their driving exactly as much as The Watcher does.', 'Prepared for consequences before creating them.', 'Reads “covered” as a personal challenge.']);
+    ['Trusts their driving exactly as much as The Watcher does.', 'Prepared for consequences before creating them.', 'Reads “covered” as a personal challenge.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(claims, 'steam_id'), '💥', 'Claim Magnet',
     total => `Generated **${total}** insurance claim${total === 1 ? '' : 's'}.`,
-    ['The vehicles remain unavailable for comment.', 'Insurance paperwork has become a hobby.', 'Somewhere, a mechanic just sighed.']);
+    ['The vehicles remain unavailable for comment.', 'Insurance paperwork has become a hobby.', 'Somewhere, a mechanic just sighed.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(ticketsOpened, 'opener_id'), '🎟️', 'Ticket Enthusiast',
     total => `Opened **${total}** support ticket${total === 1 ? '' : 's'}.`,
-    ['Customer support has added them to Favorites.', 'The ticket button is now visibly worn.', 'Had questions. Then found more questions.']);
+    ['Customer support has added them to Favorites.', 'The ticket button is now visibly worn.', 'Had questions. Then found more questions.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(ticketsClosed, 'closed_by_id'), '🧰', 'Professional Problem Solver',
     total => `Closed **${total}** ticket${total === 1 ? '' : 's'}.`,
-    ['Kept the chaos moving in an orderly direction.', 'Resolved problems faster than players could invent them.', 'The close-reason box knows their typing style.']);
+    ['Kept the chaos moving in an orderly direction.', 'Resolved problems faster than players could invent them.', 'The close-reason box knows their typing style.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(mechPurchases, 'steam_id', row => row.price), '🤖', 'Mech Night Investor',
     total => `Spent **$${money(total)}** on RPGs and rockets.`,
-    ['Peace was never part of the budget.', 'Invested heavily in loud problem-solving.', 'The mechs have been advised to review their insurance.']);
+    ['Peace was never part of the budget.', 'Invested heavily in loud problem-solving.', 'The mechs have been advised to review their insurance.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(medicalPurchases, 'steam_id'), '🩺', 'Medical Emergency',
     total => `Bought **${total}** Medical Kit${total === 1 ? '' : 's'}.`,
-    ['Survival appears to require a subscription plan.', 'Bandages were purchased in a tone of urgency.', 'The pharmacy aisle has been personally audited.']);
+    ['Survival appears to require a subscription plan.', 'Bandages were purchased in a tone of urgency.', 'The pharmacy aisle has been personally audited.'], steamToDiscord);
 
   await addAward(awards, guild, topBy(gasPurchases, 'steam_id'), '⛽', 'Running on Fumes',
     total => `Bought **${total}** Emergency Gas can${total === 1 ? '' : 's'}.`,
-    ['Fuel planning remains an emerging skill.', 'The red warning light is apparently decorative.', 'Once again rescued by a canister and poor foresight.']);
+    ['Fuel planning remains an emerging skill.', 'The red warning light is apparently decorative.', 'Once again rescued by a canister and poor foresight.'], steamToDiscord);
 
   const communityChallenge = await getCommunityChallenge(guild.id, date).catch(() => null);
   if (communityChallenge) {
     const leaders = contributorRows(communityChallenge).slice(0, 3);
-    const leaderText = leaders.length ? leaders.map((row, index) => `${index + 1}. ${row.name} — ${row.count}`).join(' • ') : 'No qualifying kills yet.';
+    const leaderText = leaders.length ? leaders.map((row, index) => {
+      const discordId = steamToDiscord.get(String(row.sid || '').trim());
+      const who = discordId ? `<@${discordId}>` : row.name;
+      return `${index + 1}. ${who} — ${row.count}`;
+    }).join(' • ') : 'No qualifying kills yet.';
     awards.unshift(`🎯 **Weekly Community Challenge — ${communityChallenge.title}**\n${progressText(communityChallenge)}\nTop contributors: ${leaderText}`);
   }
 
@@ -238,10 +288,14 @@ async function buildWeeklyAwards(guild, date = nowEt()) {
   if (weeklyRaces.length) {
     const raceLines = weeklyRaces.slice(-9).map(race => {
       if (race.status === 'won') {
-        return `🏁 **${race.title}:** ${race.winner?.name || 'Unknown'} won ${race.target}/${race.target}${race.prize?.name ? ` — ${race.prize.name}` : ''}`;
+        const winnerDiscordId = steamToDiscord.get(String(race.winner?.sid || '').trim());
+        const winner = winnerDiscordId ? `<@${winnerDiscordId}>` : (race.winner?.name || 'Unknown');
+        return `🏁 **${race.title}:** ${winner} won ${race.target}/${race.target}${race.prize?.name ? ` — ${race.prize.name}` : ''}`;
       }
       const leader = Array.isArray(race.leaders) ? race.leaders[0] : null;
-      return `⌛ **${race.title}:** no winner${leader ? ` — top: ${leader.name} ${leader.count}/${race.target}` : ''}`;
+      const leaderDiscordId = leader ? steamToDiscord.get(String(leader.sid || '').trim()) : null;
+      const leaderName = leaderDiscordId ? `<@${leaderDiscordId}>` : leader?.name;
+      return `⌛ **${race.title}:** no winner${leader ? ` — top: ${leaderName} ${leader.count}/${race.target}` : ''}`;
     });
     awards.unshift(`🏁 **Weekly Kill Race Results**
 ${raceLines.join('\n')}`);
@@ -254,7 +308,7 @@ ${raceLines.join('\n')}`);
   return new EmbedBuilder()
     .setTitle('🏆 Outpost X Weekly Awards')
     .setDescription(awards.join('\n\n'))
-    .setFooter({ text: `Week ending ${date.toFormat('LLLL d')} • Verified Watcher activity only` });
+    .setFooter({ text: `${startLocal.toFormat('LLL d, h:mm a')}–${endLocal.toFormat('LLL d, h:mm a')} ET • Verified Watcher activity only` });
 }
 
 async function nextRestartText() {
@@ -449,4 +503,4 @@ async function handleAnalyticsCommand(message) {
   if (cmd === '!challengenow') { await postCommunityChallenge(message.guild); await message.reply('Community Challenge progress posted in Main Chat.'); return true; }
   return false;
 }
-module.exports={startAnalyticsOnBoot,handleAnalyticsCommand};
+module.exports={startAnalyticsOnBoot,handleAnalyticsCommand,__test:{rangeForWeek,buildSteamToDiscordMap,awardDiscordId}};

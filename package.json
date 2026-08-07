@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node index.js",
     "upload:map-assets": "node scripts/uploadMapAssetsToSupabase.js",
-    "test": "node test/ggcon-client.test.js && node test/transaction-state.test.js && node test/phase134-hardening.test.js && node test/offline-ban-carrier.test.js && node test/portal-players-cache.test.js",
+    "test": "node test/ggcon-client.test.js && node test/transaction-state.test.js && node test/phase134-hardening.test.js && node test/offline-ban-carrier.test.js && node test/portal-players-cache.test.js && node test/weekly-awards.test.js",
     "check": "node --check index.js && node --check ggcon.js && node --check tracker.js && npm test"
   },
   "dependencies": {
